@@ -1,0 +1,189 @@
+# RAG Dashboard 配置文件
+
+# UI 主题配置
+theme:
+  name: "dark-blue"
+  colors:
+    background: "#0f172a"
+    surface: "#1e293b"
+    surfaceHighlight: "#334155"
+    border: "#334155"
+    borderHighlight: "#3b82f6"
+    textPrimary: "#f8fafc"
+    textSecondary: "#94a3b8"
+    textMuted: "#64748b"
+    primary: "#3b82f6"
+    primaryHover: "#2563eb"
+    success: "#22c55e"
+    warning: "#f59e0b"
+    error: "#ef4444"
+    info: "#06b6d4"
+
+# 品牌配置
+branding:
+  name: "RAG Dashboard"
+  subtitle: "递归检索系统"
+  logo: "🧠"
+
+# LLM 提供商配置
+llm:
+  defaultProvider: "deepseek"
+  providers:
+    deepseek:
+      name: "DeepSeek"
+      icon: "🐋"
+      apiKey: "sk-783e95788a34443682fc02c4e8affa6f"
+      baseURL: "https://api.deepseek.com"
+      models:
+        - id: "deepseek-chat"
+          name: "DeepSeek Chat"
+          description: "通用对话模型"
+        - id: "deepseek-coder"
+          name: "DeepSeek Coder"
+          description: "代码专用模型"
+      defaultModel: "deepseek-chat"
+      defaultParams:
+        temperature: 0.7
+        maxTokens: 2000
+        topP: 0.9
+
+    kimi:
+      name: "Kimi"
+      icon: "🌙"
+      apiKey: ""
+      baseURL: "https://api.moonshot.cn"
+      models:
+        - id: "kimi-for-coding"
+          name: "Kimi for Coding"
+        - id: "kimi-chat"
+          name: "Kimi Chat"
+      defaultModel: "kimi-for-coding"
+
+    openai:
+      name: "OpenAI"
+      icon: "🤖"
+      apiKey: ""
+      baseURL: "https://api.openai.com"
+      models:
+        - id: "gpt-4"
+          name: "GPT-4"
+        - id: "gpt-3.5-turbo"
+          name: "GPT-3.5"
+      defaultModel: "gpt-4"
+
+# 推理引擎配置
+engines:
+  - id: "llama.cpp"
+    name: "llama.cpp"
+    icon: "🦙"
+    description: "本地推理引擎"
+  - id: "vllm"
+    name: "vLLM"
+    icon: "⚡"
+    description: "高性能推理"
+  - id: "tensorrt"
+    name: "TensorRT"
+    icon: "🔥"
+    description: "NVIDIA加速"
+
+# 基础设施服务状态
+services:
+  - id: "llm"
+    name: "LLM API"
+    icon: "🤖"
+    type: "llm"
+  - id: "inference"
+    name: "推理引擎"
+    icon: "⚙️"
+    type: "inference"
+  - id: "api"
+    name: "API Gateway"
+    icon: "🔌"
+    type: "api"
+  - id: "vector-db"
+    name: "Vector DB"
+    icon: "🔍"
+    type: "database"
+
+# RAG 流程阶段
+ragStages:
+  - id: "intent_analysis"
+    name: "意图分析"
+    icon: "🎯"
+    description: "分析查询意图"
+  - id: "query_decomposition"
+    name: "查询分解"
+    icon: "✂️"
+    description: "分解子查询"
+  - id: "vector_retrieval"
+    name: "向量检索"
+    icon: "🔍"
+    description: "语义相似度搜索"
+  - id: "knowledge_retrieval"
+    name: "知识检索"
+    icon: "📚"
+    description: "知识库查询"
+  - id: "graph_retrieval"
+    name: "图检索"
+    icon: "🕸️"
+    description: "图数据库遍历"
+  - id: "reranking"
+    name: "精排"
+    icon: "📊"
+    description: "重排序筛选"
+  - id: "context_assembly"
+    name: "上下文组装"
+    icon: "🧩"
+    description: "构建提示上下文"
+  - id: "llm_generation"
+    name: "生成"
+    icon: "💬"
+    description: "LLM生成回答"
+  - id: "complete"
+    name: "完成"
+    icon: "✅"
+    description: "任务完成"
+
+# 快速提示
+quickPrompts:
+  - id: "search"
+    icon: "🔍"
+    title: "搜索知识库"
+    description: "检索相关知识"
+    prompt: "请在知识库中搜索关于【主题】的资料，并总结关键信息。"
+  - id: "code"
+    icon: "💻"
+    title: "编写代码"
+    description: "生成代码实现"
+    prompt: "请帮我编写一段代码来实现【功能】。"
+  - id: "analyze"
+    icon: "📊"
+    title: "分析数据"
+    description: "处理和可视化"
+    prompt: "请分析以下数据并提供见解："
+  - id: "debug"
+    icon: "🔧"
+    title: "调试问题"
+    description: "排查代码错误"
+    prompt: "请帮我调试以下代码，找出问题所在："
+  - id: "document"
+    icon: "📚"
+    title: "生成文档"
+    description: "创建说明文档"
+    prompt: "请为以下内容生成详细的技术文档："
+  - id: "translate"
+    icon: "🌐"
+    title: "翻译内容"
+    description: "多语言转换"
+    prompt: "请将以下内容翻译成【目标语言】："
+
+# 功能特性展示
+capabilities:
+  - icon: "🔍"
+    title: "智能检索"
+  - icon: "🧠"
+    title: "意图理解"
+  - icon: "⚡"
+    title: "多引擎推理"
+  - icon: "📚"
+    title: "知识增强"

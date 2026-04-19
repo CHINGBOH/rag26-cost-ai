@@ -1,0 +1,180 @@
+version: '3.8'
+
+# RAG系统完整基础设施
+# 核心四库: Qdrant + PostgreSQL + 知识库 + 知识图谱
+# 支撑工具: Elasticsearch + Redis + MinIO + 消息队列
+
+services:
+  # 1. Qdrant - 向量数据库 (核心四库之一)
+  qdrant:
+    image: qdrant/qdrant:v1.8.0
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 2. PostgreSQL - 结构化数据库 (核心四库之二)
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d
+    environment:
+      - POSTGRES_DB=rag_db
+      - POSTGRES_USER=rag_user
+      - POSTGRES_PASSWORD=rag_password
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 3. Elasticsearch - 全文搜索引擎
+  elasticsearch:
+    image: elasticsearch:8.12.0
+    container_name: rag-elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=rag-cluster
+      - node.name=rag-node
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 4. Neo4j - 知识图谱数据库 (核心四库之四)
+  neo4j:
+    image: neo4j:5.16.0-community
+    container_name: rag-neo4j
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    environment:
+      - NEO4J_AUTH=neo4j/rag_password
+      - NEO4J_PLUGINS=["apoc", "gds"]
+      - NEO4J_dbms_memory_pagecache_size=512m
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=512m
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "rag_password", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 5. Redis - 缓存和消息队列
+  redis:
+    image: redis:7.2-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 6. MinIO - 对象存储 (知识库存储)
+  minio:
+    image: minio/minio:latest
+    container_name: rag-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+      - ./data/knowledge_base:/kb_data  # 挂载知识库目录
+    environment:
+      - MINIO_ROOT_USER=rag_admin
+      - MINIO_ROOT_PASSWORD=rag_password
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # 7. RabbitMQ - 消息队列 (异步处理)
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: rag-rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # 管理界面
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=rag_user
+      - RABBITMQ_DEFAULT_PASS=rag_password
+      - RABBITMQ_DEFAULT_VHOST=rag_vhost
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  qdrant_storage:
+  postgres_data:
+  es_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  minio_data:
+  rabbitmq_data:

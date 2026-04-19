@@ -1,0 +1,428 @@
+/**
+ * 基础设施监控样式
+ */
+
+.infrastructure-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.infra-section {
+  background: var(--bg-surface);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.section-title {
+  margin: 0 0 20px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.group-title {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ==================== LLM 提供者 ==================== */
+.llm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.llm-card {
+  background: var(--bg-surface);
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid var(--bg-hover);
+  transition: all 0.2s;
+}
+
+.llm-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.llm-card.healthy {
+  border-left: 3px solid var(--color-success);
+}
+
+.llm-card.degraded {
+  border-left: 3px solid var(--color-warning);
+}
+
+.llm-card.down {
+  border-left: 3px solid var(--color-error);
+}
+
+.llm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.llm-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.llm-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.llm-model {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.llm-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.llm-metric {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  background: var(--bg-surface);
+  border-radius: 6px;
+}
+
+.llm-metric .metric-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.llm-metric .metric-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.llm-metric .metric-value.warning {
+  color: var(--color-warning);
+}
+
+.llm-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--bg-hover);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.llm-capabilities {
+  display: flex;
+  gap: 8px;
+}
+
+/* ==================== 数据存储层 ==================== */
+.storage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.storage-group {
+  background: var(--bg-surface);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+/* 数据库卡片通用样式 */
+.db-card {
+  background: var(--bg-surface);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--bg-hover);
+}
+
+.db-card:last-child {
+  margin-bottom: 0;
+}
+
+.db-card.connected {
+  border-left: 3px solid var(--color-success);
+}
+
+.db-card.disconnected {
+  border-left: 3px solid var(--color-error);
+}
+
+.db-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.db-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.db-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.db-stats {
+  display: flex;
+  gap: 16px;
+}
+
+.db-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.db-stat .stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.db-stat .stat-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.db-index-status {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bg-hover);
+  font-size: 11px;
+}
+
+.index-value.building {
+  color: var(--color-primary);
+}
+
+.index-value.error {
+  color: var(--color-error);
+}
+
+/* 知识库 */
+.kb-card {
+  background: var(--bg-surface);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.kb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.kb-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.kb-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 数据一致性 */
+.consistency-panel {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--bg-hover);
+}
+
+.consistency-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+/* ==================== 检索与生成服务 ==================== */
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.service-group {
+  background: var(--bg-surface);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.service-card {
+  background: var(--bg-surface);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--bg-hover);
+}
+
+.service-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.service-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.service-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ==================== 数据管道 ==================== */
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.pipeline-card {
+  background: var(--bg-surface);
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid var(--bg-hover);
+}
+
+.pipeline-card.running {
+  border-left: 3px solid var(--color-success);
+}
+
+.pipeline-card.paused {
+  border-left: 3px solid var(--color-warning);
+}
+
+.pipeline-card.error {
+  border-left: 3px solid var(--color-error);
+}
+
+.pipeline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.pipeline-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pipeline-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bg-hover);
+}
+
+.pipeline-stat {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.pipeline-stat .stat-icon {
+  font-size: 14px;
+}
+
+.pipeline-stat .stat-label {
+  color: var(--text-muted);
+}
+
+.pipeline-stat .stat-value {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.pipeline-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pipeline-metric {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.pipeline-metric .metric-label {
+  color: var(--text-secondary);
+}
+
+.pipeline-metric .metric-value {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.pipeline-metric .metric-value.warning {
+  color: var(--color-warning);
+}
+
+/* ==================== 空状态 ==================== */
+.infra-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: var(--text-muted);
+  font-style: italic;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* ==================== Responsive ==================== */
+@media (max-width: 1200px) {
+  .storage-grid,
+  .service-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .llm-grid,
+  .storage-grid,
+  .service-grid,
+  .consistency-metrics,
+  .pipeline-grid {
+    grid-template-columns: 1fr;
+  }
+}

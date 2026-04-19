@@ -1,0 +1,168 @@
+# RAG召回精排系统配置
+
+# 环境: dev | staging | production
+env: dev
+debug: true
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  reload: true  # 开发模式自动重载
+
+# 数据库配置
+vector_store:
+  type: qdrant
+  host: localhost
+  port: 6333
+  collection_name: documents
+  vector_size: 1024  # BAAI/bge-m3 的维度
+  timeout: 30        # 连接超时（秒）
+  pool_size: 10      # HTTP 连接池大小
+
+keyword_store:
+  type: elasticsearch
+  hosts:
+    - http://localhost:9200
+  index_name: documents
+
+graph_store:
+  type: neo4j
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: password
+  database: neo4j
+
+# 模型配置
+models:
+  embedding:
+    name: BAAI/bge-m3
+    device: cpu  # cpu | cuda
+    batch_size: 32
+    normalize_embeddings: true
+    
+  # TEI (Text Embeddings Inference) 高性能 Embedding 服务配置
+  tei:
+    enabled: true
+    url: http://localhost:8003
+    model_id: BAAI/bge-m3
+    max_batch_tokens: 16384
+    max_client_batch_size: 64
+    
+  rerank:
+    name: BAAI/bge-reranker-large
+    device: cpu
+    batch_size: 8
+    max_length: 512
+
+# 召回配置
+retrieval:
+  vector_top_k: 30
+  keyword_top_k: 20
+  graph_top_k: 10
+  score_threshold: 0.6
+  enable_rerank: true
+  enable_fusion: true
+
+# 分数融合权重
+fusion_weights:
+  rerank: 0.4
+  vector: 0.3
+  keyword: 0.2
+  graph: 0.05
+  time: 0.05
+
+# 上下文增强
+context:
+  max_length: 2000
+  surrounding_window: 2
+  strategy: surrounding  # none | surrounding | section | hierarchy | entity_link | full
+
+# 日志配置
+logging:
+  level: INFO  # DEBUG | INFO | WARNING | ERROR
+  format: json
+  output: stdout
+
+# 服务启用开关
+services:
+  api:
+    enabled: true
+    port: 8000
+    cors_origins:
+      - "http://localhost:3000"
+      - "http://127.0.0.1:3000"
+  
+  ocr:
+    enabled: true
+    port: 8001
+    gpu: false
+    language: ch
+    detect_tables: true
+    detect_figures: false
+  
+  recursion:
+    enabled: false  # Node.js后端默认不启用
+    port: 3001
+    websocket: true
+    max_depth: 3
+    timeout_seconds: 300
+
+# OCR 质量配置
+ocr_quality:
+  confidence_threshold: 0.85
+  table_integrity_threshold: 0.90
+  layout_consistency_threshold: 0.80
+  max_retries: 3
+  enable_llm_verify: true
+  retry_strategies:
+    - name: increase_contrast
+      description: "增强对比度"
+    - name: deskew_correction
+      description: "纠偏校正"
+    - name: enhance_table_detection
+      description: "增强表格检测"
+
+# 查询分析配置
+query_analysis:
+  enable_intent_classification: true
+  enable_entity_extraction: true
+  enable_subquery_decomposition: true
+  max_subqueries: 5
+  
+  # 意图分类阈值
+  intent_thresholds:
+    trend: 0.7      # 趋势分析关键词匹配度
+    comparison: 0.7 # 比较查询
+    numeric: 0.6    # 数值查询
+    list: 0.6       # 列表枚举
+    procedure: 0.6  # 流程步骤
+
+# 结构化存储配置
+structured_store:
+  type: postgresql
+  host: localhost
+  port: 5432
+  database: rag_structured
+  
+  # 表格存储格式
+  table_formats:
+    - json      # 原始结构
+    - markdown  # 展示格式
+    - csv       # 计算导出
+
+# 监控配置
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+# 缓存配置
+cache:
+  type: redis
+  host: localhost
+  port: 6379
+  db: 0
+  ttl: 3600
+  max_connections: 50

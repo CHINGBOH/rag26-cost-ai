@@ -1,0 +1,160 @@
+/**
+ * 沉默倒计时样式
+ */
+
+.silence-countdown {
+  background: var(--bg-surface);
+  border: 2px solid var(--border-default);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  transition: all 0.3s;
+}
+
+.silence-countdown.warning {
+  border-color: var(--color-warning);
+  animation: pulse-warning 1s infinite;
+}
+
+@keyframes pulse-warning {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
+}
+
+.countdown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.countdown-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.activity-btn {
+  padding: 0.5rem 1rem;
+  background: var(--color-success);
+  border: none;
+  border-radius: 6px;
+  color: var(--text-inverse);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.activity-btn:hover {
+  background: #16a34a;
+  transform: scale(1.05);
+}
+
+.countdown-display {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.time-value {
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  font-family: 'Courier New', monospace;
+  transition: color 0.3s;
+}
+
+.time-value.warning {
+  color: var(--color-warning);
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.time-label {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.progress-container {
+  height: 8px;
+  background: var(--bg-elevated);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-success));
+  transition: width 0.1s linear;
+}
+
+.progress-bar.warning {
+  background: linear-gradient(90deg, var(--color-warning), var(--color-error));
+}
+
+.countdown-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.warning-message {
+  padding: 0.75rem;
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 3px solid var(--color-warning);
+  border-radius: 0 8px 8px 0;
+  font-size: 0.875rem;
+  color: var(--color-warning);
+}
+
+/* YOLO激活状态 */
+.silence-countdown.yolo-active {
+  border-color: #7c3aed;
+  background: linear-gradient(135deg, var(--bg-surface) 0%, rgba(139, 92, 246, 0.1) 100%);
+  animation: pulse-yolo 1.5s infinite;
+}
+
+@keyframes pulse-yolo {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+  50% { box-shadow: 0 0 0 15px rgba(139, 92, 246, 0); }
+}
+
+.yolo-active {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.countdown-icon {
+  font-size: 2rem;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.countdown-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.yolo-label {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #7c3aed;
+}
+
+.yolo-sub {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}

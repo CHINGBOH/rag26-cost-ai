@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangChain RAG 架构完全指南</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        :root{--primary:#6366f1;--primary-dark:#4f46e5;--secondary:#10b981;--accent:#f59e0b;--danger:#ef4444;--bg-dark:#0f172a;--bg-card:#1e293b;--bg-card-hover:#334155;--text-primary:#f1f5f9;--text-secondary:#94a3b8;--border:#475569}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-dark);color:var(--text-primary);line-height:1.6;min-height:100vh}
+        .container{max-width:1400px;margin:0 auto;padding:0 20px}
+        .header{background:linear-gradient(135deg,var(--primary-dark) 0%,#7c3aed 100%);padding:60px 0 80px;text-align:center;position:relative;overflow:hidden}
+        .header::before{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")}
+        .header-content{position:relative;z-index:1}
+        .badge{display:inline-block;background:rgba(255,255,255,0.2);padding:6px 16px;border-radius:20px;font-size:14px;margin-bottom:20px}
+        .header h1{font-size:3.5rem;font-weight:800;margin-bottom:20px;background:linear-gradient(90deg,#fff 0%,#a5b4fc 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+        .header p{font-size:1.3rem;opacity:0.9;max-width:600px;margin:0 auto}
+        .nav-container{background:var(--bg-card);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+        .nav-tabs{display:flex;gap:8px;padding:16px 20px;overflow-x:auto}
+        .nav-tab{padding:10px 20px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:all 0.2s;background:transparent;border:none;color:var(--text-secondary);font-size:15px;font-weight:500}
+        .nav-tab:hover{background:var(--bg-card-hover);color:var(--text-primary)}
+        .nav-tab.active{background:var(--primary);color:white}
+        .main-content{padding:40px 0}
+        .section{margin-bottom:80px;animation:fadeIn 0.5s ease}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+        .section-title{font-size:2.2rem;font-weight:700;margin-bottom:30px;display:flex;align-items:center;gap:16px}
+        .section-number{background:linear-gradient(135deg,var(--primary) 0%,var(--secondary) 100%);width:50px;height:50px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:800}
+        .card{background:var(--bg-card);border-radius:16px;padding:30px;border:1px solid var(--border);transition:all 0.3s;margin-bottom:24px}
+        .card:hover{border-color:var(--primary);transform:translateY(-2px);box-shadow:0 20px 40px rgba(0,0,0,0.3)}
+        .card-title{font-size:1.4rem;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:12px}
+        .card-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.2rem}
+        .grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:24px}
+        .grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}
+        .diagram{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);border-radius:12px;padding:30px;margin:24px 0;border:1px solid var(--border)}
+        .diagram-row{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+        .diagram-box{padding:16px 24px;border-radius:8px;font-weight:600;text-align:center;min-width:120px}
+        .diagram-arrow{color:var(--text-secondary);font-size:1.5rem}
+        .box-input{background:#22c55e;color:#000}
+        .box-process{background:var(--primary);color:#fff}
+        .box-output{background:#f59e0b;color:#000}
+        .box-decision{background:var(--accent);color:#000;border:2px dashed #000}
+        .box-tool{background:#8b5cf6;color:#fff}
+        .box-agent{background:#ec4899;color:#fff}
+        .comparison-table{width:100%;border-collapse:collapse;margin:24px 0}
+        .comparison-table th,.comparison-table td{padding:16px;text-align:left;border-bottom:1px solid var(--border)}
+        .comparison-table th{background:var(--bg-card-hover);font-weight:600}
+        .comparison-table tr:hover td{background:rgba(99,102,241,0.1)}
+        .tag{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+        .tag-high{background:#22c55e;color:#000}
+        .tag-medium{background:#f59e0b;color:#000}
+        .tag-low{background:#ef4444;color:#fff}
+        .tag-fast{background:#06b6d4;color:#000}
+        .tag-variable{background:#8b5cf6;color:#fff}
+        .code-block{background:#0d1117;border-radius:8px;padding:20px;margin:16px 0;overflow-x:auto;border:1px solid var(--border)}
+        .code-block pre{font-family:'Fira Code','Monaco',monospace;font-size:14px;line-height:1.6;color:#c9d1d9}
+        .analogy-box{background:linear-gradient(135deg,rgba(99,102,241,0.1) 0%,rgba(16,185,129,0.1) 100%);border-left:4px solid var(--primary);padding:24px;margin:24px 0;border-radius:0 12px 12px 0}
+        .analogy-title{font-size:1.2rem;font-weight:600;margin-bottom:12px;color:var(--accent)}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+        .flow-step{animation:pulse 2s infinite}
+        .flow-step:nth-child(2){animation-delay:0.2s}
+        .flow-step:nth-child(3){animation-delay:0.4s}
+        .flow-step:nth-child(4){animation-delay:0.6s}
+        .flow-step:nth-child(5){animation-delay:0.8s}
+        .emoji-big{font-size:3rem;text-align:center;margin:20px 0}
+        .highlight{background:linear-gradient(90deg,var(--primary) 0%,var(--secondary) 100%);padding:2px 8px;border-radius:4px;color:#fff}
+        .warning-box{background:rgba(245,158,11,0.1);border:1px solid var(--accent);border-radius:12px;padding:20px;margin:20px 0}
+        .warning-title{font-weight:600;color:var(--accent);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+        .footer{background:var(--bg-card);padding:40px 0;text-align:center;border-top:1px solid var(--border);margin-top:80px}
+        .mode-indicator{text-align:center;padding:20px;border-radius:12px;cursor:pointer;transition:all 0.3s;flex:1;max-width:300px;border:2px solid transparent}
+        .mode-indicator:hover{transform:scale(1.02)}
+        .mode-indicator.active{transform:scale(1.05);box-shadow:0 10px 30px rgba(0,0,0,0.3)}
+        .mode-indicator h3{font-size:1.3rem;margin-bottom:8px}
+        .mode-indicator p{color:var(--text-secondary);font-size:14px}
+        .timeline{position:relative;padding-left:40px}
+        .timeline::before{content:'';position:absolute;left:15px;top:0;bottom:0;width:2px;background:var(--border)}
+        .timeline-item{position:relative;margin-bottom:30px}
+        .timeline-item::before{content:'';position:absolute;left:-33px;top:5px;width:12px;height:12px;border-radius:50%;background:var(--primary);border:3px solid var(--bg-dark)}
+        .timeline-content{padding:20px;background:var(--bg-card);border-radius:12px;border:1px solid var(--border)}
+        .timeline-title{font-weight:600;margin-bottom:8px}
+        .timeline-desc{color:var(--text-secondary);font-size:14px}
+        @media(max-width:768px){.header h1{font-size:2rem}.section-title{font-size:1.6rem}.grid-2,.grid-3{grid-template-columns:1fr}.diagram-row{flex-direction:column}.diagram-arrow{transform:rotate(90deg)}}
+        ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-track{background:var(--bg-dark)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+const {useState}=React;
+
+const Header=()=>(
+    <header className="header">
+        <div className="header-content container">
+            <span className="badge">📚 完整指南 · 图文并茂</span>
+            <h1>LangChain RAG 架构完全指南</h1>
+            <p>从零开始理解检索增强生成架构 · 专业视角 + 通俗解读</p>
+        </div>
+    </header>
+);
+
+const Navigation=({activeSection,setActiveSection})=>{
+    const sections=[
+        {id:'overview',label:'📖 概览'},
+        {id:'what-is-rag',label:'🤔 什么是RAG'},
+        {id:'langchain',label:'🧩 LangChain'},
+        {id:'rag-modes',label:'🔄 RAG模式'},
+        {id:'langgraph',label:'🛤️ LangGraph'},
+        {id:'multi-agent',label:'👥 Multi-Agent'},
+        {id:'memory',label:'🧠 Memory'},
+        {id:'integration',label:'🔗 整合策略'},
+        {id:'summary',label:'📝 总结'}
+    ];
+    return(
+        <nav className="nav-container">
+            <div className="nav-tabs container">
+                {sections.map(s=>(
+                    <button key={s.id} className={`nav-tab ${activeSection===s.id?'active':''}`} onClick={()=>setActiveSection(s.id)}>{s.label}</button>
+                ))}
+            </div>
+        </nav>
+    );
+};
+
+const OverviewSection=()=>(
+    <section id="overview" className="section">
+        <h2 className="section-title"><span className="section-number">0</span>概览</h2>
+        <div className="analogy-box">
+            <div className="analogy-title">🎯 这份指南要告诉你什么？</div>
+            <p>想象你是<strong>指挥官</strong>，要带领AI打一场"知识战"！</p>
+            <ul style={{marginLeft:'20px',marginTop:'12px'}}>
+                <li>如何让AI学会<span className="highlight">"查资料"</span>（RAG）</li>
+                <li>如何用<span className="highlight">"乐高积木"</span>搭AI应用（LangChain）</li>
+                <li>如何画<span className="highlight">"流程图"</span>让AI按规矩干活（LangGraph）</li>
+                <li>如何指挥<span className="highlight">"一群AI小弟"</span>协同作战（Multi-Agent）</li>
+                <li>如何让AI<span className="highlight">"记住重要的事"</span>（Memory）</li>
+            </ul>
+        </div>
+        <div className="emoji-big">🎓 → 🧠 → 🛠️ → 🚂 → 👥 → 💾</div>
+        <div className="grid-2">
+            <div className="card" style={{borderLeft:'4px solid #6366f1'}}>
+                <div className="card-title"><span className="card-icon" style={{background:'#6366f1'}}>👨‍💻</span>专业视角</div>
+                <p style={{color:'var(--text-secondary)'}}>面向技术人员，包含完整的架构图、代码示例、技术选型建议。</p>
+            </div>
+            <div className="card" style={{borderLeft:'4px solid #ef4444'}}>
+                <div className="card-title"><span className="card-icon" style={{background:'#ef4444'}}>👴</span>通俗解读</div>
+                <p style={{color:'var(--text-secondary)'}}>用"街头王大爷都能听懂"的大白话解释概念。</p>
+            </div>
+        </div>
+        <div className="diagram">
+            <h3 style={{textAlign:'center',marginBottom:'24px'}}>🗺️ LangChain RAG 学习路径</h3>
+            <div className="diagram-row">
+                <div className="diagram-box box-input flow-step">🤔 RAG</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-process flow-step">🧩 组件</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-tool flow-step">🔄 模式</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-agent flow-step">🛤️ 图</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-output flow-step">📚 整合</div>
+            </div>
+        </div>
+    </section>
+);
+
+const WhatIsRAGSection=()=>(
+    <section id="what-is-rag" className="section">
+        <h2 className="section-title"><span className="section-number">1</span>什么是 RAG？</h2>
+        <div className="emoji-big">🤖 ❓ 📚</div>
+        <div className="card">
+            <div className="card-title"><span className="card-icon" style={{background:'#22c55e'}}>🤖</span>AI 的两个固有问题</div>
+            <div className="grid-2" style={{marginTop:'16px'}}>
+                <div style={{padding:'16px',background:'rgba(239,68,68,0.1)',borderRadius:'8px'}}>
+                    <h4 style={{color:'#ef4444',marginBottom:'8px'}}>❌ 记性有截止日期</h4>
+                    <p style={{color:'var(--text-secondary)',fontSize:'14px'}}>AI 学的东西都有"保质期"，训练完成后的事它就不知道了。</p>
+                </div>
+                <div style={{padding:'16px',background:'rgba(245,158,11,0.1)',borderRadius:'8px'}}>
+                    <h4 style={{color:'#f59e0b',marginBottom:'8px'}}>❌ 脑子装不下太多</h4>
+                    <p style={{color:'var(--text-secondary)',fontSize:'14px'}}>AI 一次能处理的内容有限，让它看一整个图书馆的书？它脑子会炸！</p>
+                </div>
+            </div>
+        </div>
+        <div className="analogy-box">
+            <div className="analogy-title">💡 RAG = 检索增强的说话能力</div>
+            <p><strong>以前</strong>：AI 说话就像闭眼老中医，全凭记忆</p>
+            <p style={{marginTop:'8px'}}><strong>有了RAG</strong>：AI 就像有了百度搜索+图书馆外挂的老中医，不知道的现查！</p>
+        </div>
+        <div className="grid-2">
+            <div className="card">
+                <div className="card-title"><span className="card-icon" style={{background:'#ef4444'}}>🚫</span>没 RAG 的时候</div>
+                <div className="code-block" style={{margin:0}}><pre>{`问: "咱们小区维修基金..."
+答: "抱歉，我不知道。"`}</pre></div>
+            </div>
+            <div className="card">
+                <div className="card-title"><span className="card-icon" style={{background:'#22c55e'}}>✅</span>有 RAG 的时候</div>
+                <div className="code-block" style={{margin:0}}><pre>{`问: "咱们小区维修基金..."
+AI: "等等，我查查..."
+AI: "根据5月3号会议记录..."`}</pre></div>
+            </div>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🔬 RAG 工作原理</h3>
+        <div className="diagram">
+            <div className="diagram-row" style={{flexDirection:'column',gap:'20px'}}>
+                <div className="diagram-row">
+                    <div className="diagram-box box-input">👤 你提问</div>
+                    <span className="diagram-arrow">→</span>
+                    <div className="diagram-box box-process">🔍 检索</div>
+                    <span className="diagram-arrow">→</span>
+                    <div className="diagram-box box-tool">📄 找到文档</div>
+                </div>
+                <div className="diagram-row">
+                    <div className="diagram-box box-tool">📄 文档喂给AI</div>
+                    <span className="diagram-arrow">→</span>
+                    <div className="diagram-box box-agent">🧠 AI理解</div>
+                    <span className="diagram-arrow">→</span>
+                    <div className="diagram-box box-output">💬 生成答案</div>
+                </div>
+            </div>
+        </div>
+    </section>
+);
+
+const LangChainSection=()=>(
+    <section id="langchain" className="section">
+        <h2 className="section-title"><span className="section-number">2</span>LangChain 核心组件</h2>
+        <div className="emoji-big">🧱</div>
+        <div className="analogy-box">
+            <div className="analogy-title">🧱 LangChain = AI 应用的乐高积木盒</div>
+            <p>你想搭个AI房子？有现成的墙、门、窗户！不用从砖头开始垒，直接拼积木就行！</p>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🧩 核心积木一览</h3>
+        <div className="grid-3">
+            {[
+                {icon:'📥',name:'Document Loaders',desc:'资料收集器 - 从PDF、网站、Word读文字',color:'#22c55e'},
+                {icon:'🔪',name:'Text Splitters',desc:'切菜刀 - 把大段文字切成小块',color:'#f59e0b'},
+                {icon:'🌐',name:'Embedding',desc:'翻译官 - 文字转AI看得懂的数字',color:'#6366f1'},
+                {icon:'📚',name:'Vector Stores',desc:'图书馆书架 - 存放翻译好的数字',color:'#8b5cf6'},
+                {icon:'🔎',name:'Retrievers',desc:'图书管理员 - 根据问题找资料',color:'#ec4899'},
+                {icon:'💬',name:'Chat Models',desc:'说话的人 - AI组织语言回答',color:'#06b6d4'},
+                {icon:'🧰',name:'Tools',desc:'工具箱 - 让AI能调用外部功能',color:'#14b8a6'},
+                {icon:'🎖️',name:'Agents',desc:'指挥官 - 决定啥时候干啥事儿',color:'#f97316'},
+                {icon:'🧠',name:'Memory',desc:'记性 - 记住之前的对话',color:'#a855f7'}
+            ].map((item,i)=>(
+                <div key={i} className="card">
+                    <div className="card-title"><span style={{fontSize:'1.5rem',marginRight:'8px'}}>{item.icon}</span>{item.name}</div>
+                    <p style={{color:'var(--text-secondary)',fontSize:'14px'}}>{item.desc}</p>
+                </div>
+            ))}
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🔗 组件协作流程</h3>
+        <div className="diagram">
+            <pre style={{fontFamily:'monospace',fontSize:'13px',lineHeight:'1.8'}}>{`
+┌─────────────────────────────────────────────────┐
+│         LangChain 组件协作流程                    │
+├─────────────────────────────────────────────────┤
+│  📥 输入: Text → Loaders → Splitters → Docs    │
+│  🔢 存储: Docs → Embedding → Vectors → Store    │
+│  🔍 检索: Query → Embed → Retrieve → Context    │
+│  🤖 生成: LLM + Tools + Context → Response     │
+└─────────────────────────────────────────────────┘`}</pre>
+        </div>
+        <div className="card" style={{background:'linear-gradient(135deg,#1a1a2e,#0f172a)'}}>
+            <div className="card-title"><span className="card-icon" style={{background:'#6366f1'}}>💻</span>代码示例：5分钟搭建 RAG</div>
+            <div className="code-block"><pre>{`# 1. 加载文档
+loader = WebBaseLoader("https://example.com")
+docs = loader.load()
+
+# 2. 切分文本
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
+splits = splitter.split_documents(docs)
+
+# 3. 存入向量数据库
+vectorstore = Chroma.from_documents(splits, embeddings)
+
+# 4. 创建检索器
+retriever = vectorstore.as_retriever()
+
+# 5. 拼上 LLM 完成 RAG！
+rag_chain = retriever | ChatOpenAI()
+response = rag_chain.invoke("你的问题")`}</pre></div>
+        </div>
+    </section>
+);
+
+const RAGModesSection=()=>{
+    const [activeMode,setActiveMode]=useState('2step');
+    return(
+        <section id="rag-modes" className="section">
+            <h2 className="section-title"><span className="section-number">3</span>RAG 的三种模式</h2>
+            <div style={{display:'flex',gap:'8px',marginBottom:'24px',flexWrap:'wrap',justifyContent:'center'}}>
+                <div className={`mode-indicator ${activeMode==='2step'?'active':''}`} onClick={()=>setActiveMode('2step')} style={{borderColor:activeMode==='2step'?'#22c55e':'#475569'}}>
+                    <h3>⚡ 2-Step RAG</h3>
+                    <p>简单粗暴型</p>
+                    <span className="tag tag-fast" style={{marginTop:'12px'}}>适合 FAQ</span>
+                </div>
+                <div className={`mode-indicator ${activeMode==='agentic'?'active':''}`} onClick={()=>setActiveMode('agentic')} style={{borderColor:activeMode==='agentic'?'#8b5cf6':'#475569'}}>
+                    <h3>🧠 Agentic RAG</h3>
+                    <p>聪明灵活型</p>
+                    <span className="tag tag-variable" style={{marginTop:'12px'}}>适合复杂推理</span>
+                </div>
+                <div className={`mode-indicator ${activeMode==='hybrid'?'active':''}`} onClick={()=>setActiveMode('hybrid')} style={{borderColor:activeMode==='hybrid'?'#f59e0b':'#475569'}}>
+                    <h3>⚖️ Hybrid RAG</h3>
+                    <p>双管齐下型</p>
+                    <span className="tag tag-medium" style={{marginTop:'12px'}}>适合生产环境</span>
+                </div>
+            </div>
+            {activeMode==='2step'&&(
+                <div className="card" style={{borderLeft:'4px solid #22c55e'}}>
+                    <div className="card-title"><span className="card-icon" style={{background:'#22c55e'}}>⚡</span>2-Step RAG：先检索，再生成</div>
+                    <p style={{color:'var(--text-secondary)',marginBottom:'20px'}}>就像去医院挂号：护士问诊（检索）→ 医生看病（生成）。简单直接！</p>
+                    <div className="diagram"><div className="diagram-row">
+                        <div className="diagram-box box-input">❓</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-process">🔍 检索</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-agent">💬 生成</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-output">✅</div>
+                    </div></div>
+                    <div className="grid-2" style={{marginTop:'20px'}}>
+                        <div style={{padding:'12px',background:'rgba(34,197,94,0.1)',borderRadius:'8px'}}><h4 style={{color:'#22c55e'}}>✅ 优点</h4><ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}><li>简单，速度快</li><li>行为可预测</li><li>成本低</li></ul></div>
+                        <div style={{padding:'12px',background:'rgba(239,68,68,0.1)',borderRadius:'8px'}}><h4 style={{color:'#ef4444'}}>❌ 缺点</h4><ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}><li>无法处理复杂问题</li><li>不会反问确认</li><li>一次检索不够就完蛋</li></ul></div>
+                    </div>
+                </div>
+            )}
+            {activeMode==='agentic'&&(
+                <div className="card" style={{borderLeft:'4px solid #8b5cf6'}}>
+                    <div className="card-title"><span className="card-icon" style={{background:'#8b5cf6'}}>🧠</span>Agentic RAG：AI 自己决定何时检索</div>
+                    <p style={{color:'var(--text-secondary)',marginBottom:'20px'}}>就像老中医：望闻问切 → 思考 → 再查 → 再想 → 确诊。</p>
+                    <div className="diagram">
+                        <pre style={{fontFamily:'monospace',fontSize:'12px',lineHeight:'1.8'}}>{`┌─────────────────────────────────────┐
+│        Agentic RAG 流程            │
+├─────────────────────────────────────┤
+│  👤 → 🧠 要不要查资料？             │
+│       ├─ YES → 🔍 → 够了吗？       │
+│       │          ├─ NO → 再检      │
+│       │          └─ YES → 💬       │
+│       └─ NO → 💬 直接回答          │
+└─────────────────────────────────────┘`}</pre>
+                    </div>
+                    <div className="grid-2" style={{marginTop:'20px'}}>
+                        <div style={{padding:'12px',background:'rgba(34,197,94,0.1)',borderRadius:'8px'}}><h4 style={{color:'#22c55e'}}>✅ 优点</h4><ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}><li>能处理复杂问题</li><li>动态决定检索策略</li><li>多轮迭代直到满意</li></ul></div>
+                        <div style={{padding:'12px',background:'rgba(239,68,68,0.1)',borderRadius:'8px'}}><h4 style={{color:'#ef4444'}}>❌ 缺点</h4><ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}><li>速度慢</li><li>成本高</li><li>可能跑偏</li></ul></div>
+                    </div>
+                </div>
+            )}
+            {activeMode==='hybrid'&&(
+                <div className="card" style={{borderLeft:'4px solid #f59e0b'}}>
+                    <div className="card-title"><span className="card-icon" style={{background:'#f59e0b'}}>⚖️</span>Hybrid RAG：速度+质量+验证</div>
+                    <p style={{color:'var(--text-secondary)',marginBottom:'20px'}}>结合两者优点，加上一层验证机制。适合生产环境！</p>
+                    <div className="diagram"><div className="diagram-row">
+                        <div className="diagram-box box-input">❓</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-process">⚡快检</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-tool">🔄推理</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-decision">✓验证</div><span className="diagram-arrow">→</span>
+                        <div className="diagram-box box-output">✅</div>
+                    </div></div>
+                </div>
+            )}
+            <h3 style={{marginTop:'40px',marginBottom:'20px'}}>📊 三种模式对比</h3>
+            <table className="comparison-table">
+                <thead><tr><th>维度</th><th>2-Step RAG</th><th>Agentic RAG</th><th>Hybrid RAG</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>速度</strong></td><td><span className="tag tag-fast">⚡ 快</span></td><td><span className="tag tag-variable">⏳ 可变</span></td><td><span className="tag tag-medium">⏳ 中</span></td></tr>
+                    <tr><td><strong>复杂度</strong></td><td><span className="tag tag-low">低</span></td><td><span className="tag tag-medium">中</span></td><td><span className="tag tag-high">高</span></td></tr>
+                    <tr><td><strong>灵活性</strong></td><td><span className="tag tag-low">低</span></td><td><span className="tag tag-high">高</span></td><td><span className="tag tag-medium">中</span></td></tr>
+                    <tr><td><strong>成本</strong></td><td><span className="tag tag-low">低</span></td><td><span className="tag tag-high">高</span></td><td><span className="tag tag-medium">中</span></td></tr>
+                    <tr><td><strong>适用</strong></td><td>FAQ</td><td>复杂推理</td><td>生产环境</td></tr>
+                </tbody>
+            </table>
+        </section>
+    );
+};
+
+const LangGraphSection=()=>(
+    <section id="langgraph" className="section">
+        <h2 className="section-title"><span className="section-number">4</span>LangGraph 工作流引擎</h2>
+        <div className="emoji-big">🛤️</div>
+        <div className="analogy-box">
+            <div className="analogy-title">🛤️ LangGraph = AI 的轨道交通图</div>
+            <p><strong>站点（Nodes）</strong>：每个站就是一个工作步骤</p>
+            <p><strong>轨道（Edges）</strong>：连接各站的路</p>
+            <p><strong>岔道口（Conditional）</strong>：遇到岔路该往哪儿拐</p>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🚇 AI 地铁线路图</h3>
+        <div className="diagram">
+            <pre style={{fontFamily:'monospace',fontSize:'12px',lineHeight:'1.8'}}>{`
+┌─────────────────────────────────────────────────┐
+│           RAG Agent 地铁路线                       │
+├─────────────────────────────────────────────────┤
+│  起点 → 理解问题 ─┬──→ 岔道口:要不要查？          │
+│                  │       │                       │
+│                  │       ├─ YES → 查资料         │
+│                  │       │      → 够了吗？        │
+│                  │       │         ├─ NO → 再想想 │
+│                  │       │         └─ YES → 生成  │
+│                  │       │                       │
+│                  │       └─ NO → 直接回答         │
+│                  ↓                                │
+│                终点(回答)                          │
+└─────────────────────────────────────────────────┘`}</pre>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>📦 状态（State）设计</h3>
+        <div className="card">
+            <div className="card-title"><span className="card-icon" style={{background:'#6366f1'}}>📦</span>RAG Agent 状态 = 看病时的病历本</div>
+            <div className="grid-2" style={{marginTop:'16px'}}>
+                <div>
+                    <h4 style={{marginBottom:'12px'}}>状态字段</h4>
+                    <ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}>
+                        <li><code>query</code> - 用户问题</li>
+                        <li><code>intent</code> - 意图分类</li>
+                        <li><code>retrieved_docs</code> - 检索到的文档</li>
+                        <li><code>answer</code> - 最终答案</li>
+                        <li><code>iterations</code> - 迭代次数</li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 style={{marginBottom:'12px'}}>类比</h4>
+                    <ul style={{color:'var(--text-secondary)',fontSize:'14px',marginLeft:'16px'}}>
+                        <li>就像病历本记录看病过程</li>
+                        <li>方便回溯和纠错</li>
+                        <li>支持从存档点恢复</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>💾 持久化（Checkpoint）= 游戏存档</h3>
+        <div className="card">
+            <div className="card-title"><span className="card-icon" style={{background:'#f59e0b'}}>💾</span>为什么需要保存快照？</div>
+            <p style={{color:'var(--text-secondary)',marginBottom:'16px'}}>就像游戏存档！AI 干活干到一半，突然断了？没关系，从上次存档的地方继续！</p>
+            <div className="diagram"><div className="diagram-row">
+                <div className="diagram-box box-input flow-step">第1步</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-process flow-step">第2步</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-tool flow-step">第3步</div>
+                <span className="diagram-arrow">→</span>
+                <div className="diagram-box box-output flow-step">完成</div>
+            </div></div>
+        </div>
+        <div className="card" style={{background:'linear-gradient(135deg,#1a1a2e,#0f172a)'}}>
+            <div className="card-title"><span className="card-icon" style={{background:'#8b5cf6'}}>💻</span>代码示例</div>
+            <div className="code-block"><pre>{`from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
+
+class RAGState(TypedDict):
+    query: str
+    intent: str | None
+    retrieved_docs: list[str]
+    answer: str | None
+
+def classify(state): intent = llm.invoke(f"判断: {state['query']}"); return {"intent": intent}
+def retrieve(state): docs = retriever.invoke(state["query"]); return {"retrieved_docs": docs}
+def generate(state): answer = llm.invoke(f"Q: {state['query']}\\nDocs: {state['retrieved_docs']}"); return {"answer": answer}
+
+graph = (StateGraph(RAGState)
+    .add_node("classify", classify)
+    .add_node("retrieve", retrieve)
+    .add_node("generate", generate)
+    .add_edge(START, "classify")
+    .add_edge("classify", "retrieve")
+    .add_edge("retrieve", "generate")
+    .add_edge("generate", END)
+    .compile())`}</pre></div>
+        </div>
+    </section>
+);
+
+const MultiAgentSection=()=>(
+    <section id="multi-agent" className="section">
+        <h2 className="section-title"><span className="section-number">5</span>Multi-Agent 多智能体系统</h2>
+        <div className="emoji-big">👥</div>
+        <div className="analogy-box">
+            <div className="analogy-title">👥 Multi-Agent = 一个领导带一群小弟</div>
+            <p><strong>以前</strong>：一个人干活，又要看、又要想、又要说、又要查，累死了！</p>
+            <p style={{marginTop:'8px'}}><strong>现在</strong>：领导分活儿，有人专门查资料，有人专门写回答，有人专门检查。</p>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🎯 四种带队模式</h3>
+        <div className="grid-2">
+            <div className="card" style={{borderTop:'4px solid #22c55e'}}>
+                <div className="card-title"><span style={{fontSize:'1.5rem',marginRight:'8px'}}>📦</span>Subagents 模式</div>
+                <p style={{color:'var(--text-secondary)',marginBottom:'12px'}}><strong>包工头模式</strong>：领导把活儿分包给各个小弟</p>
+                <div style={{padding:'12px',background:'rgba(34,197,94,0.1)',borderRadius:'8px',fontSize:'14px'}}>
+                    <strong>适合</strong>：需要并行执行、分布式开发
+                </div>
+            </div>
+            <div className="card" style={{borderTop:'4px solid #8b5cf6'}}>
+                <div className="card-title"><span style={{fontSize:'1.5rem',marginRight:'8px'}}>🔄</span>Handoffs 模式</div>
+                <p style={{color:'var(--text-secondary)',marginBottom:'12px'}}><strong>流水线模式</strong>：小弟干完交给下一个</p>
+                <div style={{padding:'12px',background:'rgba(139,92,246,0.1)',borderRadius:'8px',fontSize:'14px'}}>
+                    <strong>适合</strong>：多轮对话、状态保持
+                </div>
+            </div>
+            <div className="card" style={{borderTop:'4px solid #f59e0b'}}>
+                <div className="card-title"><span style={{fontSize:'1.5rem',marginRight:'8px'}}>🎓</span>Skills 模式</div>
+                <p style={{color:'var(--text-secondary)',marginBottom:'12px'}}><strong>专家会诊模式</strong>：临时叫有特长的人来帮忙</p>
+                <div style={{padding:'12px',background:'rgba(245,158,11,0.1)',borderRadius:'8px',fontSize:'14px'}}>
+                    <strong>适合</strong>：上下文累积、技能复用
+                </div>
+            </div>
+            <div className="card" style={{borderTop:'4px solid #ec4899'}}>
+                <div className="card-title"><span style={{fontSize:'1.5rem',marginRight:'8px'}}>🚦</span>Router 模式</div>
+                <p style={{color:'var(--text-secondary)',marginBottom:'12px'}}><strong>挂号台模式</strong>：进门先分流，你该找谁找谁</p>
+                <div style={{padding:'12px',background:'rgba(236,72,153,0.1)',borderRadius:'8px',fontSize:'14px'}}>
+                    <strong>适合</strong>：多源并行查询、统一入口
+                </div>
+            </div>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>📊 模式对比</h3>
+        <table className="comparison-table">
+            <thead><tr><th>模式</th><th>并行执行</th><th>状态保持</th><th>开发复杂度</th><th>适合场景</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Subagents</strong></td><td><span className="tag tag-high">✅ 高</span></td><td><span className="tag tag-low">❌ 无</span></td><td><span className="tag tag-medium">中</span></td><td>分布式开发</td></tr>
+                <tr><td><strong>Handoffs</strong></td><td><span className="tag tag-low">❌ 低</span></td><td><span className="tag tag-high">✅ 高</span></td><td><span className="tag tag-medium">中</span></td><td>多轮对话</td></tr>
+                <tr><td><strong>Skills</strong></td><td><span className="tag tag-medium">中</span></td><td><span className="tag tag-high">✅ 高</span></td><td><span className="tag tag-low">低</span></td><td>上下文累积</td></tr>
+                <tr><td><strong>Router</strong></td><td><span className="tag tag-high">✅ 高</span></td><td><span className="tag tag-low">❌ 无</span></td><td><span className="tag tag-medium">中</span></td><td>多源查询</td></tr>
+            </tbody>
+        </table>
+    </section>
+);
+
+const MemorySection=()=>(
+    <section id="memory" className="section">
+        <h2 className="section-title"><span className="section-number">6</span>Memory 记忆管理</h2>
+        <div className="emoji-big">🧠</div>
+        <div className="analogy-box">
+            <div className="analogy-title">🧠 AI 的两种记性</div>
+            <p><strong>短期记忆</strong>：就像咱们聊天时，你刚说完"我昨天去钓鱼了"，我能接上话，但聊完就忘</p>
+            <p style={{marginTop:'8px'}}><strong>长期记忆</strong>：就像老交情，我知道你爱吃啥、忌讳啥，这个不会忘</p>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>📊 人类记忆类型映射</h3>
+        <div className="card">
+            <table className="comparison-table" style={{margin:0}}>
+                <thead><tr><th>记忆类型</th><th>存储内容</th><th>Agent应用</th><th>实现方式</th></tr></thead>
+                <tbody>
+                    <tr><td><strong>语义记忆</strong></td><td>事实</td><td>用户Profile、偏好</td><td>Profile 或 Collection</td></tr>
+                    <tr><td><strong>情景记忆</strong></td><td>经历</td><td>Few-shot examples</td><td>Few-shot prompt</td></tr>
+                    <tr><td><strong>程序记忆</strong></td><td>规则/技能</td><td>Agent Prompt</td><td>工具定义</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>⏰ 何时更新记忆？</h3>
+        <div className="grid-2">
+            <div className="card" style={{borderLeft:'4px solid #22c55e'}}>
+                <div className="card-title"><span className="card-icon" style={{background:'#22c55e'}}>⚡</span>Hot path（实时）</div>
+                <p style={{color:'var(--text-secondary)'}}>看完病当场告诉你"以后少吃肉"，当场就记住。</p>
+                <div style={{marginTop:'12px',padding:'12px',background:'rgba(34,197,94,0.1)',borderRadius:'8px'}}>
+                    <strong>优点</strong>：实时、即时可用<br/>
+                    <strong>缺点</strong>：增加延迟
+                </div>
+            </div>
+            <div className="card" style={{borderLeft:'4px solid #8b5cf6'}}>
+                <div className="card-title"><span className="card-icon" style={{background:'#8b5cf6'}}>🔄</span>Background（后台）</div>
+                <p style={{color:'var(--text-secondary)'}}>护士把病例整理好，晚上录入系统，不耽误你看病。</p>
+                <div style={{marginTop:'12px',padding:'12px',background:'rgba(139,92,246,0.1)',borderRadius:'8px'}}>
+                    <strong>优点</strong>：不阻塞主流程<br/>
+                    <strong>缺点</strong>：可能不同步
+                </div>
+            </div>
+        </div>
+    </section>
+);
+
+const IntegrationSection=()=>(
+    <section id="integration" className="section">
+        <h2 className="section-title"><span className="section-number">7</span>与现有系统整合策略</h2>
+        <div className="emoji-big">🔗</div>
+        <div className="analogy-box">
+            <div className="analogy-title">🎯 咱们现有的四库查询系统</div>
+            <p>咱们有现成的四库查询系统：向量库、关键词库、图谱库、结构化库</p>
+            <p style={{marginTop:'8px'}}><strong>目标</strong>：把这些包装成AI能调用的"工具"，让AI学会用它来回答问题！</p>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🛠️ 整合步骤</h3>
+        <div className="timeline">
+            <div className="timeline-item">
+                <div className="timeline-content">
+                    <div className="timeline-title">Step 1: 封装四库工具</div>
+                    <div className="timeline-desc">把现有的 four_db_tools.py 包装成 LangChain Tools</div>
+                </div>
+            </div>
+            <div className="timeline-item">
+                <div className="timeline-content">
+                    <div className="timeline-title">Step 2: 设计工作流程</div>
+                    <div className="timeline-desc">画一张图，告诉你先查啥、后查啥、啥情况咋办</div>
+                </div>
+            </div>
+            <div className="timeline-item">
+                <div className="timeline-content">
+                    <div className="timeline-title">Step 3: 添加记忆功能</div>
+                    <div className="timeline-desc">让AI记住用户问了啥、查了啥、咋回答的</div>
+                </div>
+            </div>
+            <div className="timeline-item">
+                <div className="timeline-content">
+                    <div className="timeline-title">Step 4: 测试验证</div>
+                    <div className="timeline-desc">确保在各种场景下都能正确工作</div>
+                </div>
+            </div>
+        </div>
+        <h3 style={{marginTop:'40px',marginBottom:'20px'}}>🏗️ RAG Agent 工作流程</h3>
+        <div className="diagram">
+            <pre style={{fontFamily:'monospace',fontSize:'12px',lineHeight:'1.8'}}>{`
+┌──────────────────────────────────────────────────┐
+│              RAG Agent 工作流程                    │
+├──────────────────────────────────────────────────┤
+│  👤 你问: "啥是维修基金？"                        │
+│      ↓                                           │
+│  🧠 AI 想想: 这是要查资料吗？                     │
+│      ↓ 是                                        │
+│  🔍 开四个工具一起查:                             │
+│  ├─ 向量库: 语义相关内容                          │
+│  ├─ 关键词库: 包含"维修基金"的                    │
+│  ├─ 图谱库: 和"维修基金"有关系的                  │
+│  └─ 结构化库: 表格里有关这项的                    │
+│      ↓                                           │
+│  🔀 合并去重排序                                  │
+│      ↓                                           │
+│  ✅ 够了吗？ ─ NO ─→ 重新组织问题再查             │
+│      ↓ YES                                       │
+│  💬 AI 组织语言回答你                             │
+│      ↓                                           │
+│  📝 记住这次对话                                  │
+└──────────────────────────────────────────────────┘`}</pre>
+        </div>
+    </section>
+);
+
+const SummarySection=()=>(
+    <section id="summary" className="section">
+        <h2 className="section-title"><span className="section-number">8</span>总结</h2>
+        <div className="emoji-big">📝</div>
+        <div className="grid-3">
+            <div className="card" style={{textAlign:'center'}}>
+                <div style={{fontSize:'3rem'}}>🤖</div>
+                <h3 style={{margin:'16px 0'}}>RAG = AI 查资料</h3>
+                <p style={{color:'var(--text-secondary)'}}>不用啥都知道，现查就行！</p>
+            </div>
+            <div className="card" style={{textAlign:'center'}}>
+                <div style={{fontSize:'3rem'}}>🛤️</div>
+                <h3 style={{margin:'16px 0'}}>LangGraph = AI 工作流</h3>
+                <p style={{color:'var(--text-secondary)'}}>画个流程图，让AI按步骤来！</p>
+            </div>
+            <div className="card" style={{textAlign:'center'}}>
+                <div style={{fontSize:'3rem'}}>🧠</div>
+                <h3 style={{margin:'16px 0'}}>Memory = AI 记性</h3>
+                <p style={{color:'var(--text-secondary)'}}>短期记聊天，长期记偏好！</p>
+            </div>
+        </div>
+        <div className="analogy-box" style={{marginTop:'40px'}}>
+            <div className="analogy-title">🎯 下一步</div>
+            <p>封装四库工具 → 设计工作流程 → 添加记忆 → 测试验证</p>
+        </div>
+        <div className="warning-box" style={{marginTop:'24px'}}>
+            <div className="warning-title">⚠️ 记住三句话</div>
+            <p style={{marginTop:'8px'}}><strong>1.</strong> RAG = AI 查资料：不用啥都靠死记硬背</p>
+            <p><strong>2.</strong> LangGraph = AI 工作流：画流程图让AI按规矩干活</p>
+            <p><strong>3.</strong> Memory = AI 记性：短期记聊天，长期记偏好</p>
+        </div>
+    </section>
+);
+
+const Footer=()=>(
+    <footer className="footer">
+        <div className="container">
+            <p>LangChain RAG 架构完全指南 · 生成时间: {new Date().toLocaleDateString('zh-CN')}</p>
+            <p style={{marginTop:'8px'}}>🎓 → 🧠 → 🛠️ → 🚂 → 👥 → 💾</p>
+        </div>
+    </footer>
+);
+
+const App=()=>{
+    const [activeSection,setActiveSection]=useState('overview');
+    useEffect(()=>{
+        const observer=new IntersectionObserver(
+            entries=>{
+                entries.forEach(entry=>{
+                    if(entry.isIntersecting)setActiveSection(entry.target.id);
+                });
+            },
+            {threshold:0.3}
+        );
+        document.querySelectorAll('section[id]').forEach(s=>observer.observe(s));
+        return()=>observer.disconnect();
+    },[]);
+    return(
+        <div>
+            <Header/>
+            <Navigation activeSection={activeSection} setActiveSection={setActiveSection}/>
+            <main className="main-content">
+                <div className="container">
+                    <OverviewSection/>
+                    <WhatIsRAGSection/>
+                    <LangChainSection/>
+                    <RAGModesSection/>
+                    <LangGraphSection/>
+                    <MultiAgentSection/>
+                    <MemorySection/>
+                    <IntegrationSection/>
+                    <SummarySection/>
+                </div>
+            </main>
+            <Footer/>
+        </div>
+    );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+    </script>
+</body>
+</html>

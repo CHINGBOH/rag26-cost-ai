@@ -1,0 +1,180 @@
+version: '3.8'
+
+services:
+  # PostgreSQL数据库
+  postgres:
+    image: postgres:15
+    container_name: rag-postgres
+    environment:
+      POSTGRES_DB: rag_db
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-network
+
+  # Qdrant向量数据库
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-network
+
+  # Redis缓存
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rag-network
+
+  # Embedding服务
+  embedding-service:
+    build:
+      context: ./src/backend/python-legacy
+      dockerfile: Dockerfile.embedding
+    container_name: rag-embedding
+    ports:
+      - "8001:8000"
+    environment:
+      - MODEL_PATH=/models/bge-m3
+      - QDRANT_URL=http://qdrant:6333
+      - POSTGRES_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - rag-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # Rerank服务
+  rerank-service:
+    build:
+      context: ./src/backend/python-legacy
+      dockerfile: Dockerfile.rerank
+    container_name: rag-rerank
+    ports:
+      - "8002:8000"
+    environment:
+      - MODEL_PATH=/models/bge-reranker-v2-m3
+    volumes:
+      - ./models:/models
+    networks:
+      - rag-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # LLM推理服务
+  llm-service:
+    build:
+      context: ./src/backend/python-legacy
+      dockerfile: Dockerfile.llm
+    container_name: rag-llm
+    ports:
+      - "8003:8000"
+    environment:
+      - MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
+      - DEVICE=cuda
+    volumes:
+      - ./models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G
+    networks:
+      - rag-network
+
+  # Node.js任务编排器
+  node-orchestrator:
+    build:
+      context: ./src/backend/nodejs-orchestrator
+      dockerfile: Dockerfile
+    container_name: rag-orchestrator
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - EMBEDDING_SERVICE=http://embedding-service:8000
+      - RERANK_SERVICE=http://rerank-service:8000
+      - LLM_SERVICE=http://llm-service:8000
+      - DATABASE_SERVICE=postgres:5432
+    depends_on:
+      - redis
+      - embedding-service
+      - rerank-service
+      - llm-service
+    networks:
+      - rag-network
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+
+  # 前端Web服务
+  web-frontend:
+    build:
+      context: ./src/frontend/web
+      dockerfile: Dockerfile
+    container_name: rag-frontend
+    ports:
+      - "80:80"
+    environment:
+      - API_BASE_URL=http://node-orchestrator:3000
+      - WS_BASE_URL=ws://node-orchestrator:3000
+    depends_on:
+      - node-orchestrator
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:

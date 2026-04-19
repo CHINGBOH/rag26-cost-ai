@@ -1,0 +1,51 @@
+# Promptfoo - RAG A/B 测试配置
+# 文档: https://promptfoo.dev/docs
+
+# 测试用例配置
+description: RAG 检索和 Prompt 策略对比测试
+
+# 提示词变体
+prompts:
+  - prompts/retrieval-prompt-v1.txt
+  - prompts/retrieval-prompt-v2.txt
+
+# LLM 提供商
+providers:
+  - id: openai:gpt-4o
+    config:
+      temperature: 0.7
+
+# 测试用例
+tests:
+  - description: 技术问题检索
+    vars:
+      question: 如何优化 Qdrant 的 HNSW 索引参数？
+      ground_truth: 在 Qdrant 中，HNSW 索引可以通过调整 m（连接数）和 ef_construct 来优化
+
+  - description: 多跳查询
+    vars:
+      question: LangChain 和 LangGraph 分别适合什么场景？
+      ground_truth: LangChain 适合简单的链式应用，LangGraph 适合复杂的 Agent 和状态管理场景
+
+  - description: 中文问题
+    vars:
+      question: 什么是检索增强生成？
+      ground_truth: 检索增强生成是将检索和生成结合的方法，先检索相关文档再生成回答
+
+  - description: 边界情况 - 超短问题
+    vars:
+      question: 快
+      ground_truth: 抱歉，我无法理解您的问题，请提供更多上下文
+
+# 测试指标
+metrics:
+  - name: Semantic Similarity
+    type: similarity
+  - name: Context Usage
+    type: llm-rubric
+    value: Does the answer reference the retrieved context?
+
+# 评估设置
+evaluateOptions:
+  cache: true
+  numWorkers: 2

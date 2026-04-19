@@ -1,0 +1,357 @@
+/**
+ * 全局主题变量 - 统一浅色/深色两种风格
+ */
+
+:root {
+  /* 默认深色主题 */
+  --bg-primary: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-elevated: #334155;
+  --bg-hover: #475569;
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-inverse: #0f172a;
+  
+  --border-default: #334155;
+  --border-highlight: #3b82f6;
+  
+  --color-primary: #3b82f6;
+  --color-primary-hover: #60a5fa;
+  --color-primary-light: rgba(59, 130, 246, 0.2);
+  
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #06b6d4;
+  
+  /* ============================================
+     UI 布局变量 - 可由配置动态控制
+     ============================================ */
+  
+  /* 侧边栏 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 60px;
+  --sidebar-transition: 0.3s ease;
+  
+  /* 主内容区 */
+  --content-max-width: 900px;
+  --content-padding-x: 24px;
+  
+  /* 输入区 */
+  --input-min-height: 52px;
+  --input-max-height: 200px;
+  --input-padding-y: 16px;
+  
+  /* 动画时长 */
+  --anim-fast: 0.15s;
+  --anim-normal: 0.2s;
+  --anim-slow: 0.3s;
+  --anim-pulse: 1.5s;
+  
+  /* 消息 */
+  --msg-avatar-size: 40px;
+  --msg-border-radius: 14px;
+  --msg-gap: 24px;
+  
+  /* 欢迎页 */
+  --welcome-title-size: 48px;
+  --welcome-subtitle-size: 18px;
+  
+  /* 控制面板 */
+  --panel-width: 420px;
+  --panel-overlay-opacity: 0.6;
+  --panel-z-index: 1001;
+  
+  /* 输入控件 */
+  --slider-height: 5px;
+  --slider-thumb-size: 17px;
+  --toggle-width: 48px;
+  --toggle-height: 26px;
+  --toggle-thumb-size: 20px;
+  
+  /* 按钮尺寸 */
+  --btn-icon-size: 32px;
+  --btn-icon-size-sm: 20px;
+  --new-chat-icon-size: 18px;
+  --collapse-btn-size: 32px;
+  --send-btn-size: 52px;
+  
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 20px;
+  --spacing-2xl: 24px;
+  --spacing-3xl: 40px;
+  --spacing-4xl: 48px;
+  
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+  --radius-full: 50%;
+  
+  /* 字体大小 */
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 12px;
+  --text-base: 13px;
+  --text-lg: 14px;
+  --text-xl: 15px;
+  --text-2xl: 16px;
+  --text-3xl: 18px;
+  --text-4xl: 20px;
+  --text-5xl: 24px;
+  --text-6xl: 28px;
+  
+  /* Pipeline */
+  --pipeline-progress-height: 2px;
+  --pipeline-query-padding-y: 8px;
+  --pipeline-query-padding-x: 12px;
+  --pipeline-stage-gap: 6px;
+  --pipeline-stage-padding: 6px 10px;
+  
+  /* 网格布局 */
+  --services-grid-min-width: 180px;
+  --services-grid-gap: 12px;
+  --quick-prompts-columns: 3;
+  --quick-prompts-gap: 16px;
+  --provider-grid-columns: 2;
+  --provider-grid-gap: 10px;
+  
+  /* Flex 布局 */
+  --sessions-list-gap: 10px;
+  --capabilities-gap: 40px;
+  --messages-list-gap: 24px;
+  --input-area-gap: 12px;
+  --model-info-row-gap: 12px;
+}
+
+/* 浅色主题 */
+[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-surface: #f8fafc;
+  --bg-elevated: #ffffff;
+  --bg-hover: #f1f5f9;
+  
+  --text-primary: #000000;
+  --text-secondary: #1e293b;
+  --text-muted: #475569;
+  --text-inverse: #ffffff;
+  
+  --border-default: #e2e8f0;
+  --border-highlight: #3b82f6;
+  
+  --color-primary: #3b82f6;
+  --color-primary-hover: #2563eb;
+  --color-primary-light: #dbeafe;
+  
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #06b6d4;
+  
+  /* UI 布局变量 - 浅色主题覆盖 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 60px;
+}
+
+/* ============================================
+   基础样式重置
+   ============================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* 浅色模式下增加文字清晰度和粗细 */
+[data-theme="light"] {
+  text-shadow: 0 0 0.3px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] * {
+  font-weight: 500 !important;
+}
+
+/* 确保所有表单元素继承主题颜色 */
+select, option, input, textarea, button {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+/* option 元素需要单独设置，某些浏览器不会继承 select 的颜色 */
+option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* checkbox 和 radio 使用强调色 */
+input[type="checkbox"], input[type="radio"] {
+  accent-color: var(--color-primary);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* 数字输入框 */
+input[type="number"] {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* 文本输入框 */
+input[type="text"] {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+}
+
+select:focus, input:focus, textarea:focus, button:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* 确保 placeholder 使用正确的颜色 */
+input::placeholder, textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* 禁用状态的表单元素 */
+button:disabled, input:disabled, textarea:disabled, select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ============================================
+   通用组件样式
+   ============================================ */
+
+/* 卡片 */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--border-highlight);
+}
+
+/* 按钮 */
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  color: var(--text-inverse);
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+}
+
+.btn-secondary {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-hover);
+}
+
+/* 输入框 */
+.input {
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+/* 标签 */
+.badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge-primary {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.badge-success {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--color-success);
+}
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--color-warning);
+}
+
+/* 分隔线 */
+.divider {
+  height: 1px;
+  background: var(--border-default);
+  margin: 16px 0;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}

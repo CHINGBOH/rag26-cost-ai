@@ -1,0 +1,28 @@
+{
+  "name": "rag-report-generator",
+  "version": "1.0.0",
+  "description": "LangChain RAG Architecture Report Generator",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && rollup -c",
+    "generate:professional": "tsx src/report-generator.tsx",
+    "generate:folk": "tsx src/folk-report-generator.tsx",
+    "generate:all": "tsx src/generate-all.tsx"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-syntax-highlighter": "^15.5.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^11.1.6",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@types/react-syntax-highlighter": "^15.5.11",
+    "rollup": "^4.9.6",
+    "rollup-plugin-copy": "^3.5.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

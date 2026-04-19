@@ -1,0 +1,46 @@
+# LangFuse - RAG 全链路追踪
+# 可视化 RAG 每个环节的执行
+
+version: '3.8'
+
+services:
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: rag-langfuse
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse_password@langfuse-db:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3001
+      - NEXTAUTH_SECRET=replace-with-your-secret-key-at-least-32-chars
+      - SALT=replace-with-another-salt-key
+    depends_on:
+      - langfuse-db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: rag-langfuse-db
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse_password
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  langfuse-postgres-data:
+    driver: local

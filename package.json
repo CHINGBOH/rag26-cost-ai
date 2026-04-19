@@ -1,0 +1,32 @@
+{
+  "name": "rag-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "src/frontend/*",
+    "src/backend/server",
+    "src/backend/ocr-service"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces",
+    "dev:server": "cd src/backend/python-legacy && python -m uvicorn main:app --reload",
+    "dev:web": "cd src/frontend/web && npm run dev",
+    "dev:ocr": "cd src/backend/ocr-service && python -m uvicorn ocr_service:app --port 8001",
+    "start:all": "./start_all.sh",
+    "test": "npm run test:node && npm run test:python",
+    "test:node": "cd src/backend/server && npm test",
+    "test:python": "cd src/backend/python-legacy && python -m pytest tests/ -v",
+    "test:quick": "./quick_test.sh",
+    "typecheck": "tsc --noEmit --project src/backend/server/tsconfig.json",
+    "install:all": "npm install"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^6.0.0",
+    "ws": "^8.20.0"
+  }
+}

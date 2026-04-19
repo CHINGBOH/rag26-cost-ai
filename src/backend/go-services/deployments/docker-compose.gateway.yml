@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  gateway:
+    build:
+      context: ../src/backend/go-services
+      dockerfile: deployments/Dockerfile.gateway
+    container_name: rag-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DEBUG=false
+    depends_on:
+      - nodejs-backend
+      - python-backend
+      - ocr-service
+    networks:
+      - rag-network

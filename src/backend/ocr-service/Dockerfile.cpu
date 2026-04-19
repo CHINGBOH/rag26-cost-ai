@@ -1,0 +1,39 @@
+# ============================================================
+# PaddleOCR + PPStructure + FastAPI 服务 Dockerfile (CPU版)
+# ============================================================
+
+# 国内用户推荐用百度镜像源
+# FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddle:3.2.0
+FROM paddlepaddle/paddle:3.2.0
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 预下载模型（避免运行时下载）
+# Note: use_gpu parameter is deprecated in newer versions, using device parameter instead
+RUN python -c "from paddleocr import PaddleOCR; \
+    PaddleOCR(use_angle_cls=True, lang='ch', show_log=False); \
+    print('OCR models cached')" && \
+    python -c "from paddleocr import PPStructure; \
+    PPStructure(layout=True, ocr=True, show_log=False, table=True, formula=False); \
+    print('PPStructure models cached')"
+
+RUN mkdir -p /app/ocr_outputs /app/logs
+
+COPY ocr_service.py .
+COPY start.sh .
+RUN chmod +x start.sh
+
+EXPOSE 8001
+CMD ["./start.sh"]
