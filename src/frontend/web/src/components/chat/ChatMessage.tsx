@@ -218,6 +218,14 @@ function renderMarkdown(content: string): React.ReactNode[] {
   while (i < lines.length) {
     const line = lines[i];
 
+    // Headings: ## and ###
+    const h3Match = line.match(/^### (.+)/);
+    const h2Match = line.match(/^## (.+)/);
+    const h1Match = line.match(/^# (.+)/);
+    if (h3Match) { nodes.push(<h3 key={i} className="md-h3">{inlineMarkdown(h3Match[1])}</h3>); i++; continue; }
+    if (h2Match) { nodes.push(<h2 key={i} className="md-h2">{inlineMarkdown(h2Match[1])}</h2>); i++; continue; }
+    if (h1Match) { nodes.push(<h1 key={i} className="md-h1">{inlineMarkdown(h1Match[1])}</h1>); i++; continue; }
+
     // Markdown 表格检测：连续行以 | 开头，第二行含 ---
     if (line.startsWith('|') && lines[i + 1]?.includes('---')) {
       const tableLines: string[] = [];
@@ -241,6 +249,35 @@ function renderMarkdown(content: string): React.ReactNode[] {
           </tbody>
         </table>
       );
+      continue;
+    }
+
+    // Unordered list: lines starting with "- " or "* "
+    if (/^[-*] /.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^[-*] /.test(lines[i])) {
+        items.push(lines[i].replace(/^[-*] /, ''));
+        i++;
+      }
+      nodes.push(<ul key={`ul-${i}`} className="md-ul">{items.map((it, j) => <li key={j}>{inlineMarkdown(it)}</li>)}</ul>);
+      continue;
+    }
+
+    // Ordered list: lines starting with "1. " "2. " etc.
+    if (/^\d+\. /.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\. /.test(lines[i])) {
+        items.push(lines[i].replace(/^\d+\. /, ''));
+        i++;
+      }
+      nodes.push(<ol key={`ol-${i}`} className="md-ol">{items.map((it, j) => <li key={j}>{inlineMarkdown(it)}</li>)}</ol>);
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      nodes.push(<hr key={i} className="md-hr" />);
+      i++;
       continue;
     }
 
