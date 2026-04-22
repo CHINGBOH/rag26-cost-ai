@@ -1,6 +1,8 @@
 /**
  * 代码执行器组件
  * 检测消息中的代码块并支持执行
+ * - JS/TS: 浏览器内沙箱
+ * - Python: 后端 Docker 沙箱 /api/v1/sandbox/execute
  */
 
 import { useState, useCallback } from 'react';
@@ -9,6 +11,7 @@ import { chatFlowConfig } from '../../config';
 import './Chat.css';
 
 const TOOLTIPS = chatFlowConfig.ui.tooltips;
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 interface CodeBlockProps {
   code: string;
@@ -25,29 +28,50 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
   const [result, setResult] = useState<CodeExecutionResult | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
 
-  const isExecutable = language === 'typescript' || language === 'javascript';
+  const isPython = language === 'python' || language === 'py';
+  const isJsTs = language === 'typescript' || language === 'javascript';
+  const isExecutable = isPython || isJsTs;
 
   const executeCode = useCallback(async () => {
     if (!isExecutable) return;
-
     setIsExecuting(true);
-    
     const startTime = Date.now();
-    
     try {
-      // 创建沙箱环境执行代码
-      const sandbox = createSandbox();
-      const executionResult = await sandbox.execute(code);
-      
-      const execResult: CodeExecutionResult = {
-        code,
-        language: language as 'typescript' | 'javascript',
-        status: 'success',
-        result: executionResult,
-        executionTime: Date.now() - startTime,
-        timestamp: Date.now()
-      };
-      
+      let execResult: CodeExecutionResult;
+
+      if (isPython) {
+        // 后端 Docker 沙箱
+        const resp = await fetch(`${API_BASE}/api/v1/sandbox/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        });
+        const data = await resp.json();
+        execResult = {
+          code,
+          language: 'python',
+          status: data.status === 'success' ? 'success' : 'error',
+          result: data.result,
+          output: data.output,
+          error: data.error,
+          executionTime: Date.now() - startTime,
+          timestamp: Date.now(),
+        };
+      } else {
+        // 浏览器内 JS/TS 沙箱
+        const sandbox = createJsSandbox();
+        const sandboxResult = await sandbox.execute(code);
+        execResult = {
+          code,
+          language: language as 'typescript' | 'javascript',
+          status: 'success',
+          result: sandboxResult.result,
+          output: sandboxResult.output,
+          executionTime: Date.now() - startTime,
+          timestamp: Date.now(),
+        };
+      }
+
       setResult(execResult);
       onExecute?.(execResult);
     } catch (error) {
@@ -57,39 +81,31 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
         executionTime: Date.now() - startTime,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       };
-      
       setResult(execResult);
       onExecute?.(execResult);
     } finally {
       setIsExecuting(false);
     }
-  }, [code, language, onExecute]);
+  }, [code, language, isPython, isExecutable, onExecute]);
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(code);
-  };
+  const copyCode = () => navigator.clipboard.writeText(code);
 
   return (
     <div className="code-block-container">
-      {/* 代码块头部 */}
+      {/* 头部 */}
       <div className="code-block-header">
         <div className="header-left">
-          <span className="lang-badge">{language}</span>
-          {result?.status === 'success' && (
-            <span className="exec-badge success">✓ 执行成功</span>
-          )}
-          {result?.status === 'error' && (
-            <span className="exec-badge error">✗ 执行失败</span>
-          )}
+          <span className={`lang-badge ${isPython ? 'python' : ''}`}>{language}</span>
+          {isPython && <span className="sandbox-badge">🐳 Docker沙箱</span>}
+          {result?.status === 'success' && <span className="exec-badge success">✓ 执行成功</span>}
+          {result?.status === 'error' && <span className="exec-badge error">✗ 执行失败</span>}
         </div>
         <div className="header-actions">
-          <button className="action-btn" onClick={copyCode} title={TOOLTIPS.copy}>
-            📋
-          </button>
-          <button 
-            className="action-btn" 
+          <button className="action-btn" onClick={copyCode} title={TOOLTIPS.copy}>📋</button>
+          <button
+            className="action-btn"
             onClick={() => setIsExpanded(!isExpanded)}
             title={isExpanded ? TOOLTIPS.collapse : TOOLTIPS.expand}
           >
@@ -101,28 +117,15 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
       {/* 代码内容 */}
       {isExpanded && (
         <div className="code-content-wrapper">
-          <pre className="code-block">
-            <code>{code}</code>
-          </pre>
-          
-          {/* 执行按钮 */}
+          <pre className="code-block"><code>{code}</code></pre>
+
           {isExecutable && !result && (
             <div className="code-actions">
-              <button 
-                className="execute-btn"
-                onClick={executeCode}
-                disabled={isExecuting}
-              >
+              <button className="execute-btn" onClick={executeCode} disabled={isExecuting}>
                 {isExecuting ? (
-                  <>
-                    <span className="spinner">◐</span>
-                    执行中...
-                  </>
+                  <><span className="spinner">◐</span> 执行中...</>
                 ) : (
-                  <>
-                    <span>▶</span>
-                    运行代码
-                  </>
+                  <><span>▶</span> {isPython ? '在沙箱中运行' : '运行代码'}</>
                 )}
               </button>
             </div>
@@ -137,30 +140,22 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
             <span>执行结果</span>
             <span className="exec-time">{result.executionTime}ms</span>
             {result.status === 'success' && (
-              <button 
-                className="rerun-btn"
-                onClick={executeCode}
-                disabled={isExecuting}
-              >
-                重新运行
-              </button>
+              <button className="rerun-btn" onClick={executeCode} disabled={isExecuting}>重新运行</button>
             )}
           </div>
-          
+
           {result.status === 'success' ? (
             <div className="result-output">
               {result.output && (
                 <div className="output-section">
                   <div className="section-label">输出:</div>
-                  <pre className="output-content">{result.output}</pre>
+                  <SandboxOutput output={result.output} />
                 </div>
               )}
-              {result.result !== undefined && (
+              {result.result !== undefined && result.result !== '' && (
                 <div className="result-section">
                   <div className="section-label">返回值:</div>
-                  <pre className="result-content">
-                    {formatResult(result.result)}
-                  </pre>
+                  <pre className="result-content">{formatResult(result.result)}</pre>
                 </div>
               )}
             </div>
@@ -176,137 +171,104 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
   );
 };
 
-// 创建安全的沙箱环境
-function createSandbox() {
+// 智能输出渲染：检测 Markdown 表格后渲染为 HTML 表格
+const SandboxOutput: React.FC<{ output: string }> = ({ output }) => {
+  const lines = output.trim().split('\n');
+  const isMarkdownTable = lines.length >= 2 && lines[0].startsWith('|') && lines[1].includes('---');
+
+  if (isMarkdownTable) {
+    const headers = lines[0].split('|').map(s => s.trim()).filter(Boolean);
+    const rows = lines.slice(2).filter(l => l.startsWith('|')).map(
+      l => l.split('|').map(s => s.trim()).filter(Boolean)
+    );
+    return (
+      <div className="sandbox-table-wrapper">
+        <table className="sandbox-result-table">
+          <thead>
+            <tr>{headers.map((h, i) => <th key={i} dangerouslySetInnerHTML={{ __html: bold(h) }} />)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} className={ri % 2 === 0 ? 'even' : 'odd'}>
+                {row.map((cell, ci) => <td key={ci} dangerouslySetInnerHTML={{ __html: bold(cell) }} />)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  return <pre className="output-content">{output}</pre>;
+};
+
+function bold(s: string) {
+  return s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
+// 浏览器内 JS/TS 沙箱（保持原有逻辑）
+function createJsSandbox() {
   return {
-    execute: async (code: string): Promise<any> => {
-      // 在安全的上下文中执行代码
+    execute: async (code: string): Promise<{ result: any; output: string }> => {
       const sandbox = {
         console: {
           logs: [] as string[],
           log: (...args: any[]) => {
-            sandbox.console.logs.push(args.map(a => 
+            sandbox.console.logs.push(args.map(a =>
               typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)
             ).join(' '));
           },
           error: (...args: any[]) => {
             sandbox.console.logs.push('ERROR: ' + args.map(a => String(a)).join(' '));
-          }
+          },
         },
-        Math,
-        JSON,
-        Date,
-        Array,
-        Object,
-        String,
-        Number,
-        Boolean,
-        RegExp,
-        Map,
-        Set,
-        Promise,
-        setTimeout: (fn: Function, ms: number) => {
-          // 限制执行时间
-          return setTimeout(fn, Math.min(ms, 5000));
-        },
+        Math, JSON, Date, Array, Object, String, Number, Boolean, RegExp, Map, Set, Promise,
+        setTimeout: (fn: Function, ms: number) => setTimeout(fn, Math.min(ms, 5000)),
         clearTimeout,
       };
-
-      // 创建一个函数来执行代码
-      const fn = new Function(
-        'sandbox',
-        `
-          with(sandbox) {
-            ${code}
-          }
-        `
-      );
-
-      // 执行代码并获取结果
+      const fn = new Function('sandbox', `with(sandbox) { ${code} }`);
       const result = fn(sandbox);
-      
-      // 收集 console 输出
-      const output = sandbox.console.logs.join('\n');
-      
-      return {
-        result,
-        output
-      };
-    }
+      return { result, output: sandbox.console.logs.join('\n') };
+    },
   };
 }
 
-// 格式化结果显示
 function formatResult(result: any): string {
   if (result === null) return 'null';
   if (result === undefined) return 'undefined';
   if (typeof result === 'object') {
-    try {
-      return JSON.stringify(result, null, 2);
-    } catch {
-      return String(result);
-    }
+    try { return JSON.stringify(result, null, 2); } catch { return String(result); }
   }
   return String(result);
 }
 
-// 检测代码块
 export function detectCodeBlocks(content: string): Array<{ code: string; language: string; index: number }> {
   const codeBlocks: Array<{ code: string; language: string; index: number }> = [];
   const regex = /```(\w+)?\n([\s\S]*?)```/g;
   let match;
-  
   while ((match = regex.exec(content)) !== null) {
-    codeBlocks.push({
-      language: match[1] || 'text',
-      code: match[2].trim(),
-      index: match.index
-    });
+    codeBlocks.push({ language: match[1] || 'text', code: match[2].trim(), index: match.index });
   }
-  
   return codeBlocks;
 }
 
-// 检测计算需求
 export function detectCalculationNeed(content: string): boolean {
-  const calculationKeywords = [
-    '计算', '算一下', '等于多少', '结果是', 
-    'calculate', 'compute', 'evaluate',
-    '+', '-', '*', '/', '=', '**', '%'
-  ];
-  
-  return calculationKeywords.some(keyword => 
-    content.toLowerCase().includes(keyword.toLowerCase())
-  );
+  const keywords = ['计算', '算一下', '等于多少', '结果是', 'calculate', 'compute', 'evaluate', '+', '-', '*', '/', '=', '**', '%'];
+  return keywords.some(k => content.toLowerCase().includes(k.toLowerCase()));
 }
 
-// 内联计算器按钮
-export const InlineCalculator: React.FC<{
-  expression: string;
-  onCalculate: (result: string) => void;
-}> = ({ expression, onCalculate }) => {
+export const InlineCalculator: React.FC<{ expression: string; onCalculate: (result: string) => void }> = ({ expression, onCalculate }) => {
   const [isCalculating, setIsCalculating] = useState(false);
-
   const calculate = () => {
     setIsCalculating(true);
     try {
-      // 安全计算
       const result = new Function(`return (${expression})`)();
       onCalculate(String(result));
-    } catch (error) {
-      onCalculate('计算错误');
-    } finally {
-      setIsCalculating(false);
-    }
+    } catch { onCalculate('计算错误'); }
+    finally { setIsCalculating(false); }
   };
-
   return (
-    <button 
-      className="inline-calc-btn"
-      onClick={calculate}
-      disabled={isCalculating}
-      title={TOOLTIPS.calculate}
-    >
+    <button className="inline-calc-btn" onClick={calculate} disabled={isCalculating} title={TOOLTIPS.calculate}>
       {isCalculating ? '◐' : '🧮'}
     </button>
   );

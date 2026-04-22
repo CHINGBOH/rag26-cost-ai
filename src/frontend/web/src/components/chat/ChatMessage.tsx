@@ -204,28 +204,66 @@ function parseReferencesInText(
   return parts.length > 0 ? parts : [{ type: 'text', content: text }];
 }
 
-// Markdown 文本渲染
+// Markdown 文本渲染（支持粗体、斜体、行内代码、表格、换行）
 const MarkdownText: React.FC<{ content: string }> = ({ content }) => {
-  // 简单的 Markdown 处理
-  const formatted = useMemo(() => {
-    return content
-      // 粗体
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      // 斜体
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      // 行内代码
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      // 换行
-      .replace(/\n/g, '<br/>');
-  }, [content]);
-
-  return (
-    <span 
-      className="markdown-text"
-      dangerouslySetInnerHTML={{ __html: formatted }}
-    />
-  );
+  const parts = useMemo(() => renderMarkdown(content), [content]);
+  return <span className="markdown-text">{parts}</span>;
 };
+
+function renderMarkdown(content: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const lines = content.split('\n');
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Markdown 表格检测：连续行以 | 开头，第二行含 ---
+    if (line.startsWith('|') && lines[i + 1]?.includes('---')) {
+      const tableLines: string[] = [];
+      while (i < lines.length && lines[i].startsWith('|')) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      const headers = tableLines[0].split('|').map(s => s.trim()).filter(Boolean);
+      const rows = tableLines.slice(2).map(l => l.split('|').map(s => s.trim()).filter(Boolean));
+      nodes.push(
+        <table key={`tbl-${i}`} className="markdown-table">
+          <thead>
+            <tr>{headers.map((h, j) => <th key={j}>{inlineMarkdown(h)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} className={ri % 2 === 0 ? 'even' : 'odd'}>
+                {row.map((cell, ci) => <td key={ci}>{inlineMarkdown(cell)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+      continue;
+    }
+
+    // 普通行
+    nodes.push(<span key={i}>{inlineMarkdown(line)}<br /></span>);
+    i++;
+  }
+  return nodes;
+}
+
+function inlineMarkdown(text: string): React.ReactNode {
+  // 粗体 **text**
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p.startsWith('**') && p.endsWith('**')) return <strong key={i}>{p.slice(2, -2)}</strong>;
+        if (p.startsWith('`') && p.endsWith('`')) return <code key={i}>{p.slice(1, -1)}</code>;
+        return p;
+      })}
+    </>
+  );
+}
 
 // RAG 流程迷你指示器
 const RagProcessMini: React.FC<{ steps: import('@rag/shared').RagProcessStep[] }> = ({ steps }) => {

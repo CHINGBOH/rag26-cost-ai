@@ -2079,3 +2079,130 @@ body {
   height: var(--spacing-md);
   accent-color: var(--color-primary);
 }
+
+/* ── 沙箱代码块 & Markdown 表格 ───────────────────────────────────────────── */
+
+.code-block-container {
+  margin: 12px 0;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  background: var(--bg-primary);
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.header-left { display: flex; align-items: center; gap: 8px; }
+.header-actions { display: flex; gap: 6px; }
+
+.lang-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+.lang-badge.python { background: #3572A5; color: #fff; }
+
+.sandbox-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  background: #1a3a1a;
+  color: #4caf50;
+  border: 1px solid #4caf5040;
+}
+
+.exec-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.exec-badge.success { background: #1a3a1a; color: #4caf50; }
+.exec-badge.error   { background: #3a1a1a; color: #f44336; }
+
+.action-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-secondary); font-size: 14px; padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  transition: background var(--anim-fast) ease;
+}
+.action-btn:hover { background: var(--bg-surface); }
+
+.code-content-wrapper { position: relative; }
+
+.code-block { margin: 0; padding: 16px; overflow-x: auto; background: #1e1e1e; }
+.code-block code { font-family: "JetBrains Mono","Fira Code",monospace; font-size: 13px; line-height: 1.6; color: #d4d4d4; }
+
+.code-actions { padding: 8px 16px; background: #1e1e1e; border-top: 1px solid #333; }
+
+.execute-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 16px; border-radius: var(--radius-md);
+  background: var(--color-primary); color: #fff;
+  border: none; cursor: pointer; font-size: var(--text-base); font-weight: 600;
+  transition: opacity var(--anim-fast) ease;
+}
+.execute-btn:hover:not(:disabled) { opacity: 0.85; }
+.execute-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.spinner { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.execution-result {
+  border-top: 1px solid var(--border-default);
+  padding: 12px 16px;
+}
+.execution-result.success { background: #0d1f0d; }
+.execution-result.error   { background: #1f0d0d; }
+
+.result-header {
+  display: flex; align-items: center; gap: 10px;
+  font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.exec-time { margin-left: auto; color: var(--text-muted); }
+
+.rerun-btn {
+  padding: 2px 10px; border-radius: var(--radius-sm); border: 1px solid #4caf5060;
+  background: none; color: #4caf50; cursor: pointer; font-size: var(--text-sm);
+}
+.rerun-btn:hover { background: #4caf5015; }
+
+.section-label { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 4px; }
+.output-content { margin: 0; color: #d4d4d4; font-size: 13px; white-space: pre-wrap; }
+.result-content { margin: 0; color: #4caf50; font-size: 13px; }
+.error-label    { color: #f44336; font-size: var(--text-sm); margin-bottom: 4px; }
+.error-content  { margin: 0; color: #f44336; font-size: 13px; white-space: pre-wrap; }
+
+/* 沙箱输出 Markdown 表格 */
+.sandbox-table-wrapper { overflow-x: auto; }
+.sandbox-result-table,
+.markdown-table {
+  width: 100%; border-collapse: collapse;
+  font-size: var(--text-base); color: var(--text-primary);
+  margin: 4px 0;
+}
+.sandbox-result-table th,
+.markdown-table th {
+  background: var(--bg-hover); color: var(--color-primary);
+  padding: 8px 14px; text-align: left; font-weight: 700;
+  border-bottom: 2px solid var(--color-primary);
+}
+.sandbox-result-table td,
+.markdown-table td {
+  padding: 7px 14px; border-bottom: 1px solid var(--border-default);
+}
+.sandbox-result-table tr.even td,
+.markdown-table tr.even td { background: var(--bg-surface); }
+.sandbox-result-table td:last-child,
+.markdown-table td:last-child { text-align: right; font-weight: 600; }

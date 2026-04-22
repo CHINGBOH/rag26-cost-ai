@@ -196,7 +196,7 @@ export interface RagProcessStep {
 
 export interface CodeExecutionResult {
   code: string;
-  language: 'typescript' | 'javascript';
+  language: 'typescript' | 'javascript' | 'python';
   status: 'pending' | 'running' | 'success' | 'error';
   output?: string;
   result?: any;
