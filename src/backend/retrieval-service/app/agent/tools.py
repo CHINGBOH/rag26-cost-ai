@@ -104,26 +104,30 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                 cur.execute("""
                     SELECT id, document_id, fee_name, fee_category,
                            rate_min, rate_max, rate_recommended,
-                           applicable_scope, base_formula, source_text, standard_year
+                           applicable_scope, base_formula, source_text, standard_year,
+                           calc_base
                     FROM fee_rates
                     WHERE fee_name ILIKE %s OR fee_category ILIKE %s
                        OR source_text ILIKE %s
                     LIMIT %s
                 """, (f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
                 for fr in cur.fetchall():
-                    fid, fdoc_id, fname, fcat, rmin, rmax, rrec, scope, formula, src, yr = fr
+                    fid, fdoc_id, fname, fcat, rmin, rmax, rrec, scope, formula, src, yr, cbase = fr
                     cid = f"fr_{fid}"
                     if cid in seen_ids:
                         continue
                     seen_ids.add(cid)
-                    rmin_s = f"{float(rmin):.4g}" if rmin is not None else "—"
-                    rmax_s = f"{float(rmax):.4g}" if rmax is not None else "—"
-                    rrec_s = f"{float(rrec):.4g}" if rrec is not None else "—"
+                    rmin_s = f"{float(rmin):.4g}%" if rmin is not None else "—"
+                    rmax_s = f"{float(rmax):.4g}%" if rmax is not None else "—"
+                    rrec_s = f"{float(rrec):.4g}%" if rrec is not None else "—"
+                    # Build clear content with calc_base so LLM knows what to multiply
+                    calc_base_note = f"计算基数：{cbase}" if cbase else ""
                     content_text = (
                         f"【{yr}版费率标准】{fname}（{fcat}）\n"
-                        f"参考范围：{rmin_s}～{rmax_s}，推荐系数：{rrec_s}\n"
-                        f"适用范围：{scope or ''}\n"
-                        f"计算公式：{formula or ''}"
+                        f"费率参考范围：{rmin_s}～{rmax_s}，推荐费率：{rrec_s}（单位：%，使用时÷100）\n"
+                        f"{calc_base_note}\n"
+                        f"计算公式：{formula or ''}\n"
+                        f"适用范围：{scope or ''}"
                     ).strip()
                     results.append({
                         "chunk_id": cid,
