@@ -106,6 +106,55 @@ def rerank_node(state: RAGState) -> RAGState:
         return {**state, "chunks": state["chunks"][:10]}
 
 
+def _strip_latex(text: str) -> str:
+    """
+    Deterministically convert LaTeX math notation to readable plain text.
+    LLMs frequently ignore format instructions; this post-processing is the
+    reliable fallback that never depends on LLM compliance.
+    """
+    import re
+
+    # Replace LaTeX symbol commands with Unicode/text equivalents
+    replacements = [
+        (r'\\times', '×'),
+        (r'\\div',   '÷'),
+        (r'\\cdot',  '·'),
+        (r'\\leq',   '≤'),
+        (r'\\geq',   '≥'),
+        (r'\\neq',   '≠'),
+        (r'\\approx','≈'),
+        (r'\\%',     '%'),
+        (r'\\,',     ' '),
+        (r'\\ ',     ' '),
+    ]
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+
+    # \text{...} → just the inner text
+    text = re.sub(r'\\text\{([^}]*)\}', r'\1', text)
+    # \mathbf{...} / \textbf{...} → **...**
+    text = re.sub(r'\\(?:mathbf|textbf)\{([^}]*)\}', r'**\1**', text)
+    # \frac{a}{b} → a/b
+    text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'\1/\2', text)
+
+    # Block math \[ ... \] → strip delimiters, keep content indented
+    def _block_math(m: re.Match) -> str:
+        inner = m.group(1).strip()
+        # Each line of a multi-line block math becomes an indented plain line
+        lines = [l.strip() for l in inner.split(r'\\') if l.strip()]
+        return '\n' + '\n'.join(f'  {l}' for l in lines) + '\n'
+
+    text = re.sub(r'\\\[\s*(.*?)\s*\\\]', _block_math, text, flags=re.DOTALL)
+
+    # Inline math \( ... \) → strip delimiters
+    text = re.sub(r'\\\(\s*(.*?)\s*\\\)', r'\1', text, flags=re.DOTALL)
+
+    # Clean up any remaining lone backslash-commands like \quad \; \!
+    text = re.sub(r'\\[a-zA-Z]+\b', '', text)
+
+    return text
+
+
 def generate_node(state: RAGState) -> RAGState:
     """用 LLM API 生成答案；无配置时返回检索摘要"""
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -190,7 +239,7 @@ def generate_node(state: RAGState) -> RAGState:
                 json={"model": model, "messages": prompt_messages, "max_tokens": 1024},
             )
             resp.raise_for_status()
-            answer = resp.json()["choices"][0]["message"]["content"]
+            answer = _strip_latex(resp.json()["choices"][0]["message"]["content"])
         logger.info(f"[RAGPipeline] generated answer ({len(answer)} chars)")
         return {**state, "answer": answer}
     except Exception as e:
