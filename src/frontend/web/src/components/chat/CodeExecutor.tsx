@@ -5,7 +5,7 @@
  * - Python: 后端 Docker 沙箱 /api/v1/sandbox/execute
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { CodeExecutionResult } from '@rag/shared';
 import { chatFlowConfig } from '../../config';
 import './Chat.css';
@@ -16,17 +16,20 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 interface CodeBlockProps {
   code: string;
   language: string;
+  autoRun?: boolean;
   onExecute?: (result: CodeExecutionResult) => void;
 }
 
 export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
   code,
   language,
+  autoRun = false,
   onExecute
 }) => {
   const [isExecuting, setIsExecuting] = useState(false);
   const [result, setResult] = useState<CodeExecutionResult | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
+  const hasAutoRun = useRef(false);
 
   const isPython = language === 'python' || language === 'py';
   const isJsTs = language === 'typescript' || language === 'javascript';
@@ -90,6 +93,19 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
     }
   }, [code, language, isPython, isExecutable, onExecute]);
 
+  // Auto-run Python blocks when the AI injects calculation code.
+  // Guard with hasAutoRun inside the timer so StrictMode double-invocation doesn't skip it.
+  useEffect(() => {
+    if (!autoRun || !isPython) return;
+    const timer = setTimeout(() => {
+      if (!hasAutoRun.current) {
+        hasAutoRun.current = true;
+        executeCode();
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [autoRun, isPython, executeCode]);
+
   const copyCode = () => navigator.clipboard.writeText(code);
 
   return (
@@ -99,6 +115,8 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
         <div className="header-left">
           <span className={`lang-badge ${isPython ? 'python' : ''}`}>{language}</span>
           {isPython && <span className="sandbox-badge">🐳 Docker沙箱</span>}
+          {isPython && autoRun && !result && !isExecuting && <span className="sandbox-badge auto">⚡ 自动运行</span>}
+          {isExecuting && <span className="sandbox-badge running">⏳ 计算中...</span>}
           {result?.status === 'success' && <span className="exec-badge success">✓ 执行成功</span>}
           {result?.status === 'error' && <span className="exec-badge error">✗ 执行失败</span>}
         </div>
@@ -119,7 +137,7 @@ export const ExecutableCodeBlock: React.FC<CodeBlockProps> = ({
         <div className="code-content-wrapper">
           <pre className="code-block"><code>{code}</code></pre>
 
-          {isExecutable && !result && (
+          {isExecutable && !result && !autoRun && (
             <div className="code-actions">
               <button className="execute-btn" onClick={executeCode} disabled={isExecuting}>
                 {isExecuting ? (

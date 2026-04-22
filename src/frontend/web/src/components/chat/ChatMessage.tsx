@@ -113,6 +113,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                     key={index}
                     code={part.content}
                     language={part.language || 'text'}
+                    autoRun={!isUser && (part.language === 'python' || part.language === 'py')}
                   />
                 );
               

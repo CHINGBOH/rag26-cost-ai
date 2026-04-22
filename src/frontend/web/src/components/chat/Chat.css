@@ -2121,6 +2121,8 @@ body {
   color: #4caf50;
   border: 1px solid #4caf5040;
 }
+.sandbox-badge.auto    { background: #1a2a3a; color: #42a5f5; border-color: #42a5f540; }
+.sandbox-badge.running { background: #2a2a1a; color: #ffb74d; border-color: #ffb74d40; }
 
 .exec-badge {
   padding: 2px 8px;
