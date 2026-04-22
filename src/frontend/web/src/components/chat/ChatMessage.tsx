@@ -64,7 +64,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         language: block.language
       });
       
-      lastIndex = block.index + block.code.length + 6 + (block.language?.length || 0);
+      // Full match length: 3(```) + lang.length + 1(\n) + match[2].length + 3(```)
+      // block.code is match[2].trim(), match[2] usually has a trailing \n → +1
+      // So: 3 + lang.length + 1 + (code.length + 1) + 3 = code.length + lang.length + 8
+      lastIndex = block.index + block.code.length + 8 + (block.language?.length || 0);
     });
     
     // 剩余文本
@@ -207,7 +210,9 @@ function parseReferencesInText(
 // Markdown 文本渲染（支持粗体、斜体、行内代码、表格、换行）
 const MarkdownText: React.FC<{ content: string }> = ({ content }) => {
   const parts = useMemo(() => renderMarkdown(content), [content]);
-  return <span className="markdown-text">{parts}</span>;
+  // Must be <div>, not <span>: renderMarkdown returns block elements (h2, table, ul)
+  // which are invalid inside an inline <span> and break browser layout.
+  return <div className="markdown-text">{parts}</div>;
 };
 
 function renderMarkdown(content: string): React.ReactNode[] {

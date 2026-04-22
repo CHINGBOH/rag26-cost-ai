@@ -245,6 +245,11 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"3. 如果检索结果不足以完整回答，明确说明哪些部分无法确认\n"
         f"{instruction4}"
         f"{fallback_hint}\n"
+        f"## 格式要求（必须遵守）\n"
+        f"- 禁止使用 LaTeX（禁止 \\[ \\] \\( \\) \\times \\frac 等一切 LaTeX 语法）\n"
+        f"- 计算过程必须用 Markdown 表格展示（| 项目 | 计算 | 结果 |）\n"
+        f"- 章节标题用 ## 和 ### 开头\n"
+        f"- 公式用普通文本，例如：企业管理费 = (人工费 + 机械费×0.1) × 费率%\n"
     )
 
 
@@ -473,6 +478,7 @@ def executor_node(state: RAGAgentState) -> dict:
             "iterations": max_iter,  # 强制结束循环
             "current_step": current_step + 1,
             "thought_process": thought_process,
+            "has_tool_calls": False,
         }
 
     # 构造当前步骤的提示（让模型感知进度）
@@ -488,7 +494,18 @@ def executor_node(state: RAGAgentState) -> dict:
         step_content = f"[当前进度 {progress}] 请执行：{step_hint}"
 
     step_msg = HumanMessage(content=step_content)
-    messages_for_llm = messages + [step_msg]
+    # 防止 dangling tool_calls 导致 HTTP 400：移除末尾没有对应 ToolMessage 的 AIMessage(tool_calls)
+    clean_messages = []
+    for i, msg in enumerate(messages):
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            if i + 1 < len(messages) and hasattr(messages[i + 1], "tool_call_id"):
+                clean_messages.append(msg)
+            # 否则跳过：dangling AIMessage(tool_calls) 没有对应 ToolMessage
+        else:
+            clean_messages.append(msg)
+    messages_for_llm = clean_messages + [step_msg]
+    if len(clean_messages) != len(messages):
+        logger.warning(f"[executor] stripped {len(messages) - len(clean_messages)} dangling tool_call messages")
 
     logger.info(f"[executor] iter={iteration}/{max_iter} step={progress} tool_choice={tool_choice}")
 
@@ -505,6 +522,7 @@ def executor_node(state: RAGAgentState) -> dict:
             "iterations": iteration + 1,
             "current_step": current_step,
             "thought_process": thought_process,
+            "has_tool_calls": True,
         }
     else:
         # 无工具调用：自省并推进步骤
@@ -516,6 +534,7 @@ def executor_node(state: RAGAgentState) -> dict:
             "iterations": iteration + 1,
             "current_step": current_step + 1,
             "thought_process": thought_process,
+            "has_tool_calls": False,
         }
 
 
@@ -638,6 +657,10 @@ def synthesize_node(state: RAGAgentState) -> dict:
     if citations:
         final_answer += citations
 
+    # Post-process: strip LaTeX notation and auto-inject Python sandbox block
+    from app.rag_pipeline import _strip_latex, _inject_calc_code
+    final_answer = _inject_calc_code(query, _strip_latex(final_answer))
+
     # 简单置信度估算（供 SSE eval_scores 事件用）
     n = len(all_chunks)
     confidence = min(0.95, 0.5 + n * 0.05) if n > 0 else 0.3
@@ -676,14 +699,8 @@ def after_executor(state: RAGAgentState) -> str:
     # 必须先检查 tool_calls（在 max_iter 之前）
     # 若跳过 tool_node 则 AIMessage(tool_calls=[...]) 遗留在 messages 中
     # 下次同 thread_id 请求时 DeepSeek 返回 HTTP 400
-    messages = state.get("messages") or []
-    last_msg = messages[-1] if messages else None
-    logger.info(f"[after_executor] DEBUG last_msg type={type(last_msg).__name__} tool_calls={getattr(last_msg,'tool_calls',None)}")
-    has_tool_calls = bool(
-        last_msg is not None
-        and hasattr(last_msg, "tool_calls")
-        and last_msg.tool_calls
-    )
+    has_tool_calls = bool(state.get("has_tool_calls"))
+    logger.info(f"[after_executor] has_tool_calls={has_tool_calls}")
     if has_tool_calls:
         logger.info(f"[after_executor] → tool_node (has tool_calls)")
         return "tool_node"
