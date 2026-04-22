@@ -106,6 +106,7 @@ func getRouteMapping() map[string]string {
 		"/api/stats":        "python",
 		"/api/v1/stats":     "python",
 		"/api/search":       "retrieval",
+		"/api/v1/sandbox":   "retrieval",
 		"/api/v1/search":    "retrieval",
 		"/api/v1/rerank":    "retrieval",
 		"/api/v1/evaluate":  "retrieval",

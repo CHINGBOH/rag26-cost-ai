@@ -636,6 +636,50 @@ async def health_detail():
     return {"services": results, "timestamp": datetime.now().isoformat()}
 
 
+# ── Sandbox Code Execution ────────────────────────────────────────────────────
+
+class SandboxRequest(BaseModel):
+    code: str
+    timeout: Optional[int] = None  # 覆盖默认超时（秒），最大 30
+
+
+@router.post("/api/v1/sandbox/execute")
+async def sandbox_execute(request: SandboxRequest):
+    """
+    在 Docker 沙箱中安全执行 Python 代码。
+    - 无网络、内存 256M、CPU 1 核、10 秒超时
+    - 禁止 import / 文件写入等危险操作
+    """
+    from infrastructure.sandbox import execute_python, SANDBOX_TIMEOUT
+    import asyncio
+
+    if not request.code or not request.code.strip():
+        raise HTTPException(status_code=400, detail="code 不能为空")
+
+    timeout = min(request.timeout or SANDBOX_TIMEOUT, 30)
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, execute_python, request.code
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[sandbox route] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/sandbox/health")
+async def sandbox_health():
+    """检查沙箱镜像是否存在且可用"""
+    from infrastructure.sandbox import _check_image_exists, SANDBOX_IMAGE
+    ok = _check_image_exists()
+    return {
+        "status": "ready" if ok else "unavailable",
+        "image": SANDBOX_IMAGE,
+    }
+
+
 @router.get("/api/v1/metrics/llm")
 async def metrics_llm():
     """Forward llama-server metrics."""
