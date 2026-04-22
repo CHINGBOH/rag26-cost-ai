@@ -155,6 +155,63 @@ def _strip_latex(text: str) -> str:
     return text
 
 
+def _inject_calc_code(query: str, answer: str) -> str:
+    """
+    If the query is a cost-calculation question and the answer already contains
+    a result, append a runnable Python verification block.
+    Skips injection if a ```python block is already present.
+    """
+    import re
+
+    calc_keywords = ['利润', '管理费', '人工费', '机械费', '材料费', '造价', '费用']
+    is_calc = sum(1 for kw in calc_keywords if kw in query) >= 2
+    if not is_calc or '```python' in answer:
+        return answer
+
+    # Extract numbers from the query (万 amounts)
+    nums = re.findall(r'(\d+(?:\.\d+)?)\s*万', query)
+    # Try to identify 人工费, 材料费, 机械费 by position in query
+    labor = mat = mech = None
+    for pattern, var in [
+        (r'人工费[^\d]*(\d+(?:\.\d+)?)', 'labor'),
+        (r'材料费[^\d]*(\d+(?:\.\d+)?)', 'mat'),
+        (r'机械费[^\d]*(\d+(?:\.\d+)?)', 'mech'),
+    ]:
+        m = re.search(pattern, query)
+        if m:
+            if var == 'labor': labor = float(m.group(1))
+            elif var == 'mat':  mat   = float(m.group(1))
+            elif var == 'mech': mech  = float(m.group(1))
+
+    if labor is None or mat is None or mech is None:
+        return answer  # can't parse inputs, skip
+
+    # Detect year from query/answer
+    year = '2025' if '2025' in query or '2025' in answer else '2023'
+    mgmt_rate = 0.2044  # 2025 推荐值
+    profit_rate = 0.026  # 建筑工程 2025 推荐值
+
+    code = f"""\
+# 深圳市建设工程计价费率标准（{year}版）验证计算
+人工费   = {labor}   # 万元
+材料费   = {mat}   # 万元
+机械费   = {mech}   # 万元
+管理费率 = {mgmt_rate}    # 推荐值 {mgmt_rate*100:.2f}%
+利润率   = {profit_rate}    # 建筑工程推荐值 {profit_rate*100:.2f}%
+
+企业管理费 = (人工费 + 机械费 * 0.1) * 管理费率
+利润基数   = 人工费 + 材料费 + 机械费 + 企业管理费
+利润       = 利润基数 * 利润率
+
+result = round(利润, 2)
+print(f"企业管理费: {{企业管理费:.4f}} 万元")
+print(f"利润基数:   {{利润基数:.4f}} 万元")
+print(f"利润:       {{利润:.4f}} 万元")
+"""
+
+    return answer + f"\n\n---\n\n**📐 Python 验证（点击在沙箱中运行）**\n\n```python\n{code}```"
+
+
 def generate_node(state: RAGState) -> RAGState:
     """用 LLM API 生成答案；无配置时返回检索摘要"""
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -239,7 +296,8 @@ def generate_node(state: RAGState) -> RAGState:
                 json={"model": model, "messages": prompt_messages, "max_tokens": 1024},
             )
             resp.raise_for_status()
-            answer = _strip_latex(resp.json()["choices"][0]["message"]["content"])
+            raw = resp.json()["choices"][0]["message"]["content"]
+            answer = _inject_calc_code(state["query"], _strip_latex(raw))
         logger.info(f"[RAGPipeline] generated answer ({len(answer)} chars)")
         return {**state, "answer": answer}
     except Exception as e:
