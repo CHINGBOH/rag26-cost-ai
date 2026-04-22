@@ -53,10 +53,10 @@ init_status = {"store": False, "pipeline": False, "doc_processor": False}
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时初始化服务"""
+    """启动时初始化服务 - PG + Qdrant(session) + Redis"""
     global pipeline, store, doc_processor, init_status
 
-    logger.info("Initializing UnifiedStore...")
+    logger.info("Initializing UnifiedStore (PG single-db mode)...")
     try:
         store = UnifiedStore()
         init_status["store"] = True
@@ -82,6 +82,14 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Failed to initialize DocumentProcessor: {e}")
         init_status["doc_processor"] = False
+
+    # 将服务注入 v1 router
+    try:
+        from api.routes import set_services
+        set_services(pipeline, store)
+        logger.info("✅ V1 routes services injected")
+    except Exception as e:
+        logger.warning(f"Failed to inject v1 services: {e}")
 
     if not any(init_status.values()):
         logger.error("❌ All services failed to initialize. API will run in limited mode.")
@@ -133,7 +141,7 @@ async def health_check():
 class SearchRequest(BaseModel):
     query: str = Field(..., description="搜索查询文本")
     top_k: int = Field(default=10, ge=1, le=100)
-    mode: str = Field(default="hybrid", description="搜索模式: vector|keyword|graph|hybrid")
+    mode: str = Field(default="hybrid", description="搜索模式: vector|text|hybrid")
     filters: Dict[str, Any] = Field(default_factory=dict)
     session_id: Optional[str] = None
 
@@ -149,8 +157,8 @@ async def search(request: SearchRequest):
     try:
         config = RetrievalConfig(
             vector_top_k=30 if request.mode in ["vector", "hybrid"] else 0,
-            keyword_top_k=20 if request.mode in ["keyword", "hybrid"] else 0,
-            graph_top_k=10,  # 始终启用图谱召回
+            keyword_top_k=20 if request.mode in ["text", "hybrid"] else 0,
+            graph_top_k=0,  # 不再使用图谱召回
         )
 
         retrieval_request = RetrievalRequest(
@@ -645,29 +653,23 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/pipeline/health")
 async def pipeline_health():
-    """管道健康检查 - 四库状态"""
+    """管道健康检查 - PG + Qdrant(session) + Redis"""
     global store
     try:
         if store:
             health = store.health_check()
             db_health = {
-                "vector": {"status": health.get("qdrant", "unknown"), "latency": 0, "count": 0},
-                "keyword": {
-                    "status": health.get("elasticsearch", "unknown"),
-                    "latency": 0,
-                    "count": 0,
-                },
-                "graph": {"status": health.get("neo4j", "unknown"), "latency": 0, "count": 0},
-                "cache": {"status": health.get("redis", "unknown"), "latency": 0, "count": 0},
+                "postgres": {"status": health.get("postgres", "unknown"), "latency": 0, "count": 0},
+                "qdrant_session": {"status": health.get("qdrant", "unknown"), "latency": 0, "count": 0},
+                "cache": {"status": health.get("cache", "unknown"), "latency": 0, "count": 0},
             }
             return APIResponse.success(db_health)
 
         # 默认值
         return APIResponse.success(
             {
-                "vector": {"status": "healthy", "latency": 0, "count": 0},
-                "keyword": {"status": "healthy", "latency": 0, "count": 0},
-                "graph": {"status": "healthy", "latency": 0, "count": 0},
+                "postgres": {"status": "healthy", "latency": 0, "count": 0},
+                "qdrant_session": {"status": "healthy", "latency": 0, "count": 0},
                 "cache": {"status": "healthy", "latency": 0, "count": 0},
             }
         )

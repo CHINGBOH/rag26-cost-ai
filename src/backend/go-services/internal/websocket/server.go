@@ -83,6 +83,11 @@ func (s *Server) ServeBroadcast(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Run(addr string) error {
 	http.HandleFunc("/ws", s.ServeWS)
 	http.HandleFunc("/broadcast", s.ServeBroadcast)
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	log.Printf("🚀 WebSocket Gateway starting on %s", addr)
 	return http.ListenAndServe(addr, nil)
 }

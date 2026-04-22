@@ -50,109 +50,138 @@ export const API_BASE = import.meta.env.VITE_API_BASE_URL || ''; // 空字符串
 
 /**
  * 发送非流式请求到 LLM
+ * 通过 Node.js 后端 /api/llm/chat 代理，保护 API Key
  */
 export async function sendLLMRequest(
   messages: LLMMessage[],
-  _options?: {
+  options?: {
     temperature?: number;
     maxTokens?: number;
     topP?: number;
   }
 ): Promise<LLMResponse> {
-  // 由于后端没有LLM API，使用模拟响应
-  // _options 参数保留用于未来真实 API 调用
-
-  // 模拟延迟
-  // 实际项目中，这里应该调用真实的LLM API
-
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 1000));
-
-  // 模拟LLM响应
-  const userMessage = messages.find(msg => msg.role === 'user');
-  let responseContent = '';
-
-  if (userMessage) {
-    const query = userMessage.content;
-    if (query.includes('你好') || query.includes('Hello')) {
-      responseContent = '你好！我是RAG智能助手，很高兴为你服务。请问有什么我可以帮助你的吗？';
-    } else if (query.includes('搜索') || query.includes('查找')) {
-      responseContent = '我已经在知识库中搜索了相关信息，为你找到了以下内容...';
-    } else if (query.includes('代码') || query.includes('编程')) {
-      responseContent = '以下是你需要的代码实现：\n\n```python\ndef hello_world():\n    print("Hello, World!")\n```\n\n这段代码可以输出"Hello, World!"到控制台。';
-    } else {
-      responseContent = `我理解你的问题："${query}"。\n\n这是一个模拟的LLM响应。在实际系统中，我会基于检索到的相关文档来回答你的问题，提供更准确和详细的信息。`;
-    }
-  } else {
-    responseContent = '我收到了你的消息，但是没有找到用户输入内容。请尝试重新输入你的问题。';
-  }
-
-  // 转换为前端期望的格式
-  return {
-    id: Date.now().toString(),
-    choices: [{
-      index: 0,
-      message: {
-        role: 'assistant',
-        content: responseContent
+  try {
+    const response = await authFetch(`${API_BASE}/api/llm/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
       },
-      finish_reason: 'stop'
-    }],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: responseContent.length,
-      total_tokens: responseContent.length
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages,
+        temperature: options?.temperature ?? 0.7,
+        max_tokens: options?.maxTokens ?? 2000,
+        top_p: options?.topP ?? 0.9,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`LLM API 错误: ${response.status} - ${errorText}`);
     }
-  };
+
+    const result = await response.json();
+    // 后端使用 successResponse 包装，实际数据在 result.data 中
+    const data = result.data || result;
+    return data as LLMResponse;
+  } catch (error) {
+    console.error('[LLM] 请求失败:', error);
+    // 降级：返回友好提示
+    return {
+      id: `error-${Date.now()}`,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: error instanceof Error
+            ? `❌ LLM 请求失败: ${error.message}`
+            : '❌ LLM 服务暂时不可用，请检查后端配置。'
+        },
+        finish_reason: 'stop'
+      }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+    };
+  }
 }
 
 /**
  * 发送流式请求到 LLM
+ * 通过 Node.js 后端 /api/llm/chat 代理，解析 SSE 流
  */
 export async function* sendLLMStream(
   messages: LLMMessage[],
-  _options?: {
+  options?: {
     temperature?: number;
     maxTokens?: number;
     topP?: number;
   }
 ): AsyncGenerator<LLMStreamChunk, void, unknown> {
-  // 由于后端没有LLM API，使用模拟响应
-  // _options 参数保留用于未来真实 API 调用
+  try {
+    const response = await authFetch(`${API_BASE}/api/llm/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages,
+        temperature: options?.temperature ?? 0.7,
+        max_tokens: options?.maxTokens ?? 2000,
+        top_p: options?.topP ?? 0.9,
+        stream: true
+      })
+    });
 
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 500));
-
-  // 模拟LLM响应
-  const userMessage = messages.find(msg => msg.role === 'user');
-  let responseContent = '';
-  
-  if (userMessage) {
-    const query = userMessage.content;
-    if (query.includes('你好') || query.includes('Hello')) {
-      responseContent = '你好！我是RAG智能助手，很高兴为你服务。请问有什么我可以帮助你的吗？';
-    } else if (query.includes('搜索') || query.includes('查找')) {
-      responseContent = '我已经在知识库中搜索了相关信息，为你找到了以下内容...';
-    } else if (query.includes('代码') || query.includes('编程')) {
-      responseContent = '以下是你需要的代码实现：\n\n```python\ndef hello_world():\n    print("Hello, World!")\n```\n\n这段代码可以输出"Hello, World!"到控制台。';
-    } else {
-      responseContent = `我理解你的问题："${query}"。\n\n这是一个模拟的LLM响应。在实际系统中，我会基于检索到的相关文档来回答你的问题，提供更准确和详细的信息。`;
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`LLM API 错误: ${response.status} - ${errorText}`);
     }
-  } else {
-    responseContent = '我收到了你的消息，但是没有找到用户输入内容。请尝试重新输入你的问题。';
-  }
-  
-  // 模拟流式输出
-  for (let i = 0; i < responseContent.length; i++) {
-    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    if (!reader) {
+      throw new Error('无法读取流式响应');
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') return;
+
+        try {
+          const chunk: LLMStreamChunk = JSON.parse(data);
+          yield chunk;
+        } catch {
+          // 忽略无法解析的行
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[LLM] 流式请求失败:', error);
+    // 降级：返回单条错误消息
     yield {
-      id: Date.now().toString(),
+      id: `error-${Date.now()}`,
       choices: [{
         index: 0,
         delta: {
-          content: responseContent[i]
+          content: error instanceof Error
+            ? `❌ LLM 请求失败: ${error.message}`
+            : '❌ LLM 服务暂时不可用，请检查后端配置。'
         },
-        finish_reason: null
+        finish_reason: 'stop'
       }]
     };
   }

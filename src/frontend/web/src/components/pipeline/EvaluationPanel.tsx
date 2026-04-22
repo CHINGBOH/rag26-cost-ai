@@ -1,5 +1,5 @@
 import React from 'react';
-import { EvaluationMetrics } from './DataPipelineDashboard';
+import { EvaluationMetrics } from './types';
 
 interface EvaluationPanelProps {
   metrics: EvaluationMetrics;

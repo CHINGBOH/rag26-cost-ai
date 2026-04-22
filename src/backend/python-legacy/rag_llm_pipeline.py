@@ -579,8 +579,11 @@ class RAGLLMPipeline:
     
     async def _retrieve(self, query: str, top_k: int) -> List[RetrievalResult]:
         """执行检索"""
-        # 向量化查询
-        query_embedding = self.embedding_model.encode(query, convert_to_numpy=True)
+        # 向量化查询（在线程池中执行，避免阻塞事件循环）
+        loop = asyncio.get_running_loop()
+        query_embedding = await loop.run_in_executor(
+            None, lambda: self.embedding_model.encode(query, convert_to_numpy=True)
+        )
         
         # 从数据库检索
         async with self.db_pool.acquire() as conn:

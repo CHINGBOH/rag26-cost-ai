@@ -17,7 +17,7 @@ import { User } from '../../common/types'
 
 describe('Auth 模块', () => {
   describe('Token 创建与验证', () => {
-    it('应该创建 Token', () => {
+    it('应该创建 Token', async () => {
       const user: User = {
         id: '1',
         username: 'admin',
@@ -27,14 +27,14 @@ describe('Auth 模块', () => {
       }
       
       const tokenFn = createToken()
-      const authToken = tokenFn(user)
+      const authToken = await tokenFn(user)
       
       expect(authToken.token).toBeDefined()
       expect(authToken.refreshToken).toBeDefined()
       expect(authToken.user).toEqual(user)
     })
 
-    it('应该验证 Token 并返回用户', () => {
+    it('应该验证 Token 并返回用户', async () => {
       const user: User = {
         id: '1',
         username: 'admin',
@@ -44,19 +44,19 @@ describe('Auth 模块', () => {
       }
       
       const tokenFn = createToken()
-      const authToken = tokenFn(user)
+      const authToken = await tokenFn(user)
       
       const verifyFn = verifyToken()
-      const verifiedUser = verifyFn(authToken.token)
+      const verifiedUser = await verifyFn(authToken.token)
       
       expect(verifiedUser.id).toBe(user.id)
       expect(verifiedUser.username).toBe(user.username)
     })
 
-    it('应该拒绝无效 Token', () => {
+    it('应该拒绝无效 Token', async () => {
       const verifyFn = verifyToken()
       
-      expect(() => verifyFn('invalid-token')).toThrow('Invalid token')
+      await expect(verifyFn('invalid-token')).rejects.toThrow('Invalid token')
     })
   })
 
@@ -170,7 +170,7 @@ describe('Auth 模块', () => {
   })
 
   describe('Token 刷新与撤销', () => {
-    it('应该刷新 Token', () => {
+    it('应该刷新 Token', async () => {
       const user: User = {
         id: '1',
         username: 'admin',
@@ -180,26 +180,26 @@ describe('Auth 模块', () => {
       }
       
       const createTokenFn = createToken()
-      const authToken = createTokenFn(user)
+      const authToken = await createTokenFn(user)
       
       const refreshFn = refreshToken()
-      const newToken = refreshFn(authToken.refreshToken!)
+      const newToken = await refreshFn(authToken.refreshToken!)
       
       expect(newToken.token).toBeDefined()
       // 验证新 Token 有效即可
       const verifyFn = verifyToken()
-      const verifiedUser = verifyFn(newToken.token)
+      const verifiedUser = await verifyFn(newToken.token)
       expect(verifiedUser.id).toBe(user.id)
       expect(verifiedUser.username).toBe(user.username)
     })
 
-    it('应该拒绝无效 Refresh Token', () => {
+    it('应该拒绝无效 Refresh Token', async () => {
       const refreshFn = refreshToken()
       
-      expect(() => refreshFn('invalid-refresh-token')).toThrow('Invalid refresh token')
+      await expect(refreshFn('invalid-refresh-token')).rejects.toThrow('Invalid refresh token')
     })
 
-    it('应该撤销 Token', () => {
+    it('应该撤销 Token', async () => {
       const user: User = {
         id: '1',
         username: 'admin',
@@ -209,7 +209,7 @@ describe('Auth 模块', () => {
       }
       
       const createTokenFn = createToken()
-      const authToken = createTokenFn(user)
+      const authToken = await createTokenFn(user)
       
       const revokeFn = revokeToken()
       const result = revokeFn(authToken.token)
@@ -218,7 +218,7 @@ describe('Auth 模块', () => {
       
       // 验证 Token 已失效
       const verifyFn = verifyToken()
-      expect(() => verifyFn(authToken.token)).toThrow('Invalid token')
+      await expect(verifyFn(authToken.token)).rejects.toThrow('Invalid token')
     })
   })
 
@@ -245,11 +245,11 @@ describe('Auth 模块', () => {
       })
       
       // 创建 Token
-      const authToken = pipeline.createToken(user)
+      const authToken = await pipeline.createToken(user)
       expect(authToken.token).toBeDefined()
       
       // 验证 Token
-      const verifiedUser = pipeline.verifyToken(authToken.token)
+      const verifiedUser = await pipeline.verifyToken(authToken.token)
       expect(verifiedUser.username).toBe('admin')
     })
   })

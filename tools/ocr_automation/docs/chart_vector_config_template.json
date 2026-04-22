@@ -1,0 +1,24 @@
+{
+  "_comment": "深圳建设工程价格信息 趋势图提取配置模板",
+  "pdf": "path/to/input.pdf",
+  "page": 15,
+  "month_start": [2023, 1],
+  "subcharts": [
+    {
+      "y1": 130,
+      "y2": 292,
+      "name": "子图1名称",
+      "series": ["系列A", "系列B"],
+      "price_range": [3000, 5500],
+      "x_axis_margin": 45
+    },
+    {
+      "y1": 292,
+      "y2": 446,
+      "name": "子图2名称",
+      "series": ["系列C"],
+      "price_range": [3500, 5500],
+      "x_axis_margin": 45
+    }
+  ]
+}

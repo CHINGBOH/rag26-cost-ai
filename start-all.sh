@@ -78,7 +78,7 @@ start_if_not_running \
     "Python Legacy" \
     8000 \
     "$PROJECT_ROOT/src/backend/python-legacy" \
-    "python3 -m uvicorn main:app --host 0.0.0.0 --port 8000" \
+    "/home/l/rag-dashboard/venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000" \
     "/tmp/python-legacy.log"
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ start_if_not_running \
     "Retrieval Service" \
     8002 \
     "$PROJECT_ROOT/src/backend/retrieval-service" \
-    "python3 -m uvicorn main:app --host 0.0.0.0 --port 8002" \
+    "/home/l/rag-dashboard/venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8002" \
     "/tmp/retrieval-service.log"
 
 # ---------------------------------------------------------------------------

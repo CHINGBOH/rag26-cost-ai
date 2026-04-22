@@ -1,0 +1,16 @@
+FROM python:3.10-slim
+
+# 不安装任何额外包——造价计算只需要标准库
+# 如果未来需要 numpy/pandas，在这里 pip install
+
+# 复制执行入口
+COPY sandbox_entry.py /sandbox/sandbox_entry.py
+
+WORKDIR /sandbox
+
+# 非 root 用户运行（额外安全层）
+RUN useradd -r -s /bin/false sandbox && \
+    chown -R sandbox:sandbox /sandbox
+USER sandbox
+
+ENTRYPOINT ["python3", "/sandbox/sandbox_entry.py"]

@@ -26,7 +26,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./src/backend/server/sql:/docker-entrypoint-initdb.d:ro
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
     environment:
       POSTGRES_DB: rag_dashboard
       POSTGRES_USER: rag_user
@@ -71,49 +71,6 @@ services:
     networks:
       - rag-network
 
-  elasticsearch:
-    image: elasticsearch:8.12.0
-    container_name: rag-elasticsearch
-    ports:
-      - "9200:9200"
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  neo4j:
-    image: neo4j:5.16.0-community
-    container_name: rag-neo4j
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    environment:
-      NEO4J_AUTH: neo4j/rag_password
-      NEO4J_dbms_memory_pagecache_size: 256m
-      NEO4J_dbms_memory_heap_initial__size: 256m
-      NEO4J_dbms_memory_heap_max__size: 512m
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "rag_password", "RETURN 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-    restart: unless-stopped
-    networks:
-      - rag-network
-
   # ---------------------------------------------------------------------------
   # Application Services
   # ---------------------------------------------------------------------------
@@ -130,10 +87,11 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - ES_HOSTS=http://elasticsearch:9200
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=rag_password
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=rag_dashboard
+      - POSTGRES_USER=rag_user
+      - POSTGRES_PASSWORD=rag_password
       - TEI_URL=http://tei:8000
       - EMBEDDING_BACKEND=tei
     depends_on:
@@ -142,10 +100,6 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -164,20 +118,17 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - ES_HOSTS=http://elasticsearch:9200
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=rag_password
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=rag_dashboard
+      - POSTGRES_USER=rag_user
+      - POSTGRES_PASSWORD=rag_password
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -296,6 +247,3 @@ networks:
 volumes:
   postgres_data:
   qdrant_storage:
-  es_data:
-  neo4j_data:
-  neo4j_logs:

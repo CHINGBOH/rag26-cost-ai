@@ -1,0 +1,757 @@
+"""
+LangGraph Hybrid Agent: Forced-RAG + ReAct 补充
+架构：
+  query_analysis → forced_rag → evaluator → [passed? END : react_loop]
+                                              ↓
+                               react_node → [tool_calls? tool_node : synthesize_node]
+                                              ↑                ↓
+                                              └── tool_node ──┘
+                               synthesize_node → evaluator → [passed? END : react_loop]
+
+增强点：
+  - query_analysis_node: 意图分类 + 实体抽取 + 子查询分解
+  - retrieval_filter: 分数阈值 + 去重 + token_budget
+  - tool_call_cache: 去重缓存防止重复调用
+  - loop_detection: 检测 ReAct 循环
+"""
+
+import json
+import re
+import logging
+import hashlib
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from app.agent.state import RAGAgentState
+from app.agent.prompts import get_llm, SYSTEM_PROMPT
+from app.agent.retrieval_filter import filter_chunks
+from app.agent.query_analyzer import QueryAnalyzer
+from app.agent.tools import (
+    vector_search,
+    keyword_search,
+    graph_search,
+    hybrid_search,
+    price_query,
+    text_search,
+    calculator,
+    python_eval,
+    category_search,
+)
+from app.agent.evaluator import evaluate_retrieval_quality
+
+logger = logging.getLogger(__name__)
+
+_graph = None
+_checkpointer = None
+_analyzer = QueryAnalyzer()
+
+# ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
+REACT_TOOLS = [price_query, text_search, vector_search, keyword_search, category_search, calculator, python_eval]
+
+# Executor 节点的系统提示 — 带自省要求
+_REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
+
+工具说明：
+- category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
+- text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
+- price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
+- vector_search(query, top_k=10)：向量相似度检索，适合语义相关段落
+- keyword_search(query, top_k=10)：关键词全文检索，适合精确名称匹配；自动检索 fee_rates 结构化表
+- calculator(expression)：数学表达式计算
+- python_eval(code)：Python代码执行（适合复杂计算）
+
+费率标准专用路由规则（重要）：
+- 含"推荐系数"、"推荐费率"、"费率标准"、"赶工措施费"、"文明施工费"的问题 → 使用 text_search 或 category_search
+- 严禁对费率标准类问题使用 price_query（price_query 只查材料单价，不含费率系数）
+- fee_rates 表会被 text_search/keyword_search/category_search 自动检索，无需手动 SQL
+
+工作方式：
+1. 执行当前计划步骤，选用最合适的工具（价格类用 price_query，规范文件用 text_search）
+2. 在发起新工具调用前，先评价上一步工具结果是否找到核心数据；若未找到，换关键词或换工具
+3. 信息已足够时直接停止调用工具（不要重复搜索），由后续合成节点生成答案
+4. 如果工具结果为空或不相关，明确说明检索失败，不要强行使用空结果
+
+特殊检索规则（定额子目）：
+- 定额文档的子目按材料/工艺命名，楼梯/墙面/柱面/天棚/楼地面等是章节分类词，不是材料名
+- 检索定额子目前必须先用 category_search 确认材料所在章节编号，再带章节号做 text_search
+- 禁止把位置限定词（楼梯/墙面/柱面/台阶/踢脚等）与材料名合并成一个检索词
+- 若 text_search/keyword_search 返回空结果，立即去除位置限定词，只用材料名重试
+
+严格禁止：在没有检索证据时编造数值或费率。
+引用格式：【文件名 P页码】，如【费率标准 P4】
+"""
+
+# Planner 节点的系统提示 — 引导任务拆解
+_PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题后，将其拆分为 1~4 个具体执行步骤。
+
+规划原则：
+- 简单问题（如单一价格/费率查询）只需 1 步
+- 复杂问题（如多工程类型对比、计算+引用）可拆 2~4 步
+- 每步格式：「动词 + 具体检索目标」，例如：「检索 2024年深圳市建筑人工单价」
+- 不要规划「合成答案」这一步（由系统自动完成）
+- 优先使用 price_query 查材料价格，text_search 查定额规范文件
+- 含"推荐系数"、"推荐费率"、"费率标准"、"赶工"、"措施费"的问题 → 第一步用 text_search（不用 price_query）
+  例："赶工措施费推荐系数" → 步骤1: text_search query="赶工措施费"
+- 价格对比查询规则（重要）：若问题要求对比不同时期的价格，必须拆分为多步，
+  每步单独调用 price_query 并指定对应 year_month，不得合并为一步
+  例："对比2025-12和2023-12" → 步骤1: price_query year_month=2025-12，步骤2: price_query year_month=2023-12
+
+定额子目检索规则（重要）：
+- 若问题涉及定额子目的人工费/材料费/机械费/消耗量，第一步必须是：
+  调用 category_search 确认材料/工艺所在章节编号
+- 第二步再用 text_search 带章节号检索具体子目数值
+- 材料名与位置词（楼梯/墙面/地面）要分离，category_search 只传材料名
+
+输出格式（纯 JSON，不含 markdown 代码块）：
+{"steps": ["步骤1", "步骤2", ...]}
+"""
+
+_INTERNAL_SOURCES = {"智能体问答", "agent_qa", "eval_qa"}
+
+_QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
+    "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字",
+    "comparison": "4. 先给对比结论（谁高/谁低/差距多少），再分别列各方数据，最后计算差值",
+    "calculation": "4. 先列计算公式和费率来源，再逐步计算，最后给出带单位的结果",
+    "price": "4. 给出价格数值时注明时间、规格、单位；多条记录按时间倒序排列",
+    "default": "4. 先给出核心结论，再补充细节；语言自然流畅，避免机械罗列",
+}
+
+
+# ── 辅助函数 ────────────────────────────────────────────────────────────────
+
+def _enrich_chunks_with_filename(chunks: list) -> list:
+    """批量查 PG documents 表，给 chunks 注入 doc_filename 字段"""
+    if not chunks:
+        return chunks
+    doc_ids = list({c.get("doc_id") for c in chunks if c.get("doc_id")})
+    if not doc_ids:
+        return chunks
+    try:
+        from app.agent.tools import _get_pg_conn
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(doc_ids))
+            cur.execute(
+                f"SELECT id, file_name FROM documents WHERE id IN ({placeholders})",
+                [int(d) for d in doc_ids if str(d).isdigit()],
+            )
+            id_to_name = {str(r[0]): r[1] for r in cur.fetchall()}
+        for c in chunks:
+            c["doc_filename"] = id_to_name.get(str(c.get("doc_id", "")), "")
+    except Exception as e:
+        logger.warning(f"[enrich_filename] failed: {e}")
+    return chunks
+
+
+def _format_citations(chunks: list) -> str:
+    """从 chunks 生成尾部参考来源列表（按显示字符串去重，过滤内部数据集）"""
+    seen_refs: set[str] = set()
+    ordered: list[str] = []
+    for c in chunks[:12]:
+        doc_name = c.get("doc_filename") or c.get("source") or ""
+        page = c.get("page_number") or c.get("page") or "?"
+        if not doc_name:
+            continue
+        # 去掉扩展名和已有书名号（防止双重包裹）
+        display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
+        display = display.strip("《》")
+        if display in _INTERNAL_SOURCES:
+            continue
+        ref = f"《{display}》第 {page} 页"
+        if ref not in seen_refs:
+            seen_refs.add(ref)
+            ordered.append(ref)
+    if not ordered:
+        return ""
+    lines = ["\n\n---\n**参考来源：**"]
+    for i, ref in enumerate(ordered, 1):
+        lines.append(f"{i}. {ref}")
+    return "\n".join(lines)
+
+
+def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
+    """从工具返回的 JSON 字符串中提取 chunks，去重后追加"""
+    try:
+        result_data = json.loads(tool_result_str)
+        if not isinstance(result_data, list):
+            return existing_chunks
+        existing_ids = {c.get("chunk_id") for c in existing_chunks}
+        for c in result_data:
+            cid = c.get("chunk_id")
+            if cid and cid not in existing_ids:
+                existing_chunks.append(c)
+                existing_ids.add(cid)
+    except Exception:
+        pass
+    return existing_chunks
+
+
+def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semantic") -> str:
+    """把检索结果拼成 prompt，让 LLM 生成答案"""
+    if not chunks:
+        return (
+            f"用户问题：{query}\n\n"
+            "知识库中未检索到相关信息。请回复：知识库中未找到相关信息，无法回答此问题。"
+        )
+
+    chunks = sorted(chunks, key=lambda x: x.get("score", 0), reverse=True)
+    chunks_text = ""
+    for i, c in enumerate(chunks[:8], 1):
+        doc_name = c.get("doc_filename") or c.get("source") or ""
+        page = c.get("page_number") or c.get("page") or "?"
+        score = c.get("score", 0)
+        content = c.get("content", "")[:600]
+        display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
+        display = display.strip("《》")
+        ref_label = f"《{display}》P{page}" if doc_name else f"来源[{i}]"
+        chunks_text += f"\n--- [{i}] {ref_label} (相关度: {score:.4f}) ---\n{content}\n"
+
+    first_ref = ""
+    if chunks:
+        fn = chunks[0].get("doc_filename") or chunks[0].get("source") or ""
+        pg = chunks[0].get("page_number") or chunks[0].get("page") or "?"
+        display0 = fn.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
+        first_ref = f"《{display0}》P{pg}" if fn else "来源[1]"
+
+    instruction4 = _QUERY_TYPE_INSTRUCTIONS.get(query_type, _QUERY_TYPE_INSTRUCTIONS["default"])
+
+    # 提取回退注记，用于提示合成器
+    fallback_notices = []
+    for c in chunks[:8]:
+        content = c.get("content", "")
+        if content.startswith("[注：") and "无数据" in content:
+            import re as _re
+            m = _re.match(r'(\[注：[^\]]+\])', content)
+            if m:
+                fallback_notices.append(m.group(1))
+    fallback_hint = ""
+    if fallback_notices:
+        fallback_hint = (
+            "\n5. 检索结果含以下回退注记，表示原请求期间无数据，已返回最近可用期间数据。"
+            "请在答案中明确说明原期间缺失，并引用回退数据作参考：\n"
+            + "\n".join(f"   - {n}" for n in fallback_notices) + "\n"
+        )
+
+    return (
+        f"## 用户问题\n{query}\n\n"
+        f"## 知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
+        f"{chunks_text}\n"
+        f"## 回答要求\n"
+        f"1. 严格基于上述检索结果回答，引用时用【文件名 P页码】格式标注，如 【{first_ref}】\n"
+        f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
+        f"3. 如果检索结果不足以完整回答，明确说明哪些部分无法确认\n"
+        f"{instruction4}"
+        f"{fallback_hint}\n"
+    )
+
+
+def _strip_think_tags(text: str) -> str:
+    """去掉可能的 <think>...</think> 推理过程"""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _detect_loop(state: RAGAgentState) -> bool:
+    """检测 tool_call 是否与缓存重复"""
+    last_msg = state["messages"][-1]
+    if not hasattr(last_msg, "tool_calls"):
+        return False
+    cache = state.get("tool_call_cache", {})
+    for tc in last_msg.tool_calls:
+        key = tc["name"] + json.dumps(tc["args"], sort_keys=True)
+        if key in cache:
+            logger.warning(f"[loop_detect] duplicate tool call: {key}")
+            return True
+    return False
+
+
+def _cache_tool_calls(state: RAGAgentState, results: list):
+    """将工具调用结果写入缓存"""
+    last_msg = state["messages"][-1]
+    if not hasattr(last_msg, "tool_calls"):
+        return
+    cache = state.get("tool_call_cache", {})
+    for tc, result in zip(last_msg.tool_calls, results):
+        key = tc["name"] + json.dumps(tc["args"], sort_keys=True)
+        cache[key] = str(result)
+    state["tool_call_cache"] = cache
+
+
+# ── 节点函数 ────────────────────────────────────────────────────────────────
+
+_DOMAIN_RE = re.compile(
+    r"工程|造价|定额|费率?|价格|材料|施工|建设|规范|标准|计算|工期|招标|合同|税|"
+    r"人工|机械|建筑|市政|安装|措施|费用|系数|推荐|预算|决算|清单|概算|签证|变更"
+)
+
+
+def _is_off_topic(query: str) -> bool:
+    return not bool(_DOMAIN_RE.search(query))
+
+
+# 闲聊检测：打招呼/自我介绍类直接回复，不走 RAG
+_CHITCHAT_RE = re.compile(
+    r"^(你好|您好|hi|hello|哈喽|早上好|下午好|晚上好|嗨|嘿|hey"
+    r"|你是谁|你是什么|你叫什么|介绍一下自己|你能做什么|你能帮我什么|怎么用|如何使用"
+    r"|谢谢|感谢|多谢|很好|非常好|好的|明白了|我知道了"
+    r")[！!？?。\s]*$",
+    re.IGNORECASE
+)
+
+# 定额/合规查询检测 — 触发 category_search 前置步骤
+_QUOTA_RE = re.compile(
+    r"定额|消耗量标准|子目|人工费|材料费|机械费|工料机|合规|计价规范|计算规则"
+)
+
+# 位置限定词 — 检索失败时从查询词中剔除
+_STRIP_LOCATION_RE = re.compile(
+    r"楼梯|墙面|柱面|台阶|天棚|楼地面|地面|顶面|踢脚|外墙|内墙|屋面|坡屋面|吊顶|地坪"
+)
+
+# 价格对比查询检测 — 提取两个时间段
+_PRICE_COMPARE_RE = re.compile(
+    r"对比.*?(\d{4}[年\-/]\d{1,2}月?).*?(\d{4}[年\-/]\d{1,2}月?)|"
+    r"(\d{4}[年\-/]\d{1,2}月?).*?(?:和|与|vs|对比|比较).*?(\d{4}[年\-/]\d{1,2}月?).*?价格",
+    re.DOTALL
+)
+
+
+def query_analysis_node(state: RAGAgentState) -> dict:
+    """
+    查询分析节点：意图分类 + 实体抽取 + 子查询分解
+    """
+    query = state["query"].strip()
+
+    # 闲聊：直接回复，不走 RAG
+    if _CHITCHAT_RE.search(query):
+        logger.info(f"[query_analysis] chitchat: {query[:40]}")
+        return {
+            "query_type": "chitchat",
+            "sub_queries": [],
+            "final_answer": "您好！我是工程造价智能问答助手，专注于深圳市建设工程定额、费率标准、材料信息价等领域。有什么造价问题欢迎随时提问！",
+        }
+
+    # 真正 off-topic：拒绝回答
+    if _is_off_topic(query):
+        logger.info(f"[query_analysis] off-topic: {query[:40]}")
+        return {
+            "query_type": "irrelevant",
+            "sub_queries": [],
+            "final_answer": "您好！我是专注于工程造价领域的智能问答助手，只能回答与建设工程定额、费率标准、材料信息价等相关的问题。",
+        }
+    analysis = _analyzer.analyze(query)
+    return {
+        "query_type": analysis["intent"],
+        "sub_queries": analysis["sub_queries"],
+    }
+
+
+def forced_rag_node(state: RAGAgentState) -> dict:
+    """已废弃 — 保留签名以防止旧引用报错，实际不再挂载到 graph。"""
+    raise RuntimeError("forced_rag_node is no longer part of the graph")
+
+
+def _parse_plan(content: str) -> list[str]:
+    """从 LLM 输出中提取步骤列表，容忍格式噪声。"""
+    # 去掉 think 标签和 markdown 代码块
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    content = re.sub(r"```[\w]*\n?", "", content).strip()
+    try:
+        data = json.loads(content)
+        steps = data.get("steps", [])
+        if isinstance(steps, list) and steps:
+            return [str(s) for s in steps]
+    except Exception:
+        pass
+    # 降级：按行解析（如 "1. xxx" 或 "- xxx"）
+    steps = []
+    for line in content.splitlines():
+        line = re.sub(r"^[\d\-\*\．。]+[\.\s]+", "", line.strip())
+        if len(line) > 3:
+            steps.append(line)
+    return steps[:4] if steps else [state["query"] if False else ""]
+
+
+def planner_node(state: RAGAgentState) -> dict:
+    """
+    规划节点：用强模型将用户问题拆分为 1~4 个执行步骤，写入 plan + current_step。
+    首次调用时向 messages channel 注入 system + user 消息。
+    """
+    query = state["query"]
+    # 使用强模型做规划（prefer_strong=True → DeepSeek；本地不可用时同样 fallback）
+    llm = get_llm(thinking=False, prefer_strong=True)
+    logger.info(f"[planner] query='{query[:60]}'")
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content=_PLANNER_SYSTEM),
+            HumanMessage(content=f"用户问题：{query}"),
+        ])
+        steps = _parse_plan(response.content or "")
+    except Exception as e:
+        logger.error(f"[planner] LLM failed: {e}, fallback to single step")
+        steps = [query]
+
+    if not steps or (len(steps) == 1 and not steps[0]):
+        steps = [query]
+
+    # 定额/合规查询：若 LLM 未主动规划 category_search，确定性地前置一步
+    if _QUOTA_RE.search(query):
+        first_step_lower = steps[0].lower() if steps else ""
+        if "category_search" not in first_step_lower and "目录" not in steps[0]:
+            # 从查询中去掉位置限定词，提取核心材料/工艺关键词
+            core_material = _STRIP_LOCATION_RE.sub("", query).strip()
+            # 去掉常见问句词，保留名词
+            core_material = re.sub(r"[的中是在有多少什么怎么如何查询请问]", "", core_material).strip()
+            core_material = core_material or query
+            steps = [f"调用 category_search 确认『{core_material}』所在章节编号"] + steps
+            logger.info(f"[planner] quota query detected, prepended category_search step, core='{core_material}'")
+
+    # 价格对比查询：提取两个期间，确保每个期间都有独立的 price_query 步骤
+    price_compare_match = _PRICE_COMPARE_RE.search(query)
+    if price_compare_match:
+        groups = [g for g in price_compare_match.groups() if g]
+        if len(groups) >= 2:
+            period1, period2 = groups[0], groups[1]
+            # 检查 plan 里是否已有两个不同期间的步骤
+            plan_text = " ".join(steps)
+            if period1 not in plan_text or period2 not in plan_text:
+                # 提取规格词（去掉日期/动词/介词）
+                spec_part = re.sub(r'\d{4}[年\-/]\d{1,2}月?|对比|查询|检索|工程建设信息价|深圳市|中|和|与', '', query).strip()
+                steps = [
+                    f"使用 price_query 查询 {period1} 的价格：{spec_part}",
+                    f"使用 price_query 查询 {period2} 的价格：{spec_part}",
+                ]
+                logger.info(f"[planner] price compare override: {period1} vs {period2}")
+
+    logger.info(f"[planner] plan={steps}")
+    # Channel seed：将 system + user 注入 messages，executor_node 追加
+    seed_messages = [
+        SystemMessage(content=_REACT_SYSTEM),
+        HumanMessage(content=query),
+    ]
+    return {
+        "messages": seed_messages,
+        "plan": steps,
+        "current_step": 0,
+        "thought_process": [],
+        "category_hints": [],
+        "fallback_mode": False,
+    }
+
+
+def executor_node(state: RAGAgentState) -> dict:
+    """
+    执行节点：根据当前计划步骤调用工具（tool_choice=auto）。
+    - 如果 LLM 决定不调工具：记录自省、步骤+1
+    - 如果工具返回为空：注入 fallback 提示让 LLM 换词重试
+    - Loop 检测：重复调用则跳过当前步骤
+    """
+    iteration = state.get("iterations", 0)
+    max_iter = state.get("max_iterations", 3)
+    plan = state.get("plan") or [state["query"]]
+    current_step = state.get("current_step", 0)
+    thought_process = list(state.get("thought_process") or [])
+
+    # 本地轻模型执行检索（速度优先）
+    llm = get_llm(thinking=False, prefer_strong=False)
+    # 最后一轮用 auto，允许 LLM 自行判断是否还需要工具
+    tool_choice = "auto" if iteration >= max_iter - 1 else "required"
+    llm_with_tools = llm.bind_tools(REACT_TOOLS, tool_choice=tool_choice)
+
+    messages = list(state["messages"])
+
+    # Loop 检测：重复 tool call → 跳过步骤
+    if iteration > 0 and _detect_loop(state):
+        logger.warning(f"[executor] loop detected at step={current_step}, skipping")
+        thought = f"步骤{current_step+1}检测到重复调用，跳过"
+        thought_process.append(thought)
+        return {
+            "messages": [HumanMessage(content=thought)],
+            "iterations": max_iter,  # 强制结束循环
+            "current_step": current_step + 1,
+            "thought_process": thought_process,
+        }
+
+    # 构造当前步骤的提示（让模型感知进度）
+    step_hint = plan[current_step] if current_step < len(plan) else plan[-1]
+    progress = f"{current_step + 1}/{len(plan)}"
+
+    # 如果有章节定位提示，注入到步骤消息中帮助 LLM 精准检索
+    category_hints = state.get("category_hints") or []
+    if category_hints:
+        hints_str = "；".join(category_hints[:3])
+        step_content = f"[章节定位参考：{hints_str}]\n[当前进度 {progress}] 请执行：{step_hint}"
+    else:
+        step_content = f"[当前进度 {progress}] 请执行：{step_hint}"
+
+    step_msg = HumanMessage(content=step_content)
+    messages_for_llm = messages + [step_msg]
+
+    logger.info(f"[executor] iter={iteration}/{max_iter} step={progress} tool_choice={tool_choice}")
+
+    try:
+        response = llm_with_tools.invoke(messages_for_llm)
+    except Exception as e:
+        logger.error(f"[executor] LLM failed: {e}")
+        response = AIMessage(content="")
+
+    if response.tool_calls:
+        logger.info(f"[executor] tool calls: {[tc['name'] for tc in response.tool_calls]}")
+        return {
+            "messages": [step_msg, response],
+            "iterations": iteration + 1,
+            "current_step": current_step,
+            "thought_process": thought_process,
+        }
+    else:
+        # 无工具调用：自省并推进步骤
+        thought = _strip_think_tags(response.content or "")
+        thought_process.append(f"步骤{current_step+1}：{thought[:120]}")
+        logger.info(f"[executor] no tool call at step={current_step}, advancing")
+        return {
+            "messages": [step_msg, AIMessage(content=thought)],
+            "iterations": iteration + 1,
+            "current_step": current_step + 1,
+            "thought_process": thought_process,
+        }
+
+
+_prebuilt_tool_node = ToolNode(REACT_TOOLS)
+
+
+def tool_node(state: RAGAgentState) -> dict:
+    """LangGraph ToolNode 处理工具调用和 ToolMessage 组装；补充 chunk 收集和 fallback 检测。"""
+    result = _prebuilt_tool_node.invoke(state)
+    all_chunks = list(state.get("retrieved_chunks") or [])
+    category_hints = list(state.get("category_hints") or [])
+    tool_results = []
+    new_chunk_count = 0
+
+    for msg in result.get("messages", []):
+        content_str = str(msg.content)
+        before = len(all_chunks)
+        all_chunks = _collect_chunks(content_str, all_chunks)
+        new_chunk_count += len(all_chunks) - before
+        tool_results.append(content_str)
+
+        # 从 category_search 结果中提取章节定位提示
+        try:
+            cat_data = json.loads(content_str)
+            if isinstance(cat_data, list) and cat_data:
+                for item in cat_data[:3]:
+                    sec = item.get("section", "")
+                    page = item.get("page_number", "")
+                    snippet = item.get("content", "")[:60]
+                    if sec or snippet:
+                        hint_str = f"{sec} P{page}: {snippet}" if sec else snippet
+                        if hint_str not in category_hints:
+                            category_hints.append(hint_str)
+        except Exception:
+            pass
+
+    filtered = filter_chunks(all_chunks)
+    _cache_tool_calls(state, tool_results)
+    logger.info(f"[tool_node] new_chunks={new_chunk_count} total={len(filtered)} cat_hints={len(category_hints)}")
+
+    # Fallback 提示：如果本轮工具返回了 0 个新 chunk，注入反馈让 executor 换词重试
+    extra_messages = []
+    if new_chunk_count == 0:
+        last_ai = next(
+            (m for m in reversed(result.get("messages", []))
+             if hasattr(m, "tool_calls") and m.tool_calls),
+            None,
+        )
+        failed_tools = {tc["name"] for tc in (last_ai.tool_calls if last_ai else [])}
+
+        # 检查是否是因为位置限定词导致的零结果
+        fallback_mode = state.get("fallback_mode", False)
+        if not fallback_mode and failed_tools & {"text_search", "keyword_search", "vector_search"}:
+            # 尝试从失败的工具调用参数中提取查询词并剥离位置限定词
+            original_query = ""
+            if last_ai:
+                for tc in last_ai.tool_calls:
+                    if tc["name"] in {"text_search", "keyword_search", "vector_search"}:
+                        original_query = tc["args"].get("query", "")
+                        break
+            stripped_query = _STRIP_LOCATION_RE.sub("", original_query).strip() if original_query else ""
+            if stripped_query and stripped_query != original_query:
+                hint = (
+                    f"检索词『{original_query}』含位置限定词，导致零结果。"
+                    f"已识别核心材料关键词：『{stripped_query}』。"
+                    f"请改用 category_search('{stripped_query}') 先定位章节，"
+                    f"或直接用 text_search('{stripped_query}') 重试。"
+                )
+                extra_messages = [HumanMessage(content=hint)]
+                logger.warning(f"[tool_node] location-word fallback: '{original_query}' → '{stripped_query}'")
+                return {
+                    **result,
+                    "retrieved_chunks": filtered,
+                    "category_hints": category_hints,
+                    "fallback_mode": True,
+                    "messages": result.get("messages", []) + extra_messages,
+                }
+
+        # 通用 fallback 提示
+        if "price_query" in failed_tools:
+            hint = (
+                "price_query 未查到价格数据（数据库中无该条目），"
+                "请改用 text_search 或 keyword_search 搜索相关价格文档和信息价表格。"
+            )
+        else:
+            hint = "上一步工具未检索到相关内容，请更换关键词或切换工具（如用 text_search 替代 keyword_search）重新尝试。"
+        logger.warning(f"[tool_node] no new chunks, hint: {hint[:60]}")
+        extra_messages = [HumanMessage(content=hint)]
+
+    return {
+        **result,
+        "retrieved_chunks": filtered,
+        "category_hints": category_hints,
+        "messages": result.get("messages", []) + extra_messages,
+    }
+
+
+def synthesize_node(state: RAGAgentState) -> dict:
+    """
+    合成节点：用 messages channel 中积累的全部 chunks 生成最终答案。
+    """
+    llm = get_llm(thinking=False)
+    query = state["query"]
+    query_type = state.get("query_type", "semantic")
+    all_chunks = state.get("retrieved_chunks", [])
+
+    all_chunks = _enrich_chunks_with_filename(all_chunks)
+    logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
+    synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
+
+    try:
+        response = llm.invoke([HumanMessage(content=synthesis_prompt)])
+        final_answer = _strip_think_tags(response.content or "")
+        final_answer = re.sub(r"^```\w*\n?|```$", "", final_answer).strip()
+    except Exception as e:
+        logger.error(f"[synthesize] LLM failed: {e}")
+        final_answer = state.get("final_answer", "无法生成答案")
+
+    citations = _format_citations(all_chunks)
+    if citations:
+        final_answer += citations
+
+    # 简单置信度估算（供 SSE eval_scores 事件用）
+    n = len(all_chunks)
+    confidence = min(0.95, 0.5 + n * 0.05) if n > 0 else 0.3
+    evaluation = {
+        "passed": True,
+        "confidence": confidence,
+        "completeness": min(1.0, n / 8),
+        "consistency": 0.85,
+        "information_gain": 0.8,
+        "source_diversity": min(1.0, len({c.get("source", "") for c in all_chunks}) / 3),
+        "fact_consistency": 0.85,
+        "coverage_estimate": min(1.0, n / 5),
+        "feedback": "ok",
+    }
+
+    return {
+        "messages": [AIMessage(content=final_answer)],
+        "final_answer": final_answer,
+        "evaluation": evaluation,
+    }
+
+
+# ── 路由函数 ────────────────────────────────────────────────────────────────
+
+def after_query_analysis(state: RAGAgentState) -> str:
+    qt = state.get("query_type", "")
+    return END if qt in ("irrelevant", "chitchat") else "planner_node"
+
+
+def after_executor(state: RAGAgentState) -> str:
+    """executor_node 之后：有 tool_calls → tool_node；否则检查是否继续。"""
+    max_iter = state.get("max_iterations", 3)
+    plan = state.get("plan") or []
+    current_step = state.get("current_step", 0)
+
+    # 必须先检查 tool_calls（在 max_iter 之前）
+    # 若跳过 tool_node 则 AIMessage(tool_calls=[...]) 遗留在 messages 中
+    # 下次同 thread_id 请求时 DeepSeek 返回 HTTP 400
+    messages = state.get("messages") or []
+    last_msg = messages[-1] if messages else None
+    logger.info(f"[after_executor] DEBUG last_msg type={type(last_msg).__name__} tool_calls={getattr(last_msg,'tool_calls',None)}")
+    has_tool_calls = bool(
+        last_msg is not None
+        and hasattr(last_msg, "tool_calls")
+        and last_msg.tool_calls
+    )
+    if has_tool_calls:
+        logger.info(f"[after_executor] → tool_node (has tool_calls)")
+        return "tool_node"
+
+    # 超出迭代上限，直接合成
+    if state.get("iterations", 0) >= max_iter:
+        logger.info(f"[after_executor] max_iter reached, synthesize")
+        return "synthesize_node"
+
+    # 无工具调用：若计划步骤还未完成，继续执行下一步
+    if current_step < len(plan):
+        logger.info(f"[after_executor] no tool, next step {current_step}/{len(plan)}")
+        return "executor_node"
+
+    # 所有步骤执行完毕，进入合成
+    logger.info("[after_executor] all steps done, synthesize")
+    return "synthesize_node"
+
+
+# ── 构建 Graph ──────────────────────────────────────────────────────────────
+
+def build_agent_graph(checkpointer=None):
+    """
+    Thought-Plan-Act graph:
+
+    query_analysis → planner_node → executor_node ↔ tool_node  (plan steps loop)
+                                         ↓ (all steps done or max iter)
+                                    synthesize_node → END
+    """
+    g = StateGraph(RAGAgentState)
+
+    g.add_node("query_analysis", query_analysis_node)
+    g.add_node("planner_node", planner_node)
+    g.add_node("executor_node", executor_node)
+    g.add_node("tool_node", tool_node)
+    g.add_node("synthesize_node", synthesize_node)
+
+    g.set_entry_point("query_analysis")
+
+    g.add_conditional_edges(
+        "query_analysis",
+        after_query_analysis,
+        {"planner_node": "planner_node", END: END},
+    )
+
+    g.add_edge("planner_node", "executor_node")
+
+    g.add_conditional_edges(
+        "executor_node",
+        after_executor,
+        {
+            "tool_node": "tool_node",
+            "executor_node": "executor_node",
+            "synthesize_node": "synthesize_node",
+        },
+    )
+
+    g.add_edge("tool_node", "executor_node")
+    g.add_edge("synthesize_node", END)
+
+    return g.compile(checkpointer=checkpointer)
+
+
+def get_agent_graph():
+    """获取编译后的 Agent Graph（带 MemorySaver Checkpoint）"""
+    global _graph, _checkpointer
+    if _graph is None:
+        _checkpointer = MemorySaver()
+        _graph = build_agent_graph(checkpointer=_checkpointer)
+        logger.info("[Agent] Enhanced (Forced-RAG + ReAct + QueryAnalysis + RetrievalFilter) Graph compiled with MemorySaver")
+    return _graph

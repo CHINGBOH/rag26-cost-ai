@@ -1,15 +1,7 @@
 """
-统一检索管道 - 召回精排全流程
-
-文件归属: 检索层
-依赖:
-  - services/query_analysis_agent.py (查询分析)
-  - infrastructure/adapters/unified (存储)
-  - domain_models/retrieval.py (数据模型)
-被依赖:
-  - api/routes.py (API调用)
-  - application/usecases.py (用例层)
-输出协议: RetrievalResponse | EnhancedRetrievalResponse
+统一检索管道 - 单库改造后
+召回: pgvector similarity + tsvector fulltext
+融合: vector + text + rerank
 """
 
 import uuid
@@ -44,9 +36,6 @@ try:
 except ImportError:
     QUERY_ANALYSIS_AVAILABLE = False
     logging.warning("QueryAnalysisAgent not available")
-    # 定义虚拟类型以避免类型错误
-    from typing import Any
-
     QueryAnalysisResult = Any
     QueryAnalysisAgent = Any
 
@@ -65,13 +54,8 @@ class SubQueryResult:
 
 class UnifiedRetrievalPipeline:
     """
-    统一检索管道 - 增强版
-
-    增强功能:
-    - 查询意图分析 (可选，通过 ENABLE_QUERY_ANALYSIS env var 启用)
-    - 复杂查询分解为子查询
-    - 多路并行召回
-    - 结果智能合并
+    统一检索管道 - 单库改造版
+    双路召回: pgvector similarity + tsvector fulltext
     """
 
     def __init__(self, store: Optional[UnifiedStore] = None):
@@ -85,15 +69,7 @@ class UnifiedRetrievalPipeline:
         logger.info(f"UnifiedRetrievalPipeline initialized (query_analysis={self.enable_query_analysis})")
 
     def retrieve(self, request: RetrievalRequest) -> RetrievalResponse:
-        """
-        执行检索 - 增强版支持查询分析
-
-        流程:
-        1. 查询分析 (意图识别、实体提取、子查询分解) - 可选
-        2. 子查询并行执行
-        3. 结果合并与去重
-        4. 精排与分数融合
-        """
+        """执行检索"""
         request_id = str(uuid.uuid4())
         start_time = datetime.now()
 
@@ -111,22 +87,18 @@ class UnifiedRetrievalPipeline:
 
         documents = self._retrieve_simple(request, request_id)
 
-        # 统计
         latency_ms = (datetime.now() - start_time).total_seconds() * 1000
         self.request_count += 1
         self.total_latency_ms += latency_ms
 
-        # 构建stats字典
         stats = {
             "query_analyzed": query_analysis is not None,
             "total_documents": len(documents),
         }
 
-        # 附加查询分析结果到stats
         if query_analysis:
             stats["query_analysis"] = query_analysis.to_dict()
 
-        # 构建响应
         response = RetrievalResponse(
             request_id=request_id,
             documents=documents,
@@ -145,40 +117,34 @@ class UnifiedRetrievalPipeline:
     def _retrieve_simple(
         self, request: RetrievalRequest, request_id: str
     ) -> List[RetrievedDocument]:
-        """简单检索 (无子查询分解)"""
+        """简单检索 (双路: vector + text)"""
         search_query = SearchQuery(
             query_id=request_id,
             text=request.query,
             session_id=request.session_id,
-            mode="keyword",  # 使用ES关键词召回
+            mode="hybrid",
             top_k=10,
             filters=request.filters,
         )
 
-        # 启用关键词召回 (ES有1241条数据)
         import copy
         config = copy.deepcopy(request.config)
-        config.graph_top_k = 5
-        config.vector_top_k = 0  # 向量库为空，禁用
-        config.keyword_top_k = 20  # ES有1241条数据
+        # 启用双路召回
+        config.vector_top_k = 30
+        config.keyword_top_k = 20
+        config.graph_top_k = 0  # 不再使用图谱
 
         context = self.store.search(search_query, config)
 
         documents = []
         for item in context.results:
             if item.chunk:
-                # 确定使用哪个得分
                 score = getattr(item, "final_score", None)
                 if score is None:
-                    # 尝试使用rerank_score
                     score = getattr(item, "rerank_score", None)
                     if score is None:
-                        # 尝试使用graph_score
-                        score = getattr(item, "graph_score", None)
-                        if score is None:
-                            # 尝试使用vector_score或keyword_score
-                            score = getattr(item, "vector_score", getattr(item, "keyword_score", 0))
-                
+                        score = getattr(item, "vector_score", getattr(item, "keyword_score", 0))
+
                 documents.append(
                     RetrievedDocument(
                         doc_id=item.chunk.doc_id,
@@ -187,9 +153,8 @@ class UnifiedRetrievalPipeline:
                         score=score,
                         metadata={
                             "vector_score": getattr(item, "vector_score", 0),
-                            "keyword_score": getattr(item, "keyword_score", 0),
+                            "text_score": getattr(item, "keyword_score", 0),
                             "rerank_score": getattr(item, "rerank_score", 0),
-                            "graph_score": getattr(item, "graph_score", 0),
                             "page_number": item.chunk.page_number,
                             "section": getattr(item.chunk, "section", ""),
                         },
@@ -201,17 +166,10 @@ class UnifiedRetrievalPipeline:
     def _retrieve_with_sub_queries(
         self, request: RetrievalRequest, query_analysis: QueryAnalysisResult, request_id: str
     ) -> List[RetrievedDocument]:
-        """
-        使用子查询分解进行检索
-
-        并行执行多个子查询，然后合并结果
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
+        """使用子查询分解进行检索"""
         all_results: List[RetrievedDocument] = []
-        seen_chunks = set()  # 去重
+        seen_chunks = set()
 
-        # 串行执行 (简化版，生产环境可用线程池并行)
         for sub_q in query_analysis.sub_queries:
             logger.info(f"Executing sub-query [{sub_q.query_id}]: {sub_q.query_text}")
 
@@ -224,20 +182,16 @@ class UnifiedRetrievalPipeline:
 
             sub_results = self._retrieve_simple(sub_request, f"{request_id}_{sub_q.query_id}")
 
-            # 合并结果 (去重)
             for doc in sub_results:
                 key = (doc.doc_id, doc.chunk_id)
                 if key not in seen_chunks:
                     seen_chunks.add(key)
-                    # 标记子查询来源
                     doc.metadata["sub_query_id"] = sub_q.query_id
                     doc.metadata["sub_query_intent"] = sub_q.intent.value
                     all_results.append(doc)
 
-        # 按分数排序
         all_results.sort(key=lambda x: x.score, reverse=True)
-
-        return all_results[:20]  # 返回Top 20
+        return all_results[:20]
 
     def index_documents(self, documents: List[Document]) -> Dict[str, Any]:
         """批量索引文档"""

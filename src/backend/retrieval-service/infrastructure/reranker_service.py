@@ -24,24 +24,29 @@ class RerankerService:
         """加载Reranker模型"""
         try:
             from sentence_transformers import CrossEncoder
+            import glob
 
-            # 设置离线环境变量
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
-            # 动态计算模型目录：优先使用环境变量，其次使用项目根目录下的models目录
+            # 动态计算模型目录
             models_dir = os.environ.get("MODELS_DIR")
             if not models_dir:
-                # 计算项目根目录：src/backend/python-legacy/infrastructure/adapters -> ../../../../../
                 current_dir = os.path.dirname(os.path.abspath(__file__))
-                project_root = os.path.abspath(os.path.join(current_dir, "../../../../.."))
+                project_root = os.path.abspath(os.path.join(current_dir, "../../../.."))
                 models_dir = os.path.join(project_root, "models")
 
-            logger.info(f"Loading reranker model: {self.model_name}, cache_dir: {models_dir}")
+            # 关键：传本地快照路径而非模型名，绕过 transformers 的网络调用 bug
+            cache_model_name = self.model_name.replace("/", "--")
+            snapshot_pattern = os.path.join(models_dir, f"models--{cache_model_name}", "snapshots", "*")
+            snapshots = sorted(glob.glob(snapshot_pattern))
+
+            if snapshots:
+                model_path = snapshots[-1]  # 取最新快照
+                logger.info(f"Loading reranker from local snapshot: {model_path}")
+            else:
+                model_path = self.model_name
+                logger.warning(f"No local snapshot found, falling back to model name: {model_path}")
+
             self.model = CrossEncoder(
-                self.model_name,
-                cache_folder=models_dir,
-                local_files_only=True,
+                model_path,
                 device=self.device,
                 max_length=512,
             )

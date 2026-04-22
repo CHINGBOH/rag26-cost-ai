@@ -1,0 +1,23 @@
+from typing import Annotated
+import operator
+from typing_extensions import TypedDict
+from langchain_core.messages import BaseMessage
+
+
+class RAGAgentState(TypedDict):
+    messages: Annotated[list[BaseMessage], operator.add]  # Channel: append-only
+    query: str
+    query_type: str                     # 'price' | 'semantic' | 'calculation' | 'comparison' | 'trend_chart' | 'standard_ref'
+    sub_queries: list[str]              # 分解后的子查询列表
+    plan: list[str]                     # planner_node 生成的步骤列表
+    current_step: int                   # executor_node 当前执行到第几步
+    thought_process: list[str]          # 每步执行后的自省摘要
+    iterations: int
+    max_iterations: int
+    retrieved_chunks: list[dict]        # 工具返回后填充（已过滤）
+    evaluation: dict | None             # 评估节点填充
+    final_answer: str                   # 最终答案
+    tool_call_cache: dict[str, str]     # {tool_name+args_hash: result} 去重缓存
+    calculation_inputs: dict            # 从 chunks 中提取的数值 {name: value}
+    category_hints: list[str]          # category_search 返回的章节定位字符串，跨步骤传递
+    fallback_mode: bool                 # True = 已触发位置词降级，防止无限循环

@@ -90,10 +90,19 @@ class OCRTable(BaseModel):
     cells: List[OCRTableCell]
 
 
+class OCRFigure(BaseModel):
+    """Detected chart / figure region with OCR-extracted text labels."""
+    bbox: dict
+    region_type: str          # 'figure', 'chart', 'diagram', 'formula', etc.
+    text_in_region: str       # All text found inside the figure bounding box
+    confidence: float
+
+
 class OCRPageResult(BaseModel):
     page_number: int
     text_blocks: List[OCRTextBlock]
     tables: List[OCRTable]
+    figures: List[OCRFigure]  # chart / trend-graph regions
     raw_text: str
     markdown: str
     confidence: float
@@ -184,10 +193,25 @@ async def shutdown_event():
 
 @app.get("/health")
 async def health_check():
+    use_gpu = False
+    gpu_name = None
+    try:
+        import paddle
+        if paddle.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+            use_gpu = True
+            try:
+                gpu_name = paddle.device.cuda.get_device_name(0)
+            except Exception:
+                gpu_name = "unknown"
+    except Exception:
+        pass
     return {
         "status": "ok",
         "paddle_available": PADDLE_AVAILABLE,
         "ocr_initialized": ocr_engine is not None,
+        "table_engine_initialized": table_engine is not None,
+        "use_gpu": use_gpu,
+        "gpu_name": gpu_name,
     }
 
 
@@ -509,6 +533,7 @@ def _process_image_sync(image_path: str) -> OCRPageResult:
             )
 
     tables: List[OCRTable] = []
+    figures: List[OCRFigure] = []
     if table_engine is not None:
         try:
             with Image.open(image_path) as img:
@@ -520,7 +545,8 @@ def _process_image_sync(image_path: str) -> OCRPageResult:
 
             structure_result = table_engine(img_array)
             for region in structure_result:
-                if region.get("type") == "table":
+                region_type = region.get("type", "")
+                if region_type == "table":
                     html = region.get("res", {}).get("html", "")
                     if html:
                         cells = _parse_table_cells_from_html(html)
@@ -531,8 +557,44 @@ def _process_image_sync(image_path: str) -> OCRPageResult:
                                 cells=cells,
                             )
                         )
+                elif region_type in ("figure", "chart", "diagram", "formula"):
+                    # Crop the figure/chart region and run OCR to extract all text
+                    # (axis labels, tick values, legends, data annotations, etc.)
+                    bbox_raw = region.get("bbox", [])
+                    fig_bbox = {}
+                    fig_texts = []
+                    fig_confidences = []
+                    if len(bbox_raw) == 4:
+                        x1, y1, x2, y2 = int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])
+                        fig_bbox = {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
+                        # Crop and re-OCR the chart region to capture all text inside
+                        img_h, img_w = img_array.shape[:2]
+                        x1c, y1c = max(0, x1), max(0, y1)
+                        x2c, y2c = min(img_w, x2), min(img_h, y2)
+                        if x2c > x1c and y2c > y1c:
+                            cropped = img_array[y1c:y2c, x1c:x2c]
+                            try:
+                                crop_ocr = ocr_engine.ocr(cropped, cls=True)
+                                if crop_ocr and crop_ocr[0]:
+                                    for line in crop_ocr[0]:
+                                        text = line[1][0]
+                                        conf = line[1][1]
+                                        fig_texts.append(text)
+                                        fig_confidences.append(conf)
+                            except Exception as fe:
+                                print(f"Figure crop OCR failed: {fe}")
+                    fig_text = "\n".join(fig_texts)
+                    fig_conf = sum(fig_confidences) / len(fig_confidences) if fig_confidences else 0.0
+                    figures.append(
+                        OCRFigure(
+                            bbox=fig_bbox,
+                            region_type=region_type,
+                            text_in_region=fig_text,
+                            confidence=fig_conf,
+                        )
+                    )
         except Exception as e:
-            print(f"Table detection failed: {e}")
+            print(f"Table/figure detection failed: {e}")
 
     # Clear GPU cache between pages to prevent OOM
     try:
@@ -550,6 +612,7 @@ def _process_image_sync(image_path: str) -> OCRPageResult:
         page_number=0,
         text_blocks=text_blocks,
         tables=tables,
+        figures=figures,
         raw_text=raw_text,
         markdown=markdown,
         confidence=avg_confidence,

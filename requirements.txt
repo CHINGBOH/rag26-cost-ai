@@ -16,10 +16,8 @@ redis==5.0.1
 qdrant-client==1.7.0
 
 # 知识图谱
-neo4j==5.17.0
 
 # 全文搜索
-elasticsearch==8.12.0
 
 # 机器学习模型
 sentence-transformers==2.3.1

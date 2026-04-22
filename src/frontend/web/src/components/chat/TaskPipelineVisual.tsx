@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { PipelineStage } from './ChatInterface';
+import { PipelineStage } from './types';
 import { ragStages, uiConfig, chatFlowConfig } from '../../config';
 
 interface TaskPipelineVisualProps {

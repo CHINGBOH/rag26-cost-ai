@@ -32,7 +32,7 @@ project_root = os.path.dirname(
 )  # ../../../../ -> rag-dashboard
 sys.path.insert(0, project_root)
 
-from domain_models.document import (
+from domain_models.document_models import (
     Document,
     DocumentChunk,
     DocumentMetadata,

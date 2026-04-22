@@ -32,7 +32,8 @@ const RAGChat = () => {
   }, [messages, activeTask]);
 
   const connectWebSocket = () => {
-    const ws = new WebSocket(`ws://localhost:8081/ws?room=${userId.current}`);
+    const wsUrl = import.meta.env.VITE_WS_URL || `ws://${window.location.host}/ws?room=${userId.current}`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {

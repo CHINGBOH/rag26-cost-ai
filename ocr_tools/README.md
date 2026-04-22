@@ -1,262 +1,94 @@
-# OCR处理工具集使用指南
+# OCR 批量扫描工具
 
-完整的一站式PDF OCR处理工具，支持从小文件到大文件的智能处理。
+基于 PaddleOCR PP-OCRv4 + PPStructure（GPU: NVIDIA RTX 4070）的 PDF 批量 OCR 工具。
 
-## 📋 目录结构
+## 目录结构
 
 ```
-/home/l/rag-dashboard/
-├── ocr_tools-master.sh          # 主控脚本
-└── ocr_tools/                   # 工具目录
-    ├── process_small_files.py   # 小文件处理 (<50MB)
-    ├── process_medium_files.py  # 中等文件处理 (50-200MB)
-    ├── process_large_files.py   # 大文件处理 (>200MB)
-    ├── merge_results.py         # 结果合并工具
-    ├── validate_results.py      # 质量验证工具
-    └── generate_report.py       # 报告生成工具
+ocr_tools/
+├── batch_scan.py          # 主工具：批量扫描 PDF → JSON
+├── README.md              # 本文档
+├── generate_report.py     # 从 OCR 结果生成汇总报告
+├── merge_results.py       # 合并多个 JSON 结果
+└── validate_results.py    # 校验 OCR 结果完整性
+
+data/ocr_outputs/
+├── _scan_state.json       # 扫描进度（跳过已完成的文件）
+├── 深圳信息价/             # 镜像 knowledge_base 目录结构
+└── 深圳市建设工程地方标准/
 ```
 
-## 🚀 快速开始
-
-### 1. 启动OCR服务
+## 快速开始
 
 ```bash
-# 检查服务状态
-bash ocr_tools-master.sh check
+# 查看当前扫描进度
+python3 ocr_tools/batch_scan.py --status
 
-# 或手动启动
-docker run -d -p 8001:8001 --name ocr-gpu ocr-service:gpu
+# 扫描所有未处理的 PDF（断点续扫）
+python3 ocr_tools/batch_scan.py
+
+# 强制重新扫描（覆盖已完成）
+python3 ocr_tools/batch_scan.py --force
+
+# 扫描单个文件
+python3 ocr_tools/batch_scan.py --pdf "data/knowledge_base/深圳信息价/2025-01.pdf"
 ```
 
-### 2. 交互式使用
+## OCR 服务信息
 
-```bash
-bash ocr_tools-master.sh
+| 项目 | 说明 |
+|------|------|
+| 地址 | http://localhost:8001 |
+| 容器 | `docker ps` → `ocr-gpu` |
+| 引擎 | PaddleOCR PP-OCRv4（中英文） |
+| GPU | NVIDIA RTX 4070 / CUDA 12.6 |
+| 框架 | PaddlePaddle 3.2.0 |
+| 表格 | PPStructure layout+table |
+
+健康检查：`curl http://localhost:8001/health`
+
+## JSON 输出格式
+
+```json
+{
+  "document_id": "doc_pdf_xxx",
+  "file_name": "2025-01.pdf",
+  "total_pages": 41,
+  "pages": [
+    {
+      "page_number": 1,
+      "confidence": 0.972,
+      "raw_text": "...",
+      "text_blocks": [{"text": "...", "confidence": 0.99, "bbox": {"x":0,"y":0,"width":100,"height":20}}],
+      "tables": [{"html": "<table>...", "markdown": "| 列1 | 列2 |...", "cells": [...]}],
+      "figures": [
+        {
+          "region_type": "figure",
+          "bbox": {"x": 127, "y": 991, "width": 942, "height": 386},
+          "text_in_region": "230\n225\n多层住宅\n220\n高层住宅\n...",
+          "confidence": 0.979
+        }
+      ]
+    }
+  ]
+}
 ```
 
-选择菜单中的选项进行操作。
+### figures.text_in_region 说明
+走势图/坐标图内的所有文字（Y轴刻度、X轴标签、图例名称、单位标注）。
+实现方式：PPStructure 检测 figure 区域 → 裁剪子图 → 单独再次 OCR。
 
-### 3. 命令行使用
+## 性能参考（RTX 4070）
 
-```bash
-# 分析文件
-bash ocr_tools-master.sh analyze
+| 文件类型 | 页数 | 大小 | 估计耗时 |
+|---------|------|------|---------|
+| 小型标准文件 | 12页 | 0.2MB | ~30s |
+| 信息价月刊 | 75页 | 22MB | ~8min |
+| 大型规范手册 | 558页 | 124MB | ~60min |
+| 超大扫描版 | 47页 | 538MB | ~10min |
 
-# 处理小文件
-bash ocr_tools-master.sh small
+## 注意事项
 
-# 处理中等文件
-bash ocr_tools-master.sh medium
-
-# 处理大文件
-bash ocr_tools-master.sh large
-
-# 合并结果
-bash ocr_tools-master.sh merge
-
-# 验证质量
-bash ocr_tools-master.sh validate
-
-# 生成报告
-bash ocr_tools-master.sh report
-
-# 完整流程
-bash ocr_tools-master.sh all
-```
-
-## 📊 文件分类策略
-
-### 小文件 (<50MB)
-- **处理方式**: 同步端点
-- **适用场景**: 文档页数少，处理速度快
-- **处理时间**: 通常几秒到几十秒
-
-### 中等文件 (50-200MB)
-- **处理方式**: 异步端点
-- **适用场景**: 中型PDF，需要后台处理
-- **处理时间**: 通常1-3分钟
-
-### 大文件 (>200MB)
-- **处理方式**: 拆分后处理
-- **适用场景**: 超大PDF，需要分块处理
-- **处理时间**: 取决于文件大小，可能需要更长时间
-- **要求**: 需要安装 `poppler-utils`
-
-## 🔧 环境要求
-
-### 必需工具
-- **Python 3.8+**
-- **Docker** (用于OCR服务)
-- **PaddleOCR Docker镜像**: `ocr-service:gpu`
-
-### 可选工具 (用于大文件处理)
-```bash
-sudo apt-get install poppler-utils
-```
-
-### Python依赖
-```bash
-pip install requests
-```
-
-## 📝 输出文件说明
-
-每个处理的PDF文件会生成以下输出：
-
-### JSON格式文件
-- **文件名**: `{原文件名}_ocr.json`
-- **内容**: 完整的OCR结果，包含:
-  - 文档元数据 (ID, 文件名, 总页数)
-  - 每页的文本块 (文本、置信度、边界框坐标)
-  - 表格数据 (HTML和Markdown格式)
-  - 完整文本内容
-  - 处理时间统计
-
-### 文本格式文件
-- **文件名**: `{原文件名}_text.txt`
-- **内容**: 提取的纯文本内容
-
-### 合并文件 (仅限大文件)
-- **文件名**: `{原文件名}_merged_ocr.json`
-- **内容**: 合并后的完整OCR结果
-
-## 🎯 使用示例
-
-### 处理单个目录
-
-```bash
-# 修改脚本中的SOURCE_DIRS变量
-SOURCE_DIRS=["/path/to/your/pdfs"]
-
-# 然后运行
-bash ocr_tools-master.sh all
-```
-
-### 处理特定大小的文件
-
-```bash
-# 只处理小文件
-bash ocr_tools-master.sh small
-
-# 只处理中等文件
-bash ocr_tools-master.sh medium
-```
-
-### 验证处理质量
-
-```bash
-# 运行质量验证
-bash ocr_tools-master.sh validate
-
-# 查看详细报告
-cat /home/l/知识库测试资料/ocr_results/quality_report.json
-```
-
-### 生成处理报告
-
-```bash
-# 生成Markdown和JSON格式报告
-bash ocr_tools-master.sh report
-
-# 查看报告
-cat /home/l/知识库测试资料/ocr_results/ocr_report.md
-```
-
-## 🔍 故障排查
-
-### OCR服务无法启动
-```bash
-# 检查端口占用
-netstat -tulpn | grep 8001
-
-# 停止并重启容器
-docker stop ocr-gpu
-docker rm ocr-gpu
-docker run -d -p 8001:8001 --name ocr-gpu ocr-service:gpu
-```
-
-### 处理大文件失败
-```bash
-# 安装必要工具
-sudo apt-get update
-sudo apt-get install poppler-utils
-
-# 验证工具安装
-pdfinfo --version
-pdfseparate --version
-pdfunite --version
-```
-
-### 内存不足
-```bash
-# 查看容器内存使用
-docker stats ocr-gpu
-
-# 增加容器内存限制
-docker run -d -p 8001:8001 --memory=4g --name ocr-gpu ocr-service:gpu
-```
-
-## 📈 性能优化建议
-
-### 1. 批量处理
-```bash
-# 按大小顺序处理，先处理小文件
-bash ocr_tools-master.sh small
-bash ocr_tools-master.sh medium
-bash ocr_tools-master.sh large
-```
-
-### 2. 并行处理
-对于小文件，可以修改脚本支持并行处理。
-
-### 3. 缓存模型
-OCR模型已预下载，首次启动后无需重新下载。
-
-### 4. 磁盘空间
-确保有足够的磁盘空间存储结果文件（通常为原文件的2-10倍）。
-
-## 🛠️ 高级配置
-
-### 自定义阈值
-修改各脚本中的阈值变量：
-
-```python
-# 在 process_small_files.py 中
-SMALL_FILE_THRESHOLD = 50  # MB
-
-# 在 process_medium_files.py 中
-MIN_FILE_SIZE = 50  # MB
-MAX_FILE_SIZE = 200  # MB
-
-# 在 process_large_files.py 中
-LARGE_FILE_THRESHOLD = 200  # MB
-PAGES_PER_CHUNK = 50  # 每个分块的页数
-```
-
-### 自定义输出目录
-修改所有脚本中的OUTPUT_DIR变量：
-
-```python
-OUTPUT_DIR = "/your/custom/output/directory"
-```
-
-### OCR服务配置
-如需修改OCR服务配置，可以修改Docker运行参数或OCR服务的配置文件。
-
-## 📞 支持与反馈
-
-如遇到问题，请检查：
-1. OCR服务是否正常运行
-2. 磁盘空间是否充足
-3. 网络连接是否正常
-4. 文件权限是否正确
-
-## 📄 许可证
-
-本工具集用于PDF文件的OCR处理，遵循相关法律法规使用。
-
-## 🔄 版本历史
-
-- **v1.0** - 初始版本，支持小文件、中等文件和大文件处理
-- **v1.1** - 添加质量验证和报告生成功能
-- **v1.2** - 优化大文件处理和结果合并功能
+1. 必须先启动 OCR 容器：脚本会自动检查，若服务不在线会报错退出
+2. 断点续扫：`_scan_state.json` 记录每个文件状态，`--force` 才会覆盖
+3. 大文件上传（>100MB）需等待，上传超时设为 120s

@@ -88,9 +88,12 @@ class CompleteRAGService:
         total_start = time.time()
         
         try:
-            # Step 1: 向量化查询
+            # Step 1: 向量化查询（在线程池中执行，避免阻塞事件循环）
             embed_start = time.time()
-            query_embedding = self.embedding_model.encode(query, convert_to_numpy=True)
+            loop = asyncio.get_running_loop()
+            query_embedding = await loop.run_in_executor(
+                None, lambda: self.embedding_model.encode(query, convert_to_numpy=True)
+            )
             embedding_time = time.time() - embed_start
             
             # Step 2: 从数据库检索候选

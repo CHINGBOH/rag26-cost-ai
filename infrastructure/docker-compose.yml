@@ -1,9 +1,30 @@
 # RAG Dashboard 基础设施
-# 包含: Qdrant (向量库) + Elasticsearch (关键词库) + Neo4j (图库) + Redis (缓存)
+# 包含: PostgreSQL+pgvector (单库) + Qdrant (上下文缓存) + Elasticsearch (关键词库) + Neo4j (图库) + Redis (缓存)
 
 version: '3.8'
 
 services:
+  # 0. PostgreSQL + pgvector — 单库主力
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=rag_db
+      - POSTGRES_USER=rag_user
+      - POSTGRES_PASSWORD=rag_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rag-network
+
   # 1. Qdrant - 向量数据库
   qdrant:
     image: qdrant/qdrant:v1.8.0
@@ -115,6 +136,7 @@ networks:
     driver: bridge
 
 volumes:
+  postgres_data:
   qdrant_storage:
   es_data:
   neo4j_data:

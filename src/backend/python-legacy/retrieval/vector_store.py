@@ -307,6 +307,7 @@ class EmbeddingService:
         try:
             from sentence_transformers import SentenceTransformer
             import os
+            import torch
 
             # 设置模型缓存路径
             cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "/home/l/models")
@@ -314,7 +315,8 @@ class EmbeddingService:
             self.model = SentenceTransformer(
                 self.model_name, device=self.device, cache_folder=cache_dir
             )
-            print(f"✓ Embedding 模型加载完成: {self.model_name}")
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
+            print(f"✓ Embedding 模型加载完成: {self.model_name} (threads={torch.get_num_threads()})")
 
         except ImportError:
             print("⚠ 未安装 sentence-transformers，使用模拟嵌入")

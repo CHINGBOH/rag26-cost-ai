@@ -1,6 +1,6 @@
 """
 FastAPI 路由定义
-/api/v1/search, /rerank, /evaluate, /decompose, /health
+/api/v1/search, /rerank, /evaluate, /decompose, /health, /rag
 """
 
 import uuid
@@ -19,6 +19,7 @@ from app.models import (
     DecomposeRequest,
 )
 from infrastructure.reranker_service import get_reranker_service
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -274,3 +275,374 @@ async def decompose_query(request: DecomposeRequest):
         )
 
     return {"sub_queries": sub_queries, "original_query": query}
+
+
+# ── LangGraph RAG ──────────────────────────────────────────────────────────────
+
+class RAGRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+
+
+@router.post("/api/v1/rag")
+async def rag_query(request: RAGRequest):
+    """
+    LangGraph RAG pipeline: retrieve → rerank → generate
+    替代 Node.js XState 编排，直接返回完整结果。
+    """
+    if not request.query or not request.query.strip():
+        raise HTTPException(status_code=400, detail="query 不能为空")
+
+    import asyncio
+    from app.rag_pipeline import run_rag
+
+    try:
+        # run_rag 是同步的，放到线程池避免阻塞事件循环
+        result = await asyncio.to_thread(run_rag, request.query.strip(), pipeline)
+        return {
+            "session_id": request.session_id,
+            "query": result["query"],
+            "answer": result["answer"],
+            "chunks": result["chunks"],
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        logger.error(f"RAG pipeline error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── LangGraph ReAct Agent ─────────────────────────────────────────────────────
+
+def _normalize_chunk(c: dict) -> dict:
+    """Normalize internal chunk dict to match frontend AgentChunk / RetrievalChunk schema."""
+    doc_id = str(c.get("doc_id", ""))
+    page = c.get("page_number") or c.get("page") or 0
+    score = c.get("score", 0.0)
+    return {
+        "chunk_id": f"tc_{doc_id}_{page}",
+        "doc_id": doc_id,
+        "page": page,
+        "content": c.get("content", ""),
+        "score": round(float(score), 4),
+        "passed_threshold": score >= 0.60,
+        "source": c.get("doc_filename") or c.get("source", ""),
+        "metadata": {
+            "page": page,
+            "filename": c.get("doc_filename") or c.get("source", ""),
+        },
+    }
+
+
+class AgentRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+    max_iterations: int = 5
+
+
+@router.post("/api/v1/agent")
+async def agent_query(request: AgentRequest):
+    """
+    LangGraph ReAct Agent: retrieve → evaluate → loop
+    替代线性 RAG，支持自主选工具和迭代优化。
+    """
+    if not request.query or not request.query.strip():
+        raise HTTPException(status_code=400, detail="query 不能为空")
+
+    import asyncio
+    from app.agent.graph import get_agent_graph
+
+    try:
+        graph = get_agent_graph()
+        thread_id = request.session_id or str(uuid.uuid4())
+        # 每次请求使用独立 thread_id，避免 MemorySaver 在同一 session 内
+        # 累积历史消息（含上次未清理的 tool_calls），导致 DeepSeek HTTP 400
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        initial_state = {
+            "query": request.query.strip(),
+            "query_type": "",
+            "sub_queries": [],
+            "messages": [],
+            "iterations": 0,
+            "max_iterations": request.max_iterations,
+            "retrieved_chunks": [],
+            "evaluation": None,
+            "final_answer": "",
+            "tool_call_cache": {},
+            "calculation_inputs": {},
+        }
+        result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
+        return {
+            "session_id": thread_id,
+            "query": result["query"],
+            "query_type": result.get("query_type", ""),
+            "answer": result.get("final_answer", ""),
+            "chunks": [_normalize_chunk(c) for c in result.get("retrieved_chunks", [])],
+            "evaluation": result.get("evaluation"),
+            "iterations": result.get("iterations", 0),
+        }
+    except Exception as e:
+        logger.error(f"Agent pipeline error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Agent Streaming (SSE) ─────────────────────────────────────────────────────
+
+import asyncio
+import json
+from fastapi.responses import StreamingResponse
+
+
+class AgentStreamRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = None
+    max_iterations: int = 3
+    score_threshold: float = 0.60
+    top_k: int = 8
+    search_mode: str = "hybrid"
+    doc_types: list = []
+
+
+@router.post("/api/v1/agent/stream")
+async def agent_query_stream(request: AgentStreamRequest):
+    """Streaming Agent via SSE. Use fetch() with AbortController on frontend."""
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="query 不能为空")
+
+    from app.agent.graph import get_agent_graph
+
+    session_id = request.session_id or str(uuid.uuid4())
+
+    async def event_generator():
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def run_graph():
+            try:
+                graph = get_agent_graph()
+                # 每次 stream 请求使用独立 thread_id，防止跨请求消息状态污染
+                config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+                initial_state = {
+                    "query": request.query.strip(),
+                    "query_type": "",
+                    "sub_queries": [],
+                    "messages": [],
+                    "iterations": 0,
+                    "max_iterations": request.max_iterations,
+                    "retrieved_chunks": [],
+                    "evaluation": None,
+                    "final_answer": "",
+                    "tool_call_cache": {},
+                    "calculation_inputs": {},
+                    "plan": [],
+                    "current_step": 0,
+                    "thought_process": [],
+                }
+                for chunk in graph.stream(initial_state, config=config):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        import threading
+        t = threading.Thread(target=run_graph, daemon=True)
+        t.start()
+
+        start_time = loop.time()
+        final_answer = ""
+        total_iterations = 0
+
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=150.0)
+            except asyncio.TimeoutError:
+                yield f"event: error\ndata: {json.dumps({'message': '请求超时，请稍后重试', 'code': 'TIMEOUT'}, ensure_ascii=False)}\n\n"
+                break
+
+            if kind == "error":
+                yield f"event: error\ndata: {json.dumps({'message': payload, 'code': 'AGENT_ERROR'}, ensure_ascii=False)}\n\n"
+                break
+
+            if kind == "done":
+                elapsed_ms = int((loop.time() - start_time) * 1000)
+                yield f"event: done\ndata: {json.dumps({'answer': final_answer, 'session_id': session_id, 'iterations': total_iterations, 'latency_ms': elapsed_ms}, ensure_ascii=False)}\n\n"
+                break
+
+            # kind == "chunk"
+            chunk = payload
+            node_name = list(chunk.keys())[0]
+            node_output = chunk[node_name]
+
+            if node_name == "query_analysis":
+                analysis = {
+                    "intent": node_output.get("query_type", ""),
+                    "sub_queries": node_output.get("sub_queries", []),
+                    "entities": {},
+                }
+                yield f"event: query_analysis\ndata: {json.dumps(analysis, ensure_ascii=False)}\n\n"
+                # chitchat / off-topic：直接以 token 事件推送答案（图在此结束，synthesize 不会运行）
+                off_answer = node_output.get("final_answer", "")
+                if off_answer:
+                    final_answer = off_answer
+                    for _s in re.split(r"(?<=[。！？\n])", off_answer):
+                        if _s.strip():
+                            yield f"event: token\ndata: {json.dumps({'delta': _s}, ensure_ascii=False)}\n\n"
+                            await asyncio.sleep(0.01)
+
+            elif node_name == "planner_node":
+                # 规划完成，发送步骤列表供前端展示进度
+                plan = node_output.get("plan", [])
+                yield f"event: plan\ndata: {json.dumps({'steps': plan}, ensure_ascii=False)}\n\n"
+
+            elif node_name == "executor_node":
+                # executor 只更新 messages/iterations/current_step，无需单独 SSE 事件
+                total_iterations = node_output.get("iterations", total_iterations)
+
+            elif node_name == "tool_node":
+                # 新增 chunks → 逐条 emit retrieval_result
+                for c in node_output.get("retrieved_chunks", []):
+                    yield f"event: retrieval_result\ndata: {json.dumps(_normalize_chunk(c), ensure_ascii=False)}\n\n"
+                # tool call results
+                for msg in node_output.get("messages", []):
+                    if hasattr(msg, "name") and hasattr(msg, "content"):
+                        tool_data = {
+                            "call_id": getattr(msg, "tool_call_id", ""),
+                            "tool": msg.name,
+                            "result_summary": str(msg.content)[:200],
+                            "duration_ms": 0,
+                        }
+                        yield f"event: tool_call_end\ndata: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
+
+            elif node_name == "synthesize_node":
+                # 最终答案 → token 流
+                answer = node_output.get("final_answer", "")
+                if answer:
+                    final_answer = answer
+                    sentences = re.split(r"(?<=[。！？\n])", answer)
+                    for sentence in sentences:
+                        if sentence:
+                            yield f"event: token\ndata: {json.dumps({'delta': sentence}, ensure_ascii=False)}\n\n"
+                            await asyncio.sleep(0.02)
+                # eval_scores + loop_state from synthesize evaluation
+                eval_result = node_output.get("evaluation", {})
+                if eval_result:
+                    scores = {
+                        "completeness": eval_result.get("completeness", 0),
+                        "consistency": eval_result.get("consistency", 0),
+                        "confidence": eval_result.get("confidence", 0),
+                        "information_gain": eval_result.get("information_gain", 0),
+                        "source_diversity": eval_result.get("source_diversity", 0),
+                        "fact_consistency": eval_result.get("fact_consistency", 0),
+                        "coverage_estimate": eval_result.get("coverage_estimate", 0),
+                    }
+                    yield f"event: eval_scores\ndata: {json.dumps(scores)}\n\n"
+                    loop_data = {
+                        "iteration": total_iterations,
+                        "eval_score": eval_result.get("confidence", 0),
+                        "max_iterations": request.max_iterations,
+                    }
+                    yield f"event: loop_state\ndata: {json.dumps(loop_data)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    session_id: str
+    message_id: str
+    rating: int  # +1 or -1
+    comment: Optional[str] = None
+    query: Optional[str] = None
+    answer_summary: Optional[str] = None
+
+
+@router.post("/api/v1/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """Store user feedback to JSONL file until conversations table exists."""
+    import time
+    import os
+    record = {
+        "ts": time.time(),
+        "session_id": request.session_id,
+        "message_id": request.message_id,
+        "rating": request.rating,
+        "comment": request.comment,
+        "query": request.query,
+        "answer_summary": request.answer_summary,
+    }
+    feedback_path = os.environ.get("FEEDBACK_LOG_PATH", "/tmp/rag_feedback.jsonl")
+    try:
+        with open(feedback_path, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return {"status": "ok", "message_id": request.message_id}
+    except Exception as e:
+        logger.error(f"Feedback write error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+
+# ── Health Detail & Metrics ───────────────────────────────────────────────────
+
+@router.get("/api/v1/health/detail")
+async def health_detail():
+    """Per-service health with latency."""
+    import httpx
+    import time
+    import asyncio
+    http_services = {
+        "python_legacy": "http://localhost:8000/health",
+        "retrieval": "http://localhost:8002/health",
+        "llama_server": "http://localhost:8080/health",  # actual llama-server
+        "ocr": "http://localhost:8001/health",
+        "qdrant": "http://localhost:6333/healthz",
+        "go_gateway": "http://localhost:8090/health",
+        "nodejs": "http://localhost:3001/health",
+    }
+    results = {}
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        for name, url in http_services.items():
+            t0 = time.monotonic()
+            try:
+                r = await client.get(url)
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                results[name] = {
+                    "status": "healthy" if r.status_code == 200 else "degraded",
+                    "latency_ms": latency_ms,
+                }
+            except Exception:
+                results[name] = {"status": "unhealthy", "latency_ms": -1}
+    # PostgreSQL: TCP probe (no HTTP endpoint)
+    t0 = time.monotonic()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("localhost", 5432), timeout=2.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        results["postgresql"] = {
+            "status": "healthy",
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+        }
+    except Exception:
+        results["postgresql"] = {"status": "unhealthy", "latency_ms": -1}
+    return {"services": results, "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/api/v1/metrics/llm")
+async def metrics_llm():
+    """Forward llama-server metrics."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get("http://localhost:8003/metrics")
+            return {"raw": r.text[:2000], "status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

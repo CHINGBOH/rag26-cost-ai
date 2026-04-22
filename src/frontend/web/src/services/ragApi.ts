@@ -190,6 +190,7 @@ export async function searchDocumentsV1(
 
 /**
  * 检查后端健康状态
+ * 适配多种后端格式：Python Legacy / Go Gateway
  */
 export async function checkHealth(): Promise<HealthStatus> {
   try {
@@ -198,13 +199,31 @@ export async function checkHealth(): Promise<HealthStatus> {
       throw new Error('Health check failed');
     }
     const result = await response.json();
+
+    // Python Legacy 格式：{ services: { qdrant, elasticsearch, neo4j, redis } }
+    if (result.services?.qdrant !== undefined || result.services?.vector_store !== undefined) {
+      return {
+        status: result.status || 'unknown',
+        services: {
+          vector: result.services?.qdrant || result.services?.vector_store || 'unknown',
+          keyword: result.services?.elasticsearch || result.services?.keyword_store || 'unknown',
+          graph: result.services?.neo4j || result.services?.graph_store || 'unknown',
+          cache: result.services?.redis || 'healthy'
+        },
+        timestamp: result.timestamp || new Date().toISOString()
+      };
+    }
+
+    // Go Gateway 格式：{ services: { nodejs, python, ocr, retrieval, llm, websocket } }
+    // 映射到基础设施维度
+    const svc = result.services || {};
     return {
       status: result.status || 'unknown',
       services: {
-        vector: result.services?.qdrant || result.services?.vector_store || 'unknown',
-        keyword: result.services?.elasticsearch || result.services?.keyword_store || 'unknown',
-        graph: result.services?.neo4j || result.services?.graph_store || 'unknown',
-        cache: result.services?.redis || 'healthy'
+        vector: svc.retrieval || svc.qdrant || 'unknown',
+        keyword: svc.python || svc.elasticsearch || 'unknown',
+        graph: svc.python || svc.neo4j || 'unknown',
+        cache: svc.nodejs || svc.redis || 'unknown'
       },
       timestamp: result.timestamp || new Date().toISOString()
     };

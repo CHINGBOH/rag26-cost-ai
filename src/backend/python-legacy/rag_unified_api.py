@@ -186,7 +186,10 @@ class RAGService:
             if not self.embedding_ready:
                 raise HTTPException(status_code=500, detail="Embedding模型未就绪")
             
-            embedding = self.embedding_model.encode(text, convert_to_numpy=True)
+            loop = asyncio.get_running_loop()
+            embedding = await loop.run_in_executor(
+                None, lambda: self.embedding_model.encode(text, convert_to_numpy=True)
+            )
             processing_time = time.time() - start_time
             
             return EmbeddingResponse(
@@ -257,9 +260,12 @@ class RAGService:
         total_start = time.time()
         
         try:
-            # Step 1: 向量化查询
+            # Step 1: 向量化查询（在线程池中执行，避免阻塞事件循环）
             embed_start = time.time()
-            query_embedding = self.embedding_model.encode(query, convert_to_numpy=True)
+            loop = asyncio.get_running_loop()
+            query_embedding = await loop.run_in_executor(
+                None, lambda: self.embedding_model.encode(query, convert_to_numpy=True)
+            )
             embedding_time = time.time() - embed_start
             
             # Step 2: 从数据库检索候选

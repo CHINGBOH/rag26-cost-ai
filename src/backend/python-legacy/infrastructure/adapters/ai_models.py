@@ -9,6 +9,7 @@ import os
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+import os
 
 from domain.models import Document
 from domain.ports import EmbeddingModelPort, RerankModelPort
@@ -36,7 +37,8 @@ class EmbeddingModelAdapter(EmbeddingModelPort):
             self._model = SentenceTransformer(
                 self.config.name, device=self.config.device, cache_folder=cache_dir
             )
-            print(f"✓ Embedding模型加载完成: {self.config.name}")
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
+            print(f"✓ Embedding模型加载完成: {self.config.name} (threads={torch.get_num_threads()})")
         except Exception as e:
             print(f"✗ Embedding模型加载失败: {e}")
             self._model = None

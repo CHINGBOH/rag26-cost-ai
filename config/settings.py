@@ -42,36 +42,6 @@ class VectorStoreConfig(BaseSettings):
         return v
 
 
-class KeywordStoreConfig(BaseSettings):
-    """关键词存储配置"""
-
-    model_config = SettingsConfigDict(extra="forbid")
-
-    type: Literal["elasticsearch", "meilisearch", "memory"] = "elasticsearch"
-    hosts: List[str] = ["http://localhost:9200"]
-    index_name: str = "documents"
-
-
-class GraphStoreConfig(BaseSettings):
-    """图存储配置"""
-
-    model_config = SettingsConfigDict(extra="forbid")
-
-    type: Literal["neo4j", "memory"] = "neo4j"
-    uri: str = "bolt://localhost:7687"
-    username: str = "neo4j"
-    password: SecretStr = SecretStr("password")
-    database: str = "neo4j"
-
-    @field_validator("uri")
-    @classmethod
-    def validate_uri(cls, v: str) -> str:
-        """验证URI格式"""
-        if not v.startswith(("bolt://", "neo4j://")):
-            raise ValueError("URI must start with bolt:// or neo4j://")
-        return v
-
-
 class EmbeddingModelConfig(BaseSettings):
     """Embedding模型配置"""
 
@@ -109,8 +79,7 @@ class RetrievalConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="forbid")
 
     vector_top_k: int = Field(default=30, ge=1, le=100)
-    keyword_top_k: int = Field(default=20, ge=1, le=100)
-    graph_top_k: int = Field(default=10, ge=1, le=50)
+    text_top_k: int = Field(default=20, ge=1, le=100)
     score_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     enable_rerank: bool = True
     enable_fusion: bool = True
@@ -121,13 +90,11 @@ class FusionWeightsConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="forbid")
 
-    rerank: float = Field(default=0.4, ge=0.0, le=1.0)
+    rerank: float = Field(default=0.5, ge=0.0, le=1.0)
     vector: float = Field(default=0.3, ge=0.0, le=1.0)
-    keyword: float = Field(default=0.2, ge=0.0, le=1.0)
-    graph: float = Field(default=0.05, ge=0.0, le=1.0)
-    time: float = Field(default=0.05, ge=0.0, le=1.0)
+    text: float = Field(default=0.2, ge=0.0, le=1.0)
 
-    @field_validator("rerank", "vector", "keyword", "graph", "time")
+    @field_validator("rerank", "vector", "text")
     @classmethod
     def validate_weights(cls, v: float) -> float:
         """验证权重在合理范围"""
@@ -198,8 +165,6 @@ class AppConfig(BaseSettings):
     # 子配置
     server: ServerConfig = Field(default_factory=ServerConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
-    keyword_store: KeywordStoreConfig = Field(default_factory=KeywordStoreConfig)
-    graph_store: GraphStoreConfig = Field(default_factory=GraphStoreConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     fusion_weights: FusionWeightsConfig = Field(default_factory=FusionWeightsConfig)

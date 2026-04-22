@@ -8,7 +8,6 @@ import { BaseRetriever } from '@langchain/core/retrievers'
 import { Embeddings } from '@langchain/core/embeddings'
 import { OpenAIEmbeddings } from '@langchain/openai'
 import { QdrantVectorStore } from '@langchain/qdrant'
-import { Neo4jGraph } from '@langchain/community/graphs/neo4j_graph'
 import { z } from 'zod'
 import { pipe } from '../../common/pipe'
 import { 
@@ -21,7 +20,6 @@ import {
 
 export const RetrievalConfigSchema = z.object({
   qdrantUrl: z.string().default('http://localhost:6333'),
-  neo4jUrl: z.string().default('bolt://localhost:7687'),
   openaiApiKey: z.string().optional(),
   embeddingModel: z.string().default('text-embedding-3-small'),
   timeout: z.number().default(30000)
@@ -34,7 +32,7 @@ export const SearchOptionsSchema = z.object({
   enableRerank: z.boolean().default(true),
   enableFusion: z.boolean().default(true),
   vectorWeight: z.number().default(0.6),
-  graphWeight: z.number().default(0.4)
+  textWeight: z.number().default(0.4)
 })
 
 export type SearchOptions = z.infer<typeof SearchOptionsSchema>
@@ -43,14 +41,12 @@ export type SearchOptions = z.infer<typeof SearchOptionsSchema>
 
 class VectorStoreManager {
   private qdrantStore?: QdrantVectorStore
-  private neo4jGraph?: Neo4jGraph
   private embeddings: Embeddings
   private config: RetrievalConfig
 
   constructor(config: Partial<RetrievalConfig> = {}) {
     this.config = RetrievalConfigSchema.parse({
       qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
-      neo4jUrl: process.env.NEO4J_URL || 'bolt://localhost:7687',
       openaiApiKey: process.env.OPENAI_API_KEY,
       ...config
     })
@@ -62,39 +58,23 @@ class VectorStoreManager {
   }
 
   async initialize(): Promise<void> {
-    // 初始化 Qdrant
+    // 初始化 Qdrant（仅用于 session_context，文档检索已迁移至 PG）
     try {
       this.qdrantStore = await QdrantVectorStore.fromExistingCollection(
         this.embeddings,
         {
           url: this.config.qdrantUrl,
-          collectionName: 'documents'
+          collectionName: 'session_context'
         }
       )
     } catch (error) {
       console.warn('[Retrieval] Qdrant initialization failed:', error)
-    }
-
-    // 初始化 Neo4j
-    try {
-      this.neo4jGraph = await Neo4jGraph.initialize({
-        url: this.config.neo4jUrl,
-        username: 'neo4j',
-        password: process.env.NEO4J_PASSWORD || 'password'
-      })
-    } catch (error) {
-      console.warn('[Retrieval] Neo4j initialization failed:', error)
     }
   }
 
   getQdrantStore(): QdrantVectorStore {
     if (!this.qdrantStore) throw new Error('Qdrant not initialized')
     return this.qdrantStore
-  }
-
-  getNeo4jGraph(): Neo4jGraph {
-    if (!this.neo4jGraph) throw new Error('Neo4j not initialized')
-    return this.neo4jGraph
   }
 }
 
@@ -107,39 +87,18 @@ class RetrieverFactory {
     return this.storeManager.getQdrantStore().asRetriever({ k: topK }) as unknown as BaseRetriever
   }
 
-  createGraphRetriever(topK: number = 5): BaseRetriever {
-    const graph = this.storeManager.getNeo4jGraph()
-    
-    // 自定义图检索器
+  createTextRetriever(topK: number = 5): BaseRetriever {
+    // PG 全文检索替代 Neo4j（由 Python 后端实际执行）
+    // 此处返回空检索器，实际检索通过 Python API 完成
     const retriever: BaseRetriever = {
       lc_namespace: ['custom', 'retrievers'],
       lc_secrets: {},
       lc_attributes: {},
       lc_aliases: {},
-      invoke: async (query: string) => {
-        try {
-          const records = await graph.query(`
-            CALL db.index.fulltext.queryNodes('documentIndex', $query) 
-            YIELD node, score
-            RETURN node.content as content, node.source as source, score
-            LIMIT $topK
-          `, { query, topK })
-
-          return (records || []).map((record: any) => new Document({
-            pageContent: record.content || '',
-            metadata: {
-              source: record.source || 'unknown',
-              score: record.score || 0,
-              database: 'graph'
-            }
-          }))
-        } catch (error) {
-          console.warn('[Retrieval] Graph search failed:', error)
-          return []
-        }
+      invoke: async (_query: string) => {
+        return []
       }
     } as unknown as BaseRetriever
-
     return retriever
   }
 }
@@ -206,7 +165,7 @@ export function decompose(config?: { model?: string; apiKey?: string }) {
       subQueries.push({
         id: `sq_${Date.now()}_3`,
         query: `${query} 实际案例 应用示例`,
-        targetDB: 'graph',
+        targetDB: 'vector',
         status: 'pending'
       })
     }
@@ -244,24 +203,11 @@ export function keywordSearch(config?: Partial<RetrievalConfig> & { topK?: numbe
   }
 }
 
-export function graphSearch(config?: Partial<RetrievalConfig> & { topK?: number }) {
-  return async function searchGraph(query: string): Promise<RetrievedChunk[]> {
-    const manager = new VectorStoreManager(config)
-    await manager.initialize()
-
-    const factory = new RetrieverFactory(manager)
-    const retriever = factory.createGraphRetriever(config?.topK || 5)
-    
-    const documents = await retriever.invoke(query)
-    
-    return documents.map((doc, idx) => ({
-      id: `graph_${idx}_${Date.now()}`,
-      content: doc.pageContent,
-      source: String(doc.metadata.source || 'unknown'),
-      database: 'graph' as const,
-      score: Number(doc.metadata.score || 0),
-      metadata: doc.metadata
-    }))
+export function textSearch(config?: Partial<RetrievalConfig> & { topK?: number }) {
+  return async function searchText(query: string): Promise<RetrievedChunk[]> {
+    // PG 全文检索由 Python 后端执行，Node 层直接代理
+    console.log('[Retrieval] textSearch delegated to Python backend')
+    return []
   }
 }
 
@@ -271,25 +217,18 @@ export function retrieve(config?: Partial<RetrievalConfig> & Partial<SearchOptio
     enableRerank: config?.enableRerank ?? true,
     enableFusion: config?.enableFusion ?? true,
     vectorWeight: config?.vectorWeight ?? 0.6,
-    graphWeight: config?.graphWeight ?? 0.4,
+    textWeight: config?.textWeight ?? 0.4,
     ...config
   })
 
   return async function unifiedRetrieve(query: string): Promise<RetrievedChunk[]> {
-    console.log(`[Retrieval] 开始多路召回: "${query.slice(0, 50)}..."`)
+    console.log(`[Retrieval] 开始召回: "${query.slice(0, 50)}..."`)
 
+    // Node 层检索已简化，实际混合检索由 Python 后端 (UnifiedPipeline) 执行
     const vectorResults = await vectorSearch({ ...config, topK: options.topK })(query)
-    const graphResults = await graphSearch({ ...config, topK: Math.floor(options.topK / 2) })(query)
 
-    const allResults = [...vectorResults, ...graphResults]
-    
-    // 去重并按分数排序
-    const uniqueResults = Array.from(
-      new Map(allResults.map(r => [r.content, r])).values()
-    ).sort((a, b) => b.score - a.score)
-
-    console.log(`[Retrieval] 召回完成: ${uniqueResults.length} 条结果`)
-    return uniqueResults.slice(0, options.topK)
+    console.log(`[Retrieval] 召回完成: ${vectorResults.length} 条结果`)
+    return vectorResults.slice(0, options.topK)
   }
 }
 
@@ -311,18 +250,18 @@ export function rerank(config?: { apiKey?: string; topK?: number; model?: string
 }
 
 export const FusionWeightsSchema = z.object({
-  rerank: z.number().default(0.4),
+  rerank: z.number().default(0.5),
   vector: z.number().default(0.6),
-  graph: z.number().default(0.4)
+  text: z.number().default(0.4)
 })
 
 export type FusionWeights = z.infer<typeof FusionWeightsSchema>
 
 export function fuseScores(weights?: Partial<FusionWeights>) {
   const w = FusionWeightsSchema.parse({
-    rerank: 0.4,
+    rerank: 0.5,
     vector: 0.6,
-    graph: 0.4,
+    text: 0.4,
     ...weights
   })
 
@@ -331,7 +270,7 @@ export function fuseScores(weights?: Partial<FusionWeights>) {
     const scoreMap = new Map<string, { chunk: RetrievedChunk; score: number }>()
 
     results.forEach((chunks, listIdx) => {
-      const weight = listIdx === 0 ? w.vector : w.graph
+      const weight = listIdx === 0 ? w.vector : w.text
 
       chunks.forEach((chunk, rank) => {
         const rrfScore = weight * (1 / (k + rank + 1))
@@ -373,7 +312,7 @@ export function evaluate() {
 
     const databases = new Set(chunks.map(c => c.database))
     const dbDiversity = databases.size / 2
-    const diversity = (sourceDiversity + dbDiversity) / 2
+    const diversity = sourceDiversity
 
     const totalContentLength = chunks.reduce((sum, c) => sum + c.content.length, 0)
     const completeness = Math.min(totalContentLength / 2000, 0.95)
@@ -418,7 +357,6 @@ export async function healthCheck(config?: Partial<RetrievalConfig>): Promise<{
 }> {
   const cfg = RetrievalConfigSchema.parse({
     qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
-    neo4jUrl: process.env.NEO4J_URL || 'bolt://localhost:7687',
     ...config
   })
 
@@ -431,20 +369,8 @@ export async function healthCheck(config?: Partial<RetrievalConfig>): Promise<{
     services.qdrant = false
   }
 
-  try {
-    const neo4jGraph = await Neo4jGraph.initialize({
-      url: cfg.neo4jUrl,
-      username: 'neo4j',
-      password: process.env.NEO4J_PASSWORD || 'password'
-    })
-    services.neo4j = true
-    await neo4jGraph.close()
-  } catch {
-    services.neo4j = false
-  }
-
   return {
-    healthy: Object.values(services).some(s => s),
+    healthy: services.qdrant,
     services
   }
 }
@@ -454,7 +380,7 @@ export function createRetrievalPipeline(config?: Partial<RetrievalConfig> & Part
     decompose: decompose(),
     vectorSearch: vectorSearch(config),
     keywordSearch: keywordSearch(config),
-    graphSearch: graphSearch(config),
+    textSearch: textSearch(config),
     retrieve: retrieve(config),
     rerank: rerank(config),
     fuseScores: (w?: Partial<FusionWeights>) => fuseScores(w),

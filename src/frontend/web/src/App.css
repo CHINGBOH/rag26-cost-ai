@@ -1,136 +1,157 @@
 /**
- * 主应用样式
+ * 全局布局 — 简洁留白风格
  */
 
 * {
   box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 body {
-  margin: 0;
-  padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  -webkit-font-smoothing: subpixel-antialiased;
-  -moz-osx-font-smoothing: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
-.app {
+/* ── App Shell ─────────────────────────── */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
 }
 
-/* ==================== Tab Content ==================== */
-.tab-content {
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── Navigation ────────────────────────── */
+
+.app-nav {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-/* ==================== Query Section ==================== */
-.query-section {
+  align-items: center;
+  gap: 32px;
+  padding: 0 32px;
+  height: 56px;
   background: var(--bg-surface);
-  border-radius: 12px;
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  border: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
 }
 
-/* ==================== YOLO Panel ==================== */
-.yolo-panel {
-  background: linear-gradient(135deg, var(--color-primary) 0%, #764ba2 100%);
-  border-radius: 12px;
-  padding: 20px;
-  color: var(--text-inverse);
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.yolo-panel h4 {
-  margin: 0 0 12px 0;
-  font-size: 14px;
-  opacity: 0.9;
+.nav-logo {
+  font-size: 22px;
 }
 
-.yolo-progress {
-  font-size: 24px;
-  font-weight: bold;
-  margin-bottom: 12px;
+.nav-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
 }
 
-.yolo-bar {
-  height: 8px;
-  background: rgba(255, 255, 255, 0.3);
-  border-radius: 4px;
-  overflow: hidden;
+.nav-links {
+  display: flex;
+  gap: 4px;
 }
 
-.yolo-fill {
-  height: 100%;
-  background: var(--text-inverse);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-/* ==================== Connection Status ==================== */
-.connection-status {
-  display: inline-flex;
+.nav-link {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: 16px;
-  font-size: 12px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.nav-link.active {
+  color: var(--color-primary);
+  background: var(--color-primary-light);
   font-weight: 500;
 }
 
-.connection-status.connected {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--color-success);
+.nav-icon {
+  font-size: 16px;
 }
 
-.connection-status.disconnected {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--color-error);
+.nav-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-/* ==================== Scrollbar ==================== */
+/* ── Scrollbar ─────────────────────────── */
+
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-surface);
-  border-radius: 4px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--text-muted);
-  border-radius: 4px;
+  background: var(--border-default);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: var(--text-muted);
 }
 
-/* ==================== Animations ==================== */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.theme-toggle-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+  color: var(--text-secondary);
 }
 
-.fade-in {
-  animation: fadeIn 0.3s ease;
+.theme-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-highlight);
 }
 
-/* ==================== Responsive ==================== */
+/* ── Responsive ────────────────────────── */
+
 @media (max-width: 768px) {
-  .query-section,
-  .yolo-panel {
-    padding: 16px;
+  .app-nav {
+    padding: 0 16px;
+    gap: 16px;
+  }
+
+  .nav-title {
+    display: none;
+  }
+
+  .nav-link {
+    padding: 8px 12px;
+    font-size: 13px;
   }
 }

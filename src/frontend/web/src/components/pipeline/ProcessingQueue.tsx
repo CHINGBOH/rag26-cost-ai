@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadFile, PipelineStats } from './DataPipelineDashboard';
+import { UploadFile, PipelineStats } from './types';
 
 interface ProcessingQueueProps {
   queue: UploadFile[];

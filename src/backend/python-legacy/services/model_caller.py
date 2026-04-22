@@ -211,12 +211,16 @@ class EmbeddingModelCaller:
             if single_text:
                 texts = [texts]
             
-            # 批量编码
-            embeddings = model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True
+            # 批量编码（在线程池中执行，避免阻塞事件循环）
+            loop = asyncio.get_running_loop()
+            embeddings = await loop.run_in_executor(
+                None,
+                lambda: model.encode(
+                    texts,
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                    convert_to_numpy=True
+                )
             )
             
             # 归一化

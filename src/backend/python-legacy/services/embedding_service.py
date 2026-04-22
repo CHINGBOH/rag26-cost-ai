@@ -69,8 +69,8 @@ class EmbeddingService:
         logger.info("初始化Embedding服务...")
         logger.info(f"使用后端: {EMBEDDING_BACKEND}")
         
-        # 初始化Redis客户端
-        self.redis_client = redis.Redis(
+        # 初始化Redis客户端（异步）
+        self.redis_client = redis.asyncio.Redis(
             host=REDIS_HOST,
             port=REDIS_PORT,
             db=REDIS_DB,
@@ -101,6 +101,20 @@ class EmbeddingService:
             # 加载本地模型
             await self._load_models()
         
+        # 确保 Qdrant 集合存在（只创建一次，不删已有数据）
+        try:
+            collections = [c.name for c in self.qdrant_client.get_collections().collections]
+            if "document_chunks" not in collections:
+                self.qdrant_client.create_collection(
+                    collection_name="document_chunks",
+                    vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+                )
+                logger.info("Created Qdrant collection: document_chunks")
+            else:
+                logger.info("Qdrant collection exists: document_chunks")
+        except Exception as e:
+            logger.warning(f"Qdrant collection check failed: {e}")
+        
         logger.info("Embedding服务初始化完成")
     
     async def _load_models(self):
@@ -120,8 +134,10 @@ class EmbeddingService:
             self.embedding_models['default'] = SentenceTransformer(default_model, device=device)
             self.current_model = self.embedding_models['default']
             self.embedding_dimension = self.current_model.get_sentence_embedding_dimension()
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
             logger.info(f"默认模型加载成功，向量维度: {self.embedding_dimension}")
             logger.info(f"模型设备: {self.current_model.device}")
+            logger.info(f"PyTorch threads: {torch.get_num_threads()}")
         except Exception as e:
             logger.error(f"加载默认模型失败: {e}")
             raise
@@ -275,16 +291,6 @@ class EmbeddingService:
     ):
         """存储向量到Qdrant"""
         try:
-            # 创建集合
-            collection_name = "document_chunks"
-            self.qdrant_client.recreate_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=embedding_result.dimension,
-                    distance=Distance.COSINE
-                )
-            )
-            
             # 插入向量
             point = PointStruct(
                 id=chunk_id,
@@ -358,8 +364,6 @@ class EmbeddingService:
                     datetime.now()
                 )
                 
-                await conn.close()
-                
             logger.info(f"向量化信息已存储到PostgreSQL: chunk_id={chunk_id}")
             
         except Exception as e:
@@ -382,7 +386,7 @@ class EmbeddingService:
                 "created_at": embedding_result.created_at.isoformat()
             }
             
-            self.redis_client.setex(
+            await self.redis_client.setex(
                 cache_key,
                 3600,  # 1小时过期
                 json.dumps(cache_data)
@@ -463,8 +467,6 @@ class EmbeddingService:
                     GROUP BY status
                 """)
                 
-                await conn.close()
-            
             stats = {
                 "total_chunks": total_chunks,
                 "embedded_chunks": embedded_chunks,

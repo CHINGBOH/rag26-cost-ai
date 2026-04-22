@@ -115,7 +115,7 @@ describe('模块集成测试', () => {
         createdAt: Date.now()
       }
       
-      const authToken = auth.createToken()(user)
+      const authToken = await auth.createToken()(user)
       
       // 缓存 Token
       const setCache = storage.cacheSet(cache, 'token:admin', 3600)

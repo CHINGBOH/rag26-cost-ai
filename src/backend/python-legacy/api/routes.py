@@ -1,175 +1,160 @@
 """
-API层 - FastAPI路由
-实现RESTful API接口
+API层 - FastAPI路由 (v1)
+直接调用 UnifiedStore / UnifiedRetrievalPipeline，不再依赖 DDD 层
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from dependency_injector.wiring import inject, Provide
+from fastapi import APIRouter, HTTPException, status
+from typing import Dict, Any
+from datetime import datetime
 
-from domain.models import (
-    SearchRequest,
-    SearchResponse,
-    IndexRequest,
-    IndexResponse,
-    HealthResponse,
-    StatsResponse,
-)
-from application.usecases import SearchUsecase, IndexUsecase
-from container import Container
-
+from domain_models.api_models import APIResponse
+from domain_models.search_models import SearchQuery
+from domain_models.retrieval_models import RetrievalRequest, RetrievalConfig
 
 router = APIRouter(prefix="/api/v1", tags=["retrieval"])
 
+# 全局服务实例由 unified_api.py 在启动时注入
+pipeline = None
+store = None
 
-@router.post(
-    "/search",
-    response_model=SearchResponse,
-    summary="搜索文档",
-    description="执行多路召回 + 精排 + 分数融合的完整检索流程",
-)
-@inject
-async def search(
-    request: SearchRequest, usecase: SearchUsecase = Depends(Provide[Container.search_usecase])
-):
-    """
-    搜索文档
 
-    - **query**: 查询文本
-    - **top_k**: 返回结果数量 (1-100)
-    - **enable_rerank**: 是否启用精排
-    - **enable_fusion**: 是否启用分数融合
-    """
-    result = await usecase.execute(request)
+def set_services(pipeline_instance, store_instance):
+    global pipeline, store
+    pipeline = pipeline_instance
+    store = store_instance
 
-    if result.is_failure():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(result.failure())
+
+@router.post("/search", summary="搜索文档", description="执行 pgvector + tsvector 混合检索")
+async def search(request: Dict[str, Any]):
+    """搜索文档"""
+    global pipeline
+
+    if not pipeline:
+        raise HTTPException(status_code=503, detail="Pipeline not initialized")
+
+    try:
+        query = request.get("query", "")
+        top_k = request.get("top_k", 10)
+        mode = request.get("mode", "hybrid")
+        session_id = request.get("session_id")
+        filters = request.get("filters", {})
+
+        config = RetrievalConfig(
+            vector_top_k=30 if mode in ["vector", "hybrid"] else 0,
+            keyword_top_k=20 if mode in ["text", "hybrid"] else 0,
+            graph_top_k=0,
         )
 
-    return result.unwrap()
-
-
-@router.post(
-    "/index",
-    response_model=IndexResponse,
-    summary="索引文档",
-    description="将文档索引到向量存储、关键词存储和知识图谱",
-)
-@inject
-async def index(
-    request: IndexRequest, usecase: IndexUsecase = Depends(Provide[Container.index_usecase])
-):
-    """
-    索引文档
-
-    - **doc_id**: 文档唯一标识
-    - **title**: 文档标题
-    - **chunks**: 文档片段列表
-    - **build_graph**: 是否构建知识图谱
-    """
-    result = await usecase.execute(request)
-
-    if result.is_failure():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(result.failure())
+        retrieval_request = RetrievalRequest(
+            query=query, config=config, session_id=session_id, filters=filters
         )
 
-    return result.unwrap()
+        response = pipeline.retrieve(retrieval_request)
+
+        return APIResponse.success(
+            {
+                "request_id": response.request_id,
+                "query": query,
+                "results": [
+                    {
+                        "chunk_id": doc.chunk_id,
+                        "doc_id": doc.doc_id,
+                        "content": doc.content[:500] + "..." if len(doc.content) > 500 else doc.content,
+                        "score": round(doc.score, 4),
+                        "metadata": doc.metadata,
+                    }
+                    for doc in response.documents[:top_k]
+                ],
+                "latency_ms": round(response.latency_ms, 2),
+                "stats": response.stats,
+            }
+        )
+
+    except Exception as e:
+        return APIResponse.error(str(e), "SEARCH_ERROR")
 
 
-@router.get(
-    "/health",
-    response_model=HealthResponse,
-    summary="健康检查",
-    description="检查服务及各组件健康状态",
-)
+@router.post("/index", summary="索引文档", description="将文档索引到 PostgreSQL")
+async def index(request: Dict[str, Any]):
+    """索引文档"""
+    global store
+
+    if not store:
+        raise HTTPException(status_code=503, detail="Store not initialized")
+
+    try:
+        from domain_models.document_models import Document, DocumentMetadata, DocumentType
+
+        doc = Document(
+            metadata=DocumentMetadata(
+                doc_id=request.get("doc_id", ""),
+                title=request.get("title", "Untitled"),
+                source=request.get("source", ""),
+                doc_type=DocumentType.PDF,
+            ),
+            chunks=[],
+        )
+
+        result = store.index_document(doc)
+        return APIResponse.success(result)
+
+    except Exception as e:
+        return APIResponse.error(str(e), "INDEX_ERROR")
+
+
+@router.get("/health", summary="健康检查", description="检查 PG + Qdrant + Redis 健康状态")
 async def health():
     """健康检查"""
+    global store
+
     from datetime import datetime
-    from container import get_container
 
-    container = get_container()
-
-    # 检查各服务状态
     services = {
-        "vector_store": False,
-        "keyword_store": False,
-        "graph_store": False,
-        "embedding_model": False,
-        "rerank_model": False,
+        "postgres": {"status": "unknown", "latency": 0},
+        "qdrant": {"status": "unknown", "latency": 0},
+        "cache": {"status": "unknown", "latency": 0},
     }
 
-    try:
-        vector_store = container.vector_store()
-        services["vector_store"] = vector_store.is_available()
-    except Exception:
-        pass
+    if store:
+        try:
+            health = store.health_check()
+            for key in services:
+                if key in health:
+                    services[key]["status"] = health[key]
+        except Exception as e:
+            services["error"] = str(e)
 
-    try:
-        keyword_store = container.keyword_store()
-        services["keyword_store"] = keyword_store.is_available()
-    except Exception:
-        pass
+    all_healthy = all(v["status"] == "healthy" for v in services.values() if isinstance(v, dict))
 
-    try:
-        graph_store = container.graph_store()
-        services["graph_store"] = graph_store.is_available()
-    except Exception:
-        pass
-
-    try:
-        embedding_model = container.embedding_model()
-        services["embedding_model"] = True  # 已加载即可用
-    except Exception:
-        pass
-
-    try:
-        rerank_model = container.rerank_model()
-        services["rerank_model"] = rerank_model.is_loaded()
-    except Exception:
-        pass
-
-    return HealthResponse(
-        status="healthy" if all(services.values()) else "degraded",
-        version="0.1.0",
-        timestamp=datetime.now(),
-        services=services,
-    )
+    return {
+        "status": "healthy" if all_healthy else "degraded",
+        "version": "1.0.0-pg-single-db",
+        "timestamp": datetime.now().isoformat(),
+        "services": services,
+    }
 
 
-@router.get(
-    "/stats", response_model=StatsResponse, summary="统计信息", description="获取各存储的统计信息"
-)
+@router.get("/stats", summary="统计信息", description="获取存储统计信息")
 async def stats():
     """统计信息"""
-    from container import get_container
+    global pipeline
 
-    container = get_container()
+    stats_data = {
+        "postgres": {"status": "unknown"},
+        "qdrant": {"status": "unknown"},
+        "cache": {"status": "unknown"},
+    }
 
-    stats = StatsResponse()
+    if pipeline:
+        try:
+            pipeline_stats = pipeline.get_stats()
+            stats_data["total_requests"] = pipeline_stats.get("total_requests", 0)
+            stats_data["average_latency_ms"] = pipeline_stats.get("average_latency_ms", 0)
+            if "store_health" in pipeline_stats:
+                for key in stats_data:
+                    if key in pipeline_stats["store_health"]:
+                        stats_data[key]["status"] = pipeline_stats["store_health"][key]
+        except Exception as e:
+            stats_data["error"] = str(e)
 
-    # 获取向量存储统计
-    try:
-        vector_store = container.vector_store()
-        if vector_store.is_available():
-            stats.vector_store = {"status": "connected"}
-    except Exception as e:
-        stats.vector_store = {"status": "error", "message": str(e)}
-
-    # 获取关键词存储统计
-    try:
-        keyword_store = container.keyword_store()
-        if keyword_store.is_available():
-            stats.keyword_store = {"status": "connected"}
-    except Exception as e:
-        stats.keyword_store = {"status": "error", "message": str(e)}
-
-    # 获取图存储统计
-    try:
-        graph_store = container.graph_store()
-        if graph_store.is_available():
-            stats.graph_store = {"status": "connected"}
-    except Exception as e:
-        stats.graph_store = {"status": "error", "message": str(e)}
-
-    return stats
+    return stats_data

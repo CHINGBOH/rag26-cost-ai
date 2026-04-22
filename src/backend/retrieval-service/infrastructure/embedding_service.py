@@ -6,6 +6,7 @@ Embedding 服务
 import os
 import logging
 from typing import List, Optional
+from functools import lru_cache
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -46,18 +47,20 @@ class EmbeddingService:
             
             if os.path.exists(local_model_path):
                 logger.info(f"Using local model: {local_model_path}")
-                self.model = SentenceTransformer(local_model_path)
+                self.model = SentenceTransformer(local_model_path, device=self.device)
             else:
                 logger.info(f"Loading from HuggingFace: {self.model_name}")
-                self.model = SentenceTransformer(self.model_name, cache_folder=cache_dir)
+                self.model = SentenceTransformer(self.model_name, cache_folder=cache_dir, device=self.device)
             
             self.model.to(self.device)
 
             # 获取维度
+            import torch
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
             test_embedding = self.model.encode("test")
             self.dimension = len(test_embedding)
 
-            logger.info(f"✅ Embedding model loaded: {self.model_name}, dim={self.dimension}")
+            logger.info(f"✅ Embedding model loaded: {self.model_name}, dim={self.dimension} (threads={torch.get_num_threads()})")
 
         except ImportError:
             logger.warning("❌ sentence-transformers not available, using mock embedding")
@@ -90,10 +93,20 @@ class EmbeddingService:
         np.random.seed(42)
         return [np.random.randn(self.dimension).tolist() for _ in texts]
 
-    def encode_single(self, text: str) -> List[float]:
-        """编码单个文本"""
+    @lru_cache(maxsize=256)
+    def _encode_cached(self, text: str) -> tuple:
+        """内部缓存方法（lru_cache 要求返回值 hashable，用 tuple）"""
         results = self.encode([text])
-        return results[0] if results else [0.0] * self.dimension
+        return tuple(results[0]) if results else tuple([0.0] * self.dimension)
+
+    def encode_single(self, text: str) -> List[float]:
+        """编码单个文本（带缓存）"""
+        return list(self._encode_cached(text))
+
+    def encode_query(self, text: str) -> List[float]:
+        """编码查询文本（添加 BGE instruction prefix 提升检索精度）"""
+        prefix = "Represent this sentence for searching relevant passages: "
+        return list(self._encode_cached(prefix + text))
 
 
 # 全局实例

@@ -13,52 +13,7 @@ import { EvaluationPanel } from './EvaluationPanel';
 import { DataFlowVisualization } from './DataFlowVisualization';
 import './DataPipelineDashboard.css';
 import { authFetch } from '../../utils/auth';
-
-export interface UploadFile {
-  id: string;
-  file: File;
-  name: string;
-  size: number;
-  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'failed';
-  progress: number;
-  stage?: string;
-  result?: any;
-  error?: string;
-  startTime: number;
-  endTime?: number;
-}
-
-export interface PipelineStats {
-  totalFiles: number;
-  completedFiles: number;
-  failedFiles: number;
-  processingFiles: number;
-  averageProcessingTime: number;
-  queueLength: number;
-  throughput: number;
-}
-
-export interface DatabaseHealth {
-  vector: { status: 'healthy' | 'degraded' | 'down'; latency: number; count: number };
-  keyword: { status: 'healthy' | 'degraded' | 'down'; latency: number; count: number };
-  graph: { status: 'healthy' | 'degraded' | 'down'; latency: number; count: number };
-  cache: { status: 'healthy' | 'degraded' | 'down'; latency: number; count: number };
-}
-
-export interface EvaluationMetrics {
-  embedding: {
-    averageTime: number;
-    successRate: number;
-    queueSize: number;
-    batchSize: number;
-  };
-  rerank: {
-    averageTime: number;
-    successRate: number;
-    crossEncoderLatency: number;
-    fusionScoreAccuracy: number;
-  };
-}
+import type { UploadFile, PipelineStats, DatabaseHealth, EvaluationMetrics } from './types';
 
 export const DataPipelineDashboard: React.FC = () => {
   const { isConnected, subscribe } = useWebSocket();

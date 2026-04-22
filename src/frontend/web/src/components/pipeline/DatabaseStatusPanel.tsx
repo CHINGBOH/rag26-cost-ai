@@ -1,5 +1,5 @@
 import React from 'react';
-import { DatabaseHealth } from './DataPipelineDashboard';
+import { DatabaseHealth } from './types';
 
 interface DatabaseStatusPanelProps {
   health: DatabaseHealth;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { PipelineStats, DatabaseHealth } from './DataPipelineDashboard';
+import { PipelineStats, DatabaseHealth } from './types';
 
 interface DataFlowVisualizationProps {
   stats: PipelineStats;

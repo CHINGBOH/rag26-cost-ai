@@ -26,27 +26,7 @@ import {
   chatFlowConfig
 } from '../../config';
 import './Chat.css';
-
-// 任务阶段定义
-export type PipelineStage = 
-  | 'idle'
-  | 'intent_analysis'
-  | 'query_decomposition'
-  | 'vector_retrieval'
-  | 'knowledge_retrieval'
-  | 'graph_retrieval'
-  | 'reranking'
-  | 'context_assembly'
-  | 'llm_generation'
-  | 'complete';
-
-interface PipelineState {
-  stage: PipelineStage;
-  progress: number;
-  status: 'pending' | 'running' | 'completed' | 'error';
-  details?: string;
-  metrics?: Record<string, number>;
-}
+import { PipelineStage, PipelineState } from './types';
 
 export const ChatInterface: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
