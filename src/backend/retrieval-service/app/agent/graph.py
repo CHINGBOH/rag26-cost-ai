@@ -33,7 +33,12 @@ from app.agent.prompts import (
     invoke_llm_with_tools,
 )
 from app.agent.retrieval_filter import filter_chunks
-from app.agent.query_analyzer import QueryAnalyzer, extract_quota_search_term
+from app.agent.query_analyzer import (
+    QueryAnalyzer,
+    extract_fee_formula_search_term,
+    extract_quota_search_term,
+    is_fee_formula_query,
+)
 from app.agent.tools import (
     vector_search,
     keyword_search,
@@ -136,6 +141,10 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
 
+
+def _display_doc_name(doc_name: str) -> str:
+    return doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
+
 def _enrich_chunks_with_filename(chunks: list) -> list:
     """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
     if not chunks:
@@ -174,7 +183,7 @@ def _enrich_chunks_with_filename(chunks: list) -> list:
     return chunks
 
 
-def _format_citations(chunks: list) -> str:
+def _format_citations(chunks: list, allowed_refs: set[tuple[str, str]] | None = None) -> str:
     """从 chunks 生成尾部参考来源列表（按显示字符串去重，过滤内部数据集）"""
     seen_refs: set[str] = set()
     ordered: list[str] = []
@@ -183,10 +192,11 @@ def _format_citations(chunks: list) -> str:
         page = c.get("page_number") or c.get("page") or "?"
         if not doc_name:
             continue
-        # 去掉扩展名和已有书名号（防止双重包裹）
-        display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
-        display = display.strip("《》")
+        display = _display_doc_name(doc_name)
         if display in _INTERNAL_SOURCES:
+            continue
+        page_str = str(page)
+        if allowed_refs is not None and (display, page_str) not in allowed_refs:
             continue
         ref = f"《{display}》第 {page} 页"
         if ref not in seen_refs:
@@ -214,6 +224,173 @@ def _build_evidence_block(chunks: list) -> str:
         if content:
             lines.append(f"   关键内容：{content}")
     return "\n".join(lines)
+
+
+def _split_answer_components(answer_without_refs: str, chunks: list[dict]) -> tuple[str, str]:
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_without_refs) if p.strip()]
+    direct_answer = paragraphs[0] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
+    remaining = paragraphs[1:]
+
+    if remaining and re.match(r"简要分析[:：]", remaining[0]):
+        analysis_text = "\n\n".join(
+            [re.sub(r"^简要分析[:：]?\s*", "", remaining[0]).strip(), *remaining[1:]]
+        ).strip()
+    else:
+        analysis_text = "\n\n".join(remaining).strip()
+
+    if not analysis_text:
+        analysis_text = _build_evidence_block(chunks)
+    return direct_answer, analysis_text
+
+
+def refine_citations_for_answer(answer: str, chunks: list[dict], citations_text: str) -> str:
+    explicit_refs = {
+        (name.strip(), page.strip())
+        for name, page in re.findall(r"【《([^》]+)》P\s*(\d+)】", answer or "")
+    }
+    if explicit_refs:
+        filtered = _format_citations(chunks, explicit_refs)
+        if filtered:
+            return filtered
+    return citations_text
+
+
+def _build_answer_title(query_type: str) -> str:
+    return {
+        "standard_ref": "规则说明",
+        "calculation": "结果摘要",
+        "comparison": "对比结果",
+        "price": "价格摘要",
+        "trend_chart": "趋势摘要",
+    }.get(query_type, "回答摘要")
+
+
+def _split_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if not cleaned:
+        return []
+    parts = [part.strip(" ，,") for part in re.split(r"[。；;]\s*", cleaned) if part.strip()]
+    return [part for part in parts if len(part) >= 6]
+
+
+def _shorten_sentence(text: str, max_length: int = 92) -> str:
+    normalized = re.sub(r"\s+", " ", text or "").strip()
+    if len(normalized) <= max_length:
+        return normalized
+
+    clauses = [part.strip(" ，,") for part in re.split(r"[，,]", normalized) if part.strip()]
+    chosen: list[str] = []
+    total = 0
+    for clause in clauses:
+        if chosen and total + len(clause) + 1 > max_length:
+            break
+        chosen.append(clause)
+        total += len(clause) + 1
+    shortened = "，".join(chosen).strip() or normalized[:max_length].rstrip("，,")
+    if shortened and shortened[-1] not in "。！？":
+        shortened += "。"
+    return shortened
+
+
+def _build_summary_text(query_type: str, direct_answer: str) -> str:
+    sentences = _split_sentences(direct_answer)
+    if not sentences:
+        return direct_answer.strip()
+
+    limit = 1 if query_type in {"standard_ref", "calculation"} else 2
+    picked = [_shorten_sentence(sentence) for sentence in sentences[:limit]]
+    return " ".join(part for part in picked if part).strip()
+
+
+def _highlight_label(sentence: str, query_type: str) -> str:
+    if any(token in sentence for token in ("适用", "适用于", "范围")):
+        return "适用范围"
+    if any(token in sentence for token in ("不单独计算", "不另计", "已包括", "不单列")):
+        return "排除项"
+    if any(token in sentence for token in ("按“", "按\"", "按", "计量单位", "为单位计算")) and "计算" in sentence:
+        return "计量/计算"
+    if "人工费" in sentence:
+        return "人工费"
+    if "材料费" in sentence:
+        return "材料费"
+    if "机械费" in sentence:
+        return "机械费"
+    if any(token in sentence for token in ("价格", "单价", "均价", "差值", "涨幅", "跌幅")):
+        return "关键数值"
+    if any(token in sentence for token in ("建议", "注意", "无法", "未单独列出", "缺失")):
+        return "提示"
+    if query_type == "standard_ref":
+        return "规则要点"
+    return "关键信息"
+
+
+def _build_highlights(query_type: str, direct_answer: str, analysis_text: str) -> list[dict]:
+    highlights: list[dict] = []
+    seen_values: set[str] = set()
+    for sentence in [*_split_sentences(direct_answer), *_split_sentences(analysis_text)]:
+        normalized = sentence.strip()
+        if normalized in seen_values:
+            continue
+        seen_values.add(normalized)
+        highlights.append(
+            {
+                "label": _highlight_label(normalized, query_type),
+                "value": normalized,
+            }
+        )
+        if len(highlights) >= 4:
+            break
+    return highlights
+
+
+def _parse_citation_items(citations_text: str) -> list[dict]:
+    items: list[dict] = []
+    for line in (citations_text or "").splitlines():
+        match = re.match(r"\[(\d+)\]\s+《(.+?)》第\s+(.+?)\s+页", line.strip())
+        if match:
+            items.append(
+                {
+                    "index": int(match.group(1)),
+                    "title": match.group(2),
+                    "page": match.group(3),
+                }
+            )
+    return items
+
+
+def _build_answer_sections_presentation(
+    query: str,
+    query_type: str,
+    final_answer: str,
+    chunks: list[dict],
+    citations_text: str,
+) -> dict | None:
+    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
+    if not answer_without_refs:
+        return None
+
+    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
+    highlights = _build_highlights(query_type, direct_answer, analysis_text)
+    analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
+    sections = [
+        {"label": "关键说明" if idx == 0 else "补充说明", "body": paragraph}
+        for idx, paragraph in enumerate(analysis_paragraphs[:2])
+    ]
+    sources = _parse_citation_items(citations_text)[:4]
+
+    note = None
+    if len(query) <= 28:
+        note = query
+
+    return {
+        "type": "answer_sections",
+        "title": _build_answer_title(query_type),
+        "note": note,
+        "summary": _build_summary_text(query_type, direct_answer),
+        "highlights": highlights,
+        "sections": sections,
+        "sources": sources,
+    }
 
 
 def _parse_price_point(chunk: dict) -> dict | None:
@@ -401,6 +578,19 @@ def _build_presentation_payload(query: str, query_type: str, chunks: list[dict])
     }
 
 
+def finalize_presentation_payload(
+    query: str,
+    query_type: str,
+    final_answer: str,
+    chunks: list[dict],
+    citations_text: str,
+    existing_presentation: dict | None = None,
+) -> dict | None:
+    if existing_presentation:
+        return existing_presentation
+    return _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
+
+
 def _clean_markdown_noise(text: str) -> str:
     text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
@@ -447,19 +637,7 @@ def _normalize_final_answer(
         analysis_text = analysis or evidence or _build_evidence_block(chunks)
         return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_without_refs) if p.strip()]
-    direct_answer = paragraphs[0] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
-    remaining = paragraphs[1:]
-
-    if remaining and re.match(r"简要分析[:：]", remaining[0]):
-        analysis_text = "\n\n".join(
-            [re.sub(r"^简要分析[:：]?\s*", "", remaining[0]).strip(), *remaining[1:]]
-        ).strip()
-    else:
-        analysis_text = "\n\n".join(remaining).strip()
-
-    if not analysis_text:
-        analysis_text = _build_evidence_block(chunks)
+    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
 
     return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
 
@@ -706,6 +884,14 @@ def planner_node(state: RAGAgentState) -> dict:
             core_material = extract_quota_search_term(query) or query
             steps = [f"调用 category_search 确认『{core_material}』所在章节编号"] + steps
             logger.info(f"[planner] quota query detected, prepended category_search step, core='{core_material}'")
+
+    if is_fee_formula_query(query):
+        core_term = extract_fee_formula_search_term(query)
+        steps = [
+            f"使用 text_search 检索『{core_term}』原文公式",
+            f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
+        ]
+        logger.info(f"[planner] fee formula query override, core='{core_term}'")
 
     # 价格对比查询：提取两个期间，确保每个期间都有独立的 price_query 步骤
     price_compare_match = _PRICE_COMPARE_RE.search(query)
@@ -1000,7 +1186,16 @@ def synthesize_node(state: RAGAgentState) -> dict:
         runtime = state.get("llm_runtime") or {}
 
     from app.rag_pipeline import _strip_latex
+    citations_text = refine_citations_for_answer(final_answer, all_chunks, citations_text)
     final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text, query_type)
+    presentation = finalize_presentation_payload(
+        query=query,
+        query_type=query_type,
+        final_answer=final_answer,
+        chunks=all_chunks,
+        citations_text=citations_text,
+        existing_presentation=presentation,
+    )
 
     return {
         "messages": [AIMessage(content=final_answer)],

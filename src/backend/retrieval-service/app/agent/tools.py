@@ -115,12 +115,128 @@ _STRUCTURED_TABLE_QUERY_HINTS = (
     "计算基数",
 )
 
+_FEE_FORMULA_HINT_RE = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
+_FEE_STANDARD_YEAR_RE = re.compile(r"(20\d{2})\s*版?")
+_FEE_ITEM_RE = re.compile(
+    r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
+    r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
+    r"暂列金额|优质优价奖励费|利润"
+)
+
 
 def _should_include_structured_tables(query: str) -> bool:
     normalized = (query or "").strip()
     if not normalized:
         return False
     return any(hint in normalized for hint in _STRUCTURED_TABLE_QUERY_HINTS)
+
+
+def _extract_requested_standard_year(query: str) -> str:
+    match = _FEE_STANDARD_YEAR_RE.search(query or "")
+    return match.group(1) if match else ""
+
+
+def _is_fee_formula_query(query: str) -> bool:
+    normalized = (query or "").strip()
+    return bool(_should_include_structured_tables(normalized) and _FEE_FORMULA_HINT_RE.search(normalized))
+
+
+def _extract_fee_formula_item(query: str) -> str:
+    match = _FEE_ITEM_RE.search(query or "")
+    return match.group(0) if match else ""
+
+
+def _query_fee_formula_text_chunks(conn, query: str, top_k: int = 10) -> list[dict]:
+    if not _is_fee_formula_query(query):
+        return []
+
+    year = _extract_requested_standard_year(query)
+    item = _extract_fee_formula_item(query)
+    file_like = f"%费率标准（{year}）%" if year else "%费率标准%"
+    content_terms = ["%计算公式%"]
+    if item:
+        content_terms.append(f"%{item}%")
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+    with conn.cursor() as cur:
+        if len(content_terms) >= 2:
+            cur.execute(
+                """
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE file_name ILIKE %s
+                      AND content ILIKE %s
+                      AND content ILIKE %s
+                    ORDER BY
+                      CASE WHEN content ILIKE %s THEN 0 ELSE 1 END,
+                      page_number ASC
+                    LIMIT %s
+                """,
+                (file_like, content_terms[0], content_terms[1], "%计算公式如下%", top_k),
+            )
+        else:
+            cur.execute(
+                """
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE file_name ILIKE %s
+                      AND content ILIKE %s
+                    ORDER BY
+                      CASE WHEN content ILIKE %s THEN 0 ELSE 1 END,
+                      page_number ASC
+                    LIMIT %s
+                """,
+                (file_like, content_terms[0], "%计算公式如下%", top_k),
+            )
+
+        for row in cur.fetchall():
+            cid = f"fee_formula_{row[0]}"
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            results.append(
+                {
+                    "chunk_id": cid,
+                    "doc_id": str(row[1] or ""),
+                    "page_number": row[2] or 1,
+                    "source_db": "fee_formula_text",
+                    "content": row[3] or "",
+                    "score": 0.97,
+                    "metadata": {},
+                }
+            )
+
+        if not results and item:
+            cur.execute(
+                """
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE file_name ILIKE %s
+                      AND content ILIKE %s
+                    ORDER BY page_number ASC
+                    LIMIT %s
+                """,
+                (file_like, f"%{item}%", top_k),
+            )
+            for row in cur.fetchall():
+                cid = f"fee_formula_{row[0]}"
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                results.append(
+                    {
+                        "chunk_id": cid,
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[2] or 1,
+                        "source_db": "fee_formula_text",
+                        "content": row[3] or "",
+                        "score": 0.93,
+                        "metadata": {},
+                    }
+                )
+
+    return results[:top_k]
 
 
 def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
@@ -340,6 +456,7 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     if not query.strip() or not _should_include_structured_tables(query):
         return results
     q = query.strip()
+    requested_year = _extract_requested_standard_year(q)
 
     # 提取候选匹配词：全串 + 滑动窗口（避免贪婪匹配漏掉关键词）
     import re as _re
@@ -364,16 +481,31 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                 if len(results) >= top_k:
                     break
                 try:
-                    cur.execute("""
-                        SELECT id, doc_id, fee_name, fee_category,
-                               rate_min, rate_max, rate_recommended,
-                               applicable_scope, base_formula, source_text, standard_year,
-                               calc_base
-                        FROM fee_rates
-                        WHERE fee_name ILIKE %s OR fee_category ILIKE %s
-                           OR source_text ILIKE %s
-                        LIMIT %s
-                    """, (f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
+                    if requested_year:
+                        cur.execute("""
+                            SELECT id, doc_id, fee_name, fee_category,
+                                   rate_min, rate_max, rate_recommended,
+                                   applicable_scope, base_formula, source_text, standard_year,
+                                   calc_base
+                            FROM fee_rates
+                            WHERE standard_year = %s
+                              AND (
+                                   fee_name ILIKE %s OR fee_category ILIKE %s
+                                   OR source_text ILIKE %s
+                              )
+                            LIMIT %s
+                        """, (requested_year, f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
+                    else:
+                        cur.execute("""
+                            SELECT id, doc_id, fee_name, fee_category,
+                                   rate_min, rate_max, rate_recommended,
+                                   applicable_scope, base_formula, source_text, standard_year,
+                                   calc_base
+                            FROM fee_rates
+                            WHERE fee_name ILIKE %s OR fee_category ILIKE %s
+                               OR source_text ILIKE %s
+                            LIMIT %s
+                        """, (f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
                 except Exception as _cur_err:
                     import psycopg2
                     if isinstance(_cur_err, psycopg2.errors.UndefinedTable):
@@ -498,6 +630,9 @@ def keyword_search(query: str, top_k: int = 10) -> str:
                 })
 
         # also query fee_rates and other structured tables
+        for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
+                results.append(chunk)
         if _should_include_structured_tables(query):
             results.extend(_query_structured_tables(query, top_k))
         for chunk in _query_text_chunks_literal(conn, query, top_k):
@@ -577,6 +712,15 @@ def category_search(query: str, top_k: int = 5) -> str:
             })
 
         # 额外查询 fee_rates 等结构化表
+        for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            results.append({
+                "chunk_id": chunk["chunk_id"],
+                "doc_id": chunk["doc_id"],
+                "page_number": chunk["page_number"],
+                "section": "",
+                "content": chunk["content"][:300],
+                "score": chunk["score"],
+            })
         if _should_include_structured_tables(query):
             for chunk in _query_structured_tables(query, top_k):
                 results.append({
@@ -678,6 +822,10 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                     })
 
         # fee_rates 结构化表
+        for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
         if _should_include_structured_tables(query):
             for chunk in _query_structured_tables(query, top_k):
                 if chunk["chunk_id"] not in seen_ids:
@@ -773,6 +921,10 @@ def text_search(query: str, top_k: int = 8) -> str:
                 conn.rollback()
 
         # 3. fee_rates and other structured tables — score 0.9, always passes filter
+        for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
         if _should_include_structured_tables(query):
             for chunk in _query_structured_tables(query, top_k):
                 if chunk["chunk_id"] not in seen_ids:

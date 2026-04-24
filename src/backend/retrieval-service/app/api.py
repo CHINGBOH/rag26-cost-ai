@@ -519,6 +519,7 @@ async def agent_query_stream(request: AgentStreamRequest):
         current_runtime: dict[str, Any] = {}
         current_plan: list[str] = []
         current_presentation: dict[str, Any] | None = None
+        current_query_type = ""
 
         while True:
             try:
@@ -560,6 +561,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "sub_queries": node_output.get("sub_queries", []),
                     "entities": {},
                 }
+                current_query_type = node_output.get("query_type", "") or ""
                 yield _sse_event("query_analysis", analysis)
                 # chitchat / off-topic：直接以 token 事件推送答案（图在此结束，synthesize 不会运行）
                 off_answer = node_output.get("final_answer", "")
@@ -659,6 +661,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                 if prompt:
                     try:
                         from app.agent.prompts import stream_llm_response
+                        from app.agent.graph import refine_citations_for_answer, finalize_presentation_payload
 
                         async for stream_event in stream_llm_response(
                             [HumanMessage(content=prompt)],
@@ -694,10 +697,29 @@ async def agent_query_stream(request: AgentStreamRequest):
                         yield _sse_event("token", {"delta": answer})
 
                 if citations_text:
+                    citations_text = refine_citations_for_answer(
+                        final_answer,
+                        node_output.get("retrieved_chunks", []) or [],
+                        citations_text,
+                    )
                     final_answer = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
                     citations_delta = ("\n\n" if final_answer else "") + citations_text
                     final_answer += citations_delta
                     yield _sse_event("token", {"delta": citations_delta})
+
+                final_presentation = finalize_presentation_payload(
+                    query=request.query.strip(),
+                    query_type=current_query_type,
+                    final_answer=final_answer,
+                    chunks=node_output.get("retrieved_chunks", []) or [],
+                    citations_text=citations_text,
+                    existing_presentation=current_presentation,
+                )
+                if final_presentation and final_presentation != current_presentation:
+                    current_presentation = final_presentation
+                    yield _sse_event("presentation", final_presentation)
+                elif final_presentation:
+                    current_presentation = final_presentation
 
                 if eval_result:
                     scores = {

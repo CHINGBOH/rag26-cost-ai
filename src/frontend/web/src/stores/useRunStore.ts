@@ -70,14 +70,34 @@ export interface PresentationPoint {
   sources?: string[];
 }
 
+export interface PresentationHighlight {
+  label: string;
+  value: string;
+}
+
+export interface PresentationSection {
+  label: string;
+  body: string;
+}
+
+export interface PresentationSource {
+  index: number;
+  title: string;
+  page: string;
+}
+
 export interface PresentationPayload {
-  type: 'price_comparison' | 'price_trend' | 'price_snapshot';
+  type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections';
   title: string;
   unit?: string;
-  points: PresentationPoint[];
+  points?: PresentationPoint[];
   delta?: number | null;
   delta_percent?: number | null;
   note?: string;
+  summary?: string;
+  highlights?: PresentationHighlight[];
+  sections?: PresentationSection[];
+  sources?: PresentationSource[];
 }
 
 export interface RunState {

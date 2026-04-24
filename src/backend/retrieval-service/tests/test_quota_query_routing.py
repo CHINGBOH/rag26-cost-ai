@@ -30,6 +30,29 @@ def test_should_include_structured_tables_only_for_fee_queries() -> None:
     assert not tools._should_include_structured_tables("玻璃地板人工费是多少")
 
 
+def test_fee_formula_queries_are_classified_as_standard_refs() -> None:
+    analysis = query_analyzer.QueryAnalyzer().analyze("2025版费率标准中，企业管理费的计算方法是什么？")
+
+    assert analysis["intent"] == "standard_ref"
+
+
+def test_extract_fee_formula_search_term_keeps_year_and_fee_item() -> None:
+    term = query_analyzer.extract_fee_formula_search_term("2025版费率标准中，企业管理费的计算方法是什么？")
+
+    assert term == "2025 企业管理费 计算公式"
+
+
+def test_structured_table_query_extracts_requested_standard_year() -> None:
+    assert tools._extract_requested_standard_year("2025版费率标准中，利润的计算方法是什么？") == "2025"
+    assert tools._extract_requested_standard_year("企业管理费的计算公式是什么？") == ""
+
+
+def test_fee_formula_query_detection_matches_formula_questions() -> None:
+    assert tools._is_fee_formula_query("2025版费率标准中，企业管理费的计算方法是什么？")
+    assert tools._is_fee_formula_query("2025版费率标准中，安全文明施工费费率部分的计算公式是什么？")
+    assert not tools._is_fee_formula_query("2025版费率标准中，企业管理费推荐费率是多少？")
+
+
 def test_text_search_rolls_back_after_vector_error(monkeypatch) -> None:
     class FakeCursor:
         def __init__(self, conn, mode: str) -> None:

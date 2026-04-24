@@ -89,6 +89,39 @@ const useChatStore = create<ChatStore>()(
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
+function buildPresentationFallbackText(presentation: PresentationPayload | null | undefined): string {
+  if (!presentation) return '';
+
+  if (presentation.type === 'answer_sections') {
+    return presentation.summary || '';
+  }
+
+  const points = presentation.points ?? [];
+  if (presentation.type === 'price_comparison' && points.length >= 2) {
+    const from = points[0];
+    const to = points[points.length - 1];
+    const unitSuffix = presentation.unit ? ` 元/${presentation.unit}` : '';
+    if (presentation.delta != null) {
+      return `${to.label} 相比 ${from.label}${presentation.delta >= 0 ? '上涨' : '下降'} ${Math.abs(presentation.delta).toFixed(2)}${unitSuffix}。`;
+    }
+  }
+
+  if (presentation.type === 'price_trend' && points.length >= 2) {
+    const start = points[0];
+    const end = points[points.length - 1];
+    const unitSuffix = presentation.unit ? ` 元/${presentation.unit}` : '';
+    return `${presentation.title}：从 ${start.label} 的 ${start.value.toFixed(2)}${unitSuffix} 变化到 ${end.label} 的 ${end.value.toFixed(2)}${unitSuffix}。`;
+  }
+
+  if (presentation.type === 'price_snapshot' && points.length > 0) {
+    const point = points[0];
+    const unitSuffix = presentation.unit ? ` 元/${presentation.unit}` : '';
+    return `${presentation.title}：${point.label} 为 ${point.value.toFixed(2)}${unitSuffix}。`;
+  }
+
+  return presentation.title || '';
+}
+
 export function useAgent() {
   const messages = useChatStore((s) => s.messages);
   const sessionId = useChatStore((s) => s.sessionId);
@@ -125,6 +158,74 @@ export function useAgent() {
       runStore.startRun(runId);
 
       try {
+        let finalized = false;
+        let currentEventType = '';
+        let currentDataLines: string[] = [];
+
+        const finalizeAssistantMessage = (payload?: Record<string, unknown>) => {
+          if (finalized) return;
+
+          const finalRunStore = useRunStore.getState();
+          const presentation =
+            (payload?.presentation as PresentationPayload | null | undefined) ?? finalRunStore.presentation;
+          const content =
+            ((payload?.answer as string | undefined) || finalRunStore.streamingAnswer || '').trim()
+            || buildPresentationFallbackText(presentation);
+
+          if (!content && !presentation && finalRunStore.retrievalChunks.length === 0) {
+            return;
+          }
+
+          _addMessage({
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            content,
+            timestamp: Date.now(),
+            sessionId: currentSessionId,
+            runId,
+            iterations: (payload?.iterations as number | undefined) ?? finalRunStore.finalIterations,
+            latencyMs: (payload?.latency_ms as number | undefined) ?? finalRunStore.finalLatencyMs,
+            chunks: finalRunStore.retrievalChunks as AgentChunk[],
+            evalScores: finalRunStore.evalScores,
+            provider: (payload?.provider as string | undefined) ?? finalRunStore.runtimeInfo?.provider,
+            model: (payload?.model as string | undefined) ?? finalRunStore.runtimeInfo?.model,
+            engine: (payload?.engine as string | undefined) ?? finalRunStore.runtimeInfo?.engine,
+            routeMode: (payload?.route_mode as string | undefined) ?? finalRunStore.runtimeInfo?.routeMode,
+            presentation,
+          });
+          finalized = true;
+        };
+
+        const flushEvent = () => {
+          if (!currentEventType || currentDataLines.length === 0) return;
+          const dataStr = currentDataLines.join('\n');
+          try {
+            const data = JSON.parse(dataStr);
+            handleSSEEvent(currentEventType, data);
+
+            if (currentEventType === 'done') {
+              finalizeAssistantMessage(data);
+              useRunStore.getState().finishRun({
+                answer:
+                  ((data.answer as string | undefined) || useRunStore.getState().streamingAnswer || '').trim()
+                  || buildPresentationFallbackText(
+                    (data.presentation as PresentationPayload | null | undefined)
+                    ?? useRunStore.getState().presentation
+                  ),
+                iterations: (data.iterations as number) ?? 0,
+                latency_ms: (data.latency_ms as number) ?? 0,
+                presentation:
+                  (data.presentation as PresentationPayload | null | undefined)
+                  ?? useRunStore.getState().presentation,
+              });
+            }
+          } catch (e) {
+            console.error('SSE parse error', e, dataStr);
+          }
+          currentEventType = '';
+          currentDataLines = [];
+        };
+
         const response = await fetch(`${API_BASE}/api/v1/agent/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -159,60 +260,77 @@ export function useAgent() {
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
 
-          let eventType = '';
-          let dataStr = '';
-
           for (const line of lines) {
             if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
+              currentEventType = line.slice(7).trim();
             } else if (line.startsWith('data: ')) {
-              dataStr = line.slice(6).trim();
-            } else if (line === '' && eventType && dataStr) {
-              try {
-                const data = JSON.parse(dataStr);
-                handleSSEEvent(eventType, data);
-
-                if (eventType === 'done') {
-                  const finalRunStore = useRunStore.getState();
-                  _addMessage({
-                    id: `assistant-${Date.now()}`,
-                    role: 'assistant',
-                    content: (data.answer as string) || finalRunStore.streamingAnswer,
-                    timestamp: Date.now(),
-                    sessionId: currentSessionId,
-                    runId,
-                    iterations: data.iterations,
-                    latencyMs: data.latency_ms,
-                    chunks: finalRunStore.retrievalChunks as AgentChunk[],
-                    evalScores: finalRunStore.evalScores,
-                    provider: data.provider as string | undefined,
-                    model: data.model as string | undefined,
-                    engine: data.engine as string | undefined,
-                    routeMode: data.route_mode as string | undefined,
-                    presentation: (data.presentation as PresentationPayload | null | undefined)
-                      ?? finalRunStore.presentation,
-                  });
-                  finalRunStore.finishRun(data);
-                }
-              } catch (e) {
-                console.error('SSE parse error', e, dataStr);
-              }
-              eventType = '';
-              dataStr = '';
+              currentDataLines.push(line.slice(6));
+            } else if (line === '') {
+              flushEvent();
             }
           }
         }
+
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) {
+            if (line.startsWith('event: ')) {
+              currentEventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              currentDataLines.push(line.slice(6));
+            } else if (line === '') {
+              flushEvent();
+            }
+          }
+        }
+        flushEvent();
+
+        if (!finalized) {
+          const partialRunStore = useRunStore.getState();
+          finalizeAssistantMessage();
+          partialRunStore.finishRun({
+            answer: partialRunStore.streamingAnswer || buildPresentationFallbackText(partialRunStore.presentation),
+            iterations: partialRunStore.finalIterations,
+            latency_ms: partialRunStore.finalLatencyMs,
+            presentation: partialRunStore.presentation,
+          });
+        }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
-
-        _addMessage({
-          id: `error-${Date.now()}`,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          error: error instanceof Error ? error.message : '请求失败',
+        const partialRunStore = useRunStore.getState();
+        const partialAnswer =
+          partialRunStore.streamingAnswer || buildPresentationFallbackText(partialRunStore.presentation);
+        if (partialAnswer || partialRunStore.presentation || partialRunStore.retrievalChunks.length > 0) {
+          _addMessage({
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            content: partialAnswer,
+            timestamp: Date.now(),
+            sessionId: currentSessionId,
+            runId,
+            chunks: partialRunStore.retrievalChunks as AgentChunk[],
+            evalScores: partialRunStore.evalScores,
+            provider: partialRunStore.runtimeInfo?.provider,
+            model: partialRunStore.runtimeInfo?.model,
+            engine: partialRunStore.runtimeInfo?.engine,
+            routeMode: partialRunStore.runtimeInfo?.routeMode,
+            presentation: partialRunStore.presentation,
+          });
+        } else {
+          _addMessage({
+            id: `error-${Date.now()}`,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            error: error instanceof Error ? error.message : '请求失败',
+          });
+        }
+        useRunStore.getState().finishRun({
+          answer: partialAnswer,
+          iterations: partialRunStore.finalIterations,
+          latency_ms: partialRunStore.finalLatencyMs,
+          presentation: partialRunStore.presentation,
         });
-        useRunStore.getState().finishRun({ answer: '', iterations: 0, latency_ms: 0 });
       } finally {
         _setLoading(false);
       }

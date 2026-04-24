@@ -54,7 +54,69 @@ function formatPointRange(point: PresentationPoint, unit?: string): string {
 }
 
 const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation }) => {
-  const chartData = presentation.points.map((point) => ({
+  if (presentation.type === 'answer_sections') {
+    return (
+      <div className="presentation-card answer-sections">
+        <div className="presentation-header">
+          <div>
+            <div className="presentation-title">{presentation.title}</div>
+            {presentation.note && <div className="presentation-note">{presentation.note}</div>}
+          </div>
+        </div>
+
+        {presentation.summary && (
+          <div className="answer-summary-card">
+            <span className="answer-summary-label">直接结论</span>
+            <div
+              className="answer-summary-text"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
+            />
+          </div>
+        )}
+
+        {presentation.highlights && presentation.highlights.length > 0 && (
+          <div className="answer-highlight-grid">
+            {presentation.highlights.map((item, index) => (
+              <div key={`${item.label}-${index}`} className="answer-highlight-item">
+                <span className="answer-highlight-label">{item.label}</span>
+                <div
+                  className="answer-highlight-value"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {presentation.sections && presentation.sections.length > 0 && (
+          <div className="answer-sections-list">
+            {presentation.sections.map((section, index) => (
+              <div key={`${section.label}-${index}`} className="answer-section-item">
+                <div className="answer-section-label">{section.label}</div>
+                <div
+                  className="answer-section-body"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {presentation.sources && presentation.sources.length > 0 && (
+          <div className="presentation-footnotes">
+            {presentation.sources.map((source) => (
+              <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
+                <span className="presentation-footnote-label">来源 {source.index}</span>
+                <span>{source.title} P{source.page}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const chartData = (presentation.points ?? []).map((point) => ({
     label: point.label,
     value: point.value,
   }));
@@ -69,9 +131,9 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         {presentation.unit && <span className="presentation-unit">单位：元/{presentation.unit}</span>}
       </div>
 
-      {presentation.type === 'price_comparison' && (
-        <div className="presentation-metrics">
-          {presentation.points.map((point) => (
+        {presentation.type === 'price_comparison' && (
+          <div className="presentation-metrics">
+          {(presentation.points ?? []).map((point) => (
             <div key={point.label} className="presentation-metric">
               <span className="presentation-metric-label">{point.label}</span>
               <strong>{formatPointRange(point, presentation.unit)}</strong>
@@ -139,7 +201,7 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
       </div>
 
       <div className="presentation-footnotes">
-        {presentation.points.map((point) => (
+        {(presentation.points ?? []).map((point) => (
           <div key={`${point.label}-refs`} className="presentation-footnote">
             <span className="presentation-footnote-label">{point.label}</span>
             <span>
@@ -488,14 +550,16 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
 
   return (
     <div className={`message-row ${message.role}`}>
-      <div className={`message-bubble ${message.role}`}>
-        {message.role === 'assistant' && message.presentation && (
-          <PresentationCard presentation={message.presentation} />
+        <div className={`message-bubble ${message.role}`}>
+          {message.role === 'assistant' && message.presentation && (
+            <PresentationCard presentation={message.presentation} />
+          )}
+        {(!message.presentation || message.presentation.type !== 'answer_sections') && (
+          <div
+            className={`message-content ${message.presentation ? 'with-presentation' : ''}`}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+          />
         )}
-        <div
-          className={`message-content ${message.presentation ? 'with-presentation' : ''}`}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-        />
 
         {message.role === 'assistant' && (
           <div className="message-meta">
@@ -599,11 +663,13 @@ const StreamingBubble: React.FC = () => {
     <div className="message-row assistant">
       <div className="message-bubble assistant streaming">
         {presentation && <PresentationCard presentation={presentation} />}
-        <div className={`message-content ${presentation ? 'with-presentation' : ''}`}>
-          {streamingAnswer
-            ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />
-            : <span className="thinking-text">{statusMessage || '正在生成回答…'}</span>}
-        </div>
+        {(!presentation || presentation.type !== 'answer_sections') && (
+          <div className={`message-content ${presentation ? 'with-presentation' : ''}`}>
+            {streamingAnswer
+              ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />
+              : <span className="thinking-text">{statusMessage || '正在生成回答…'}</span>}
+          </div>
+        )}
         {runtimeInfo?.model && (
           <div className="message-meta">
             <span className="meta-tag">{runtimeInfo.routeMode || 'default'}</span>

@@ -33,6 +33,7 @@ STANDARD_REF_KEYWORDS = [
     "规则", "规定", "要求", "标准", "规范", "计算规则", "定额", "消耗量",
     "费率", "组成", "内容", "如何填写", "应填写", "适用于", "按什么", "推荐系数",
     "推荐费率", "计取", "是否包含",
+    "计算方法", "计算公式", "公式",
     # Q07 类：填写要求
     "填写", "怎么填", "填报",
     # Q09 类：增值税/计税方法政策解读
@@ -112,6 +113,13 @@ _QUOTA_NOISE_PATTERN = re.compile(
 _QUOTA_LOCATION_PATTERN = re.compile(
     r"楼梯|墙面|柱面|台阶|天棚|楼地面|地面|顶面|踢脚|外墙|内墙|屋面|坡屋面|吊顶|地坪|面层"
 )
+_FEE_STANDARD_HINT_PATTERN = re.compile(r"费率标准|推荐费率|企业管理费|利润|安全文明施工费|履约担保手续费|夜间施工增加费|总包管理服务费|暂列金额|优质优价奖励费")
+_FORMULA_EXPLAIN_PATTERN = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
+_FEE_ITEM_PATTERN = re.compile(
+    r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
+    r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
+    r"暂列金额|优质优价奖励费|利润"
+)
 
 
 class QueryAnalysis(TypedDict):
@@ -125,6 +133,9 @@ def _classify_intent(query: str) -> str:
     # trend_chart: 走势分析（含时间序列）
     if any(re.search(kw, q) is not None if '.' in kw else kw in q for kw in TREND_KEYWORDS):
         return "trend_chart"
+    # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
+    if _FEE_STANDARD_HINT_PATTERN.search(query) and _FORMULA_EXPLAIN_PATTERN.search(query):
+        return "standard_ref"
     # calculation: 明确有公式或数值计算
     if any(kw in q for kw in CALC_KEYWORDS) and any(kw in q for kw in PRICE_KEYWORDS):
         return "calculation"
@@ -203,6 +214,27 @@ def extract_quota_search_term(query: str) -> str:
     cleaned = re.sub(r"(是什么|是多少|怎么计算|如何计算|如何规定|如何取值)[？?]?$", "", cleaned)
     cleaned = _QUOTA_NOISE_PATTERN.sub("", cleaned).strip()
     return cleaned or query.strip()
+
+
+def is_fee_formula_query(query: str) -> bool:
+    normalized = (query or "").strip()
+    return bool(_FEE_STANDARD_HINT_PATTERN.search(normalized) and _FORMULA_EXPLAIN_PATTERN.search(normalized))
+
+
+def extract_fee_formula_search_term(query: str) -> str:
+    normalized = (query or "").strip()
+    year_match = re.search(r"(20\d{2})\s*版?", normalized)
+    year = year_match.group(1) if year_match else ""
+    item_match = _FEE_ITEM_PATTERN.search(normalized)
+    item = item_match.group(0) if item_match else ""
+
+    if year and item:
+        return f"{year} {item} 计算公式"
+    if year:
+        return f"{year} 费率标准 计算公式"
+    if item:
+        return f"{item} 计算公式"
+    return normalized
 
 
 def _decompose(query: str, intent: str) -> list[str]:
