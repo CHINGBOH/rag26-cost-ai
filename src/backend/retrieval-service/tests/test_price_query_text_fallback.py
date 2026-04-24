@@ -255,3 +255,49 @@ def test_price_trend_fills_missing_months_from_ocr(monkeypatch) -> None:
 
     assert [item["metadata"]["year_month"] for item in result] == ["2025-10", "2025-11", "2025-12"]
     assert [item["metadata"]["avg_price"] for item in result] == [194.0, 194.0, 192.0]
+
+
+def test_price_query_supports_year_only_period(monkeypatch) -> None:
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=None) -> None:
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            if "SELECT DISTINCT year_month" in self.query:
+                return []
+            return [
+                (
+                    1,
+                    "doc_pdf_year",
+                    18,
+                    "钛合金门窗 单位:m² 价格:880.00元 期间:2025-03 类别:门窗",
+                    {"year_month": "2025-03"},
+                    0.0,
+                )
+            ]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
+    monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+
+    result = json.loads(
+        tools.price_query.func(
+            material_name="钛合金门窗",
+            specification="",
+            year_month="2025",
+            top_k=3,
+        )
+    )
+
+    assert result[0]["source_db"] == "price_records"
+    assert "期间:2025-03" in result[0]["content"]

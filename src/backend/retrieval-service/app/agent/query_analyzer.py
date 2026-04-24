@@ -120,6 +120,10 @@ _FEE_ITEM_PATTERN = re.compile(
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
     r"暂列金额|优质优价奖励费|利润"
 )
+_MATERIAL_QUERY_NOISE_RE = re.compile(
+    r"深圳市?|信息价|工程建设|建设工程|材料价格|价格|多少钱|多少|是什么|是多少|请问|根据|查询|检索|"
+    r"最新|当前|本月|当月|今年|中|的|及其|是多少元"
+)
 
 
 class QueryAnalysis(TypedDict):
@@ -136,8 +140,15 @@ def _classify_intent(query: str) -> str:
     # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
     if _FEE_STANDARD_HINT_PATTERN.search(query) and _FORMULA_EXPLAIN_PATTERN.search(query):
         return "standard_ref"
+    has_price_keyword = any(kw in q for kw in PRICE_KEYWORDS)
+    has_calc_keyword = any(kw in q for kw in CALC_KEYWORDS)
+    if has_price_keyword:
+        material = _extract_material(query)
+        explicit_calc = any(kw in q for kw in ("乘以", "除", "加", "减", "合计", "汇总", "百分比"))
+        if material or "信息价" in query:
+            return "calculation" if explicit_calc else "price"
     # calculation: 明确有公式或数值计算
-    if any(kw in q for kw in CALC_KEYWORDS) and any(kw in q for kw in PRICE_KEYWORDS):
+    if has_calc_keyword and has_price_keyword:
         return "calculation"
     # comparison: 两个对象对比
     if any(kw in q for kw in COMPARISON_KEYWORDS):
@@ -162,6 +173,13 @@ def _extract_year_month(query: str) -> str:
     m = re.search(r"(20\d{2})-(\d{1,2})", query)
     if m:
         return f"{m.group(1)}-{m.group(2).zfill(2)}"
+    # 20XX年 / 20XX版 / 20XX
+    m = re.search(r"(20\d{2})\s*年", query)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(20\d{2})\b", query)
+    if m:
+        return m.group(1)
     return ""
 
 
@@ -169,7 +187,31 @@ def _extract_material(query: str) -> str:
     # 先去掉时间词和干扰词
     cleaned = re.sub(r"20\d{2}\s*年\s*\d{1,2}\s*月", "", query)
     cleaned = re.sub(r"20\d{2}-\d{1,2}", "", cleaned)
+    cleaned = re.sub(r"20\d{2}\s*年?", "", cleaned)
+    cleaned = _MATERIAL_QUERY_NOISE_RE.sub("", cleaned)
     cleaned = re.sub(r"[年月日最新当前本个吨方平米立米套组台块片工日支根卷桶箱件价格含税除税信息价造价单价费率材料费人工费机械费设备费租赁费多少钱多钱怎样怎么什么]", "", cleaned)
+    matches: list[tuple[int, int, str]] = []
+    for mat in MATERIAL_LIST:
+        start = 0
+        while True:
+            idx = cleaned.find(mat, start)
+            if idx == -1:
+                break
+            matches.append((idx, idx + len(mat), mat))
+            start = idx + 1
+    if matches:
+        matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+        merged_start, merged_end, _ = matches[0]
+        for start, end, _ in matches[1:]:
+            if start <= merged_end:
+                merged_end = max(merged_end, end)
+            elif start == merged_end:
+                merged_end = end
+            else:
+                break
+        merged = cleaned[merged_start:merged_end].strip("，,。；;：:\"'“”‘’（）()[]【】 ")
+        if merged:
+            return merged
     # 按长度降序匹配，优先匹配长词
     for mat in sorted(MATERIAL_LIST, key=len, reverse=True):
         if mat in cleaned:

@@ -145,6 +145,49 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 def _display_doc_name(doc_name: str) -> str:
     return doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
 
+
+def _looks_like_annual_price_query(query: str, entities: dict | None = None) -> bool:
+    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
+    period = str(analysis_entities.get("year_month") or "")
+    material = str(analysis_entities.get("material_name") or "")
+    return bool(re.match(r"^\d{4}$", period) and material and "信息价" in query)
+
+
+def _prune_chunks_for_query(
+    query: str,
+    query_type: str,
+    chunks: list[dict],
+    entities: dict | None = None,
+) -> list[dict]:
+    if query_type not in {"price", "comparison", "trend_chart"} or not chunks:
+        return chunks
+
+    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
+    material = str(analysis_entities.get("material_name") or "").strip()
+    specification = str(analysis_entities.get("specification") or "").strip()
+    if not material:
+        return chunks
+
+    material_matched = [
+        chunk for chunk in chunks
+        if material in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
+    ]
+    if material_matched:
+        chunks = material_matched
+    elif _looks_like_annual_price_query(query, analysis_entities):
+        return []
+
+    if specification:
+        spec_matched = [
+            chunk for chunk in chunks
+            if specification in (chunk.get("content") or "")
+        ]
+        if spec_matched:
+            chunks = spec_matched
+
+    return chunks
+
+
 def _enrich_chunks_with_filename(chunks: list) -> list:
     """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
     if not chunks:
@@ -228,6 +271,11 @@ def _build_evidence_block(chunks: list) -> str:
 
 def _split_answer_components(answer_without_refs: str, chunks: list[dict]) -> tuple[str, str]:
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_without_refs) if p.strip()]
+    if len(paragraphs) == 1 and "简要分析" in paragraphs[0]:
+        inline_parts = re.split(r"简要分析[:：]", paragraphs[0], maxsplit=1)
+        direct_part = inline_parts[0].strip()
+        analysis_part = inline_parts[1].strip() if len(inline_parts) > 1 else ""
+        paragraphs = [part for part in [direct_part, analysis_part] if part]
     direct_answer = paragraphs[0] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
     remaining = paragraphs[1:]
 
@@ -624,6 +672,9 @@ def _normalize_final_answer(
     refs = _normalize_reference_section(citations_text)
     # Strip any LLM-generated reference section
     answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", answer, maxsplit=1)[0].strip()
+    answer_without_refs = re.sub(r"(?m)^\s*第[一二三四五六七八九十]段[:：]\s*", "", answer_without_refs)
+    answer_without_refs = re.sub(r"(?m)^\s*参考索引[:：]\s*\[1\]\s*暂无可用来源[。.]?\s*$", "", answer_without_refs)
+    answer_without_refs = answer_without_refs.strip()
 
     # Detect and convert old five-section format
     has_old_tags = all(tag in answer_without_refs for tag in ["【问题】", "【论据】", "【分析】", "【结论】"])
@@ -819,6 +870,7 @@ def query_analysis_node(state: RAGAgentState) -> dict:
     analysis = _analyzer.analyze(query)
     return {
         "query_type": analysis["intent"],
+        "query_entities": analysis["entities"],
         "sub_queries": analysis["sub_queries"],
     }
 
@@ -855,6 +907,7 @@ def planner_node(state: RAGAgentState) -> dict:
     首次调用时向 messages channel 注入 system + user 消息。
     """
     query = state["query"]
+    entities = state.get("query_entities") or {}
     llm_config = state.get("llm_config") or {}
     logger.info(f"[planner] query='{query[:60]}'")
 
@@ -892,6 +945,15 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
         ]
         logger.info(f"[planner] fee formula query override, core='{core_term}'")
+
+    if state.get("query_type") == "price" and _looks_like_annual_price_query(query, entities):
+        annual_period = str(entities.get("year_month") or "")
+        annual_material = str(entities.get("material_name") or "")
+        steps = [
+            f"使用 price_query 查询『{annual_material}』在 {annual_period} 年的信息价记录",
+            f"若 price_query 无结果，仅使用 keyword_search 精确检索『{annual_period} 深圳 信息价 {annual_material}』原文，禁止拆分材料名称",
+        ]
+        logger.info(f"[planner] annual price query override, period='{annual_period}' material='{annual_material}'")
 
     # 价格对比查询：提取两个期间，确保每个期间都有独立的 price_query 步骤
     price_compare_match = _PRICE_COMPARE_RE.search(query)
@@ -1041,10 +1103,12 @@ _prebuilt_tool_node = ToolNode(REACT_TOOLS)
 def tool_node(state: RAGAgentState) -> dict:
     """LangGraph ToolNode 处理工具调用和 ToolMessage 组装；补充 chunk 收集和 fallback 检测。"""
     result = _prebuilt_tool_node.invoke(state)
-    all_chunks = list(state.get("retrieved_chunks") or [])
+    previous_chunks = list(state.get("retrieved_chunks") or [])
+    all_chunks = list(previous_chunks)
     category_hints = list(state.get("category_hints") or [])
     tool_results = []
     new_chunk_count = 0
+    query_entities = state.get("query_entities") or {}
 
     for msg in result.get("messages", []):
         content_str = str(msg.content)
@@ -1069,12 +1133,26 @@ def tool_node(state: RAGAgentState) -> dict:
             pass
 
     filtered = filter_chunks(all_chunks)
+    filtered = _prune_chunks_for_query(
+        state["query"],
+        state.get("query_type", "semantic"),
+        filtered,
+        query_entities,
+    )
+    previous_ids = {chunk.get("chunk_id") for chunk in previous_chunks}
+    effective_new_chunk_count = len(
+        [chunk for chunk in filtered if chunk.get("chunk_id") not in previous_ids]
+    )
     _cache_tool_calls(state, tool_results)
-    logger.info(f"[tool_node] new_chunks={new_chunk_count} total={len(filtered)} cat_hints={len(category_hints)}")
+    logger.info(
+        f"[tool_node] raw_new_chunks={new_chunk_count} effective_new_chunks={effective_new_chunk_count} "
+        f"total={len(filtered)} cat_hints={len(category_hints)}"
+    )
 
     # Fallback 提示：如果本轮工具返回了 0 个新 chunk，注入反馈让 executor 换词重试
     extra_messages = []
-    if new_chunk_count == 0:
+    advance_step = state.get("current_step", 0)
+    if effective_new_chunk_count == 0:
         last_ai = next(
             (m for m in reversed(result.get("messages", []))
              if hasattr(m, "tool_calls") and m.tool_calls),
@@ -1112,10 +1190,21 @@ def tool_node(state: RAGAgentState) -> dict:
 
         # 通用 fallback 提示
         if "price_query" in failed_tools:
-            hint = (
-                "price_query 未查到价格数据（数据库中无该条目），"
-                "请改用 text_search 或 keyword_search 搜索相关价格文档和信息价表格。"
-            )
+            if _looks_like_annual_price_query(state["query"], query_entities):
+                annual_period = str(query_entities.get("year_month") or "")
+                annual_material = str(query_entities.get("material_name") or "")
+                hint = (
+                    f"未检索到『{annual_period} 深圳信息价 {annual_material}』的直接价格依据。"
+                    "禁止拆分材料名称，也不要继续使用无关材料词扩展搜索。"
+                    f"如需复核，只能使用 keyword_search('{annual_period} 深圳 信息价 {annual_material}') "
+                    "或 text_search 做精确检索；若仍无命中，请结束并明确说明未检索到直接价格依据。"
+                )
+                advance_step = min(state.get("current_step", 0) + 1, len(state.get("plan") or []))
+            else:
+                hint = (
+                    "price_query 未查到价格数据（数据库中无该条目），"
+                    "请改用 text_search 或 keyword_search 搜索相关价格文档和信息价表格。"
+                )
         else:
             hint = "上一步工具未检索到相关内容，请更换关键词或切换工具（如用 text_search 替代 keyword_search）重新尝试。"
         logger.warning(f"[tool_node] no new chunks, hint: {hint[:60]}")
@@ -1125,6 +1214,7 @@ def tool_node(state: RAGAgentState) -> dict:
         **result,
         "retrieved_chunks": filtered,
         "category_hints": category_hints,
+        "current_step": advance_step,
         "messages": result.get("messages", []) + extra_messages,
     }
 
@@ -1137,8 +1227,10 @@ def synthesize_node(state: RAGAgentState) -> dict:
     query = state["query"]
     query_type = state.get("query_type", "semantic")
     all_chunks = state.get("retrieved_chunks", [])
+    query_entities = state.get("query_entities") or {}
 
     all_chunks = _enrich_chunks_with_filename(all_chunks)
+    all_chunks = _prune_chunks_for_query(query, query_type, all_chunks, query_entities)
     logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
     synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
     citations_text = _format_citations(all_chunks)

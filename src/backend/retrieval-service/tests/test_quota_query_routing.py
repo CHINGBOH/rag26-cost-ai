@@ -36,6 +36,14 @@ def test_fee_formula_queries_are_classified_as_standard_refs() -> None:
     assert analysis["intent"] == "standard_ref"
 
 
+def test_annual_material_price_queries_keep_compound_material_and_year() -> None:
+    analysis = query_analyzer.QueryAnalyzer().analyze("2025 年深圳信息价中钛合金门窗的价格是多少")
+
+    assert analysis["intent"] == "price"
+    assert analysis["entities"]["year_month"] == "2025"
+    assert analysis["entities"]["material_name"] == "钛合金门窗"
+
+
 def test_extract_fee_formula_search_term_keeps_year_and_fee_item() -> None:
     term = query_analyzer.extract_fee_formula_search_term("2025版费率标准中，企业管理费的计算方法是什么？")
 

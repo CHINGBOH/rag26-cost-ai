@@ -287,6 +287,10 @@ def _normalize_year_month(year_month: str) -> str:
     return ym
 
 
+def _is_year_only_period(period: str) -> bool:
+    return bool(re.match(r"^\d{4}$", (period or "").strip()))
+
+
 def _iter_months(start_month: str, end_month: str) -> list[str]:
     start = _normalize_year_month(start_month)
     end = _normalize_year_month(end_month) if end_month else start
@@ -1091,7 +1095,7 @@ def text_search(query: str, top_k: int = 8) -> str:
 @tool
 def price_query(material_name: str = "", specification: str = "", year_month: str = "", top_k: int = 5) -> str:
     """价格精确查询：从 price_records 表中查询建材价格信息。
-    year_month 支持多种格式：'2025-12'、'202512'、'2025年12月'。
+    year_month 支持多种格式：'2025-12'、'202512'、'2025年12月'、'2025'。
     若指定期间无数据，自动回退到最近有数据的期间。
     """
     conn = None
@@ -1119,8 +1123,12 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     where_clauses.append("(specification ILIKE %s OR specification ILIKE %s OR specification ILIKE %s)")
                     params.extend([f"%{specification}%", f"%{spec_normalized}%", _xs_key])
                 if period_filter:
-                    where_clauses.append("year_month = %s")
-                    params.append(period_filter)
+                    if _is_year_only_period(period_filter):
+                        where_clauses.append("year_month LIKE %s")
+                        params.append(f"{period_filter}-%")
+                    else:
+                        where_clauses.append("year_month = %s")
+                        params.append(period_filter)
 
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
@@ -1153,7 +1161,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     logger.info(f"[price_query] material_name filter yielded 0; retried with spec-only, got {len(rows)} rows")
 
             text_fallback_results: list[dict] = []
-            if not rows and normalized_period and specification:
+            if not rows and normalized_period and specification and not _is_year_only_period(normalized_period):
                 text_fallback_results = _query_price_text_fallback(
                     conn=conn,
                     material_name=material_name,
@@ -1167,7 +1175,13 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                         f"for spec='{specification}' period='{normalized_period}'"
                     )
                     return json.dumps(text_fallback_results[:top_k], ensure_ascii=False)
-            if not rows and normalized_period and material_name and not specification:
+            if (
+                not rows
+                and normalized_period
+                and material_name
+                and not specification
+                and not _is_year_only_period(normalized_period)
+            ):
                 ocr_fallback_results = _query_material_ocr_fallback(material_name, normalized_period)
                 if ocr_fallback_results:
                     logger.info(
@@ -1178,7 +1192,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
 
             # 若指定了期间但无结果，查询最近有数据的期间并附注
             fallback_note = ""
-            if normalized_period and not rows:
+            if normalized_period and not rows and not _is_year_only_period(normalized_period):
                 cur.execute(
                     "SELECT DISTINCT year_month FROM price_records ORDER BY year_month DESC LIMIT 30"
                 )

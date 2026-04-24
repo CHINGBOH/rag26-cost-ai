@@ -8,6 +8,7 @@ class RAGAgentState(TypedDict):
     messages: Annotated[list[BaseMessage], operator.add]  # Channel: append-only
     query: str
     query_type: str                     # 'price' | 'semantic' | 'calculation' | 'comparison' | 'trend_chart' | 'standard_ref'
+    query_entities: dict                # analyzer-extracted entities such as year/month/material/spec
     sub_queries: list[str]              # 分解后的子查询列表
     plan: list[str]                     # planner_node 生成的步骤列表
     current_step: int                   # executor_node 当前执行到第几步

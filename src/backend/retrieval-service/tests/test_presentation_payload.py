@@ -1,5 +1,6 @@
 from app.agent.graph import (
     _build_presentation_payload,
+    _prune_chunks_for_query,
     finalize_presentation_payload,
     refine_citations_for_answer,
 )
@@ -125,3 +126,27 @@ def test_finalize_presentation_builds_answer_sections_for_rule_query():
     assert presentation["summary"].startswith("送配电装置系统调试适用于10kV以下")
     assert len(presentation["highlights"]) >= 2
     assert presentation["sources"][0]["page"] == "314"
+
+
+def test_prune_chunks_for_annual_price_query_drops_irrelevant_evidence():
+    chunks = [
+        {
+            "content": "卫生陶瓷材料计价分类标准（试行） 20元/本",
+            "doc_filename": "2025-05.pdf",
+            "page_number": 42,
+        },
+        {
+            "content": "排烟阀 个 S×654+70 镀锌钢板消声百叶窗",
+            "doc_filename": "2023-11.pdf",
+            "page_number": 1,
+        },
+    ]
+
+    pruned = _prune_chunks_for_query(
+        "2025 年深圳信息价中钛合金门窗的价格是多少",
+        "price",
+        chunks,
+        {"year_month": "2025", "material_name": "钛合金门窗", "specification": ""},
+    )
+
+    assert pruned == []
