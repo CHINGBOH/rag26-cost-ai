@@ -154,6 +154,180 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
     ]
 
 
+def _normalize_year_month(year_month: str) -> str:
+    ym = (year_month or "").strip()
+    if not ym:
+        return ""
+    m = re.match(r"(\d{4})[年\-/](\d{1,2})月?$", ym)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    if re.match(r"^\d{6}$", ym):
+        return f"{ym[:4]}-{ym[4:]}"
+    if re.match(r"^\d{4}-\d{2}$", ym):
+        return ym
+    return ym
+
+
+def _build_price_period_label(year_month: str) -> str:
+    normalized = _normalize_year_month(year_month)
+    if not normalized:
+        return ""
+    year, month = normalized.split("-", 1)
+    return f"{year}年{int(month)}月价格"
+
+
+def _build_spec_regex(specification: str) -> str:
+    parts = [re.escape(part) for part in re.split(r"\s+", specification.strip()) if part]
+    if not parts:
+        return ""
+
+    pattern = r"\s*".join(parts)
+    pattern = pattern.replace(r"0\.6/1KV", r"0\.6/1[kK]V")
+    pattern = pattern.replace(r"0\.6/1kV", r"0\.6/1[kK]V")
+    pattern = pattern.replace(r"×", r"\s*[×xX*]\s*")
+    pattern = pattern.replace(r"x", r"\s*[×xX*]\s*")
+    pattern = pattern.replace(r"X", r"\s*[×xX*]\s*")
+    return pattern
+
+
+def _extract_price_row_from_text_chunk(
+    content: str,
+    material_name: str,
+    specification: str,
+) -> tuple[str, str] | None:
+    def _compact(text: str) -> str:
+        compacted = (text or "").lower()
+        compacted = compacted.replace("×", "x").replace("*", "x")
+        compacted = re.sub(r"\s+", "", compacted)
+        return compacted
+
+    compact_content = _compact(content)
+    if not compact_content:
+        return None
+
+    spec_key = _compact(specification)
+    material_key = _compact(material_name)
+
+    candidates = []
+    if material_key:
+        candidates.append(f"{material_key}{spec_key}")
+    candidates.append(spec_key)
+
+    start = -1
+    needle = ""
+    for candidate in candidates:
+        start = compact_content.find(candidate)
+        if start >= 0:
+            needle = candidate
+            break
+    if start < 0:
+        return None
+
+    remainder = compact_content[start + len(needle):]
+    match = re.match(
+        r"(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)?(?P<price>\d+\.\d{2})",
+        remainder,
+    )
+    if not match:
+        return None
+
+    unit = match.group("unit") or "m"
+    if unit == "㎡":
+        unit = "m²"
+    price = match.group("price")
+    return unit, price
+
+
+def _query_price_text_fallback(
+    conn,
+    material_name: str,
+    specification: str,
+    year_month: str,
+    top_k: int = 5,
+) -> list[dict]:
+    period_label = _build_price_period_label(year_month)
+    if not period_label or not specification.strip():
+        return []
+
+    year_month_norm = _normalize_year_month(year_month)
+    spec_tokens = [
+        token
+        for token in re.split(r"[^A-Za-z0-9\u4e00-\u9fff]+", specification)
+        if token and len(token) >= 2
+    ]
+    query_terms = [f"%{period_label}%", f"%{material_name or '电力电缆'}%"]
+    optional_clauses = []
+    optional_params: list[str] = []
+    for token in spec_tokens[:3]:
+        optional_clauses.append("content ILIKE %s")
+        optional_params.append(f"%{token}%")
+
+    where_optional = ""
+    if optional_clauses:
+        where_optional = " AND (" + " OR ".join(optional_clauses) + ")"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+                SELECT DISTINCT doc_id, page_number
+                FROM text_chunks
+                WHERE content ILIKE %s
+                  AND content ILIKE %s
+                  {where_optional}
+                ORDER BY page_number
+                LIMIT %s
+            """,
+            query_terms + optional_params + [max(top_k * 4, 12)],
+        )
+        anchor_pages = cur.fetchall()
+
+    results: list[dict] = []
+    for doc_id, page_number in anchor_pages:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT id, content
+                    FROM text_chunks
+                    WHERE doc_id = %s AND page_number = %s
+                    ORDER BY id
+                """,
+                (doc_id, page_number),
+            )
+            page_rows = cur.fetchall()
+
+        combined_content = " ".join((row[1] or "") for row in page_rows)
+        parsed = _extract_price_row_from_text_chunk(
+            content=combined_content,
+            material_name=material_name or "电力电缆",
+            specification=specification,
+        )
+        if not parsed:
+            continue
+        unit, price = parsed
+        results.append(
+            {
+                "chunk_id": f"price_text_{doc_id}_{page_number}",
+                "doc_id": doc_id or "",
+                "page_number": page_number or 1,
+                "source_db": "text_price_fallback",
+                "content": (
+                    f"{material_name or '电力电缆'} {specification} 单位:{unit} "
+                    f"价格:{price}元 期间:{year_month_norm}"
+                ),
+                "score": 0.84,
+                "metadata": {
+                    "year_month": year_month_norm,
+                    "unit": unit,
+                    "price": price,
+                },
+            }
+        )
+        if len(results) >= top_k:
+            break
+
+    return results
+
+
 def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     """
     查询结构化表（fee_rates 等）并返回 chunk list。
@@ -632,21 +806,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
     conn = None
     try:
         # ── 日期格式标准化 ──────────────────────────────────────────────────
-        normalized_period = ""
-        if year_month:
-            ym = year_month.strip()
-            # 中文格式：2025年12月 → 2025-12
-            m = re.match(r'(\d{4})[年\-/](\d{1,2})月?$', ym)
-            if m:
-                normalized_period = f"{m.group(1)}-{int(m.group(2)):02d}"
-            # 纯数字 202512 → 2025-12
-            elif re.match(r'^\d{6}$', ym):
-                normalized_period = f"{ym[:4]}-{ym[4:]}"
-            # 已是 YYYY-MM 格式
-            elif re.match(r'^\d{4}-\d{2}$', ym):
-                normalized_period = ym
-            else:
-                normalized_period = ym  # 原样传入，交给 DB 处理
+        normalized_period = _normalize_year_month(year_month)
 
         conn = _get_pg_conn()
         with conn.cursor() as cur:
@@ -700,6 +860,22 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                 material_name = _saved_mn
                 if rows:
                     logger.info(f"[price_query] material_name filter yielded 0; retried with spec-only, got {len(rows)} rows")
+
+            text_fallback_results: list[dict] = []
+            if not rows and normalized_period and specification:
+                text_fallback_results = _query_price_text_fallback(
+                    conn=conn,
+                    material_name=material_name,
+                    specification=specification,
+                    year_month=normalized_period,
+                    top_k=top_k,
+                )
+                if text_fallback_results:
+                    logger.info(
+                        f"[price_query] text fallback recovered {len(text_fallback_results)} rows "
+                        f"for spec='{specification}' period='{normalized_period}'"
+                    )
+                    return json.dumps(text_fallback_results[:top_k], ensure_ascii=False)
 
             # 若指定了期间但无结果，查询最近有数据的期间并附注
             fallback_note = ""

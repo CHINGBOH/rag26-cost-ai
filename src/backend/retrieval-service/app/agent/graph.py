@@ -194,7 +194,7 @@ def _format_citations(chunks: list) -> str:
             ordered.append(ref)
     if not ordered:
         return ""
-    lines = ["【参考索引】"]
+    lines = ["参考索引："]
     for i, ref in enumerate(ordered, 1):
         lines.append(f"[{i}] {ref}")
     return "\n".join(lines)
@@ -202,7 +202,7 @@ def _format_citations(chunks: list) -> str:
 
 def _build_evidence_block(chunks: list) -> str:
     if not chunks:
-        return "1. 暂无可引用论据，知识库未检索到可支撑回答的原文。"
+        return "1. 暂无可引用依据，知识库未检索到可支撑回答的原文。"
 
     lines: list[str] = []
     for i, c in enumerate(chunks[:3], 1):
@@ -212,7 +212,7 @@ def _build_evidence_block(chunks: list) -> str:
         display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
         lines.append(f"{i}. 《{display}》第 {page} 页")
         if content:
-            lines.append(f"   引用：{content}")
+            lines.append(f"   关键内容：{content}")
     return "\n".join(lines)
 
 
@@ -224,50 +224,59 @@ def _clean_markdown_noise(text: str) -> str:
     return text.strip()
 
 
-def _normalize_final_answer(query: str, answer: str, chunks: list, citations_text: str) -> str:
+def _extract_section(answer: str, tag: str) -> str:
+    pattern = rf"{re.escape(tag)}\s*(.*?)(?=\n\s*(?:【[^】]+】|参考索引[:：]|$))"
+    match = re.search(pattern, answer, flags=re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _normalize_reference_section(citations_text: str) -> str:
+    refs = (citations_text or "").strip()
+    if not refs:
+        refs = "参考索引：\n[1] 暂无可用来源"
+    refs = refs.replace("【参考索引】", "参考索引：")
+    return refs
+
+
+def _normalize_final_answer(
+    query: str,
+    answer: str,
+    chunks: list,
+    citations_text: str,
+    query_type: str = "semantic",
+) -> str:
     answer = _clean_markdown_noise(_strip_think_tags(answer))
-    if all(tag in answer for tag in ["【问题】", "【论据】", "【分析】", "【结论】"]):
-        answer_without_refs = re.split(r"\n\s*【参考索引】", answer, maxsplit=1)[0].strip()
-        refs = citations_text or "【参考索引】\n[1] 暂无可用来源"
-        return answer_without_refs + "\n\n" + refs
+    refs = _normalize_reference_section(citations_text)
+    # Strip any LLM-generated reference section
+    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", answer, maxsplit=1)[0].strip()
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer) if p.strip()]
-    conclusion = ""
-    analysis_parts: list[str] = []
-    pending_conclusion = False
+    # Detect and convert old five-section format
+    has_old_tags = all(tag in answer_without_refs for tag in ["【问题】", "【论据】", "【分析】", "【结论】"])
+    if has_old_tags:
+        conclusion = _extract_section(answer_without_refs, "【结论】")
+        analysis = _extract_section(answer_without_refs, "【分析】")
+        evidence = _extract_section(answer_without_refs, "【论据】")
+        direct_answer = conclusion or (analysis.splitlines()[0].strip() if analysis else "")
+        if not direct_answer:
+            direct_answer = "现有检索结果不足，暂时无法给出可靠结论。"
+        analysis_text = analysis or evidence or _build_evidence_block(chunks)
+        return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
 
-    for p in paragraphs:
-        normalized = p.replace("：", "").strip()
-        if "结论" in normalized[:8]:
-            pending_conclusion = True
-            cleaned = re.sub(r"^结论[:：]?\s*", "", p).strip()
-            if cleaned:
-                conclusion = cleaned
-            continue
-        if pending_conclusion and not conclusion:
-            conclusion = p
-            pending_conclusion = False
-            continue
-        if not re.fullmatch(r"检索结果分析|分析|回答", normalized):
-            analysis_parts.append(p)
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_without_refs) if p.strip()]
+    direct_answer = paragraphs[0] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
+    remaining = paragraphs[1:]
 
-    if not conclusion:
-        conclusion = paragraphs[-1] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
+    if remaining and re.match(r"简要分析[:：]", remaining[0]):
+        analysis_text = "\n\n".join(
+            [re.sub(r"^简要分析[:：]?\s*", "", remaining[0]).strip(), *remaining[1:]]
+        ).strip()
+    else:
+        analysis_text = "\n\n".join(remaining).strip()
 
-    analysis = "\n\n".join(analysis_parts[:-1] if len(analysis_parts) > 1 else analysis_parts)
-    if not analysis:
-        analysis = "结合当前检索结果进行比对后，得到上述结论。"
+    if not analysis_text:
+        analysis_text = _build_evidence_block(chunks)
 
-    evidence_text = _build_evidence_block(chunks)
-    refs = citations_text or "【参考索引】\n[1] 暂无可用来源"
-
-    return (
-        f"【问题】\n{query}\n\n"
-        f"【论据】\n{evidence_text}\n\n"
-        f"【分析】\n{analysis}\n\n"
-        f"【结论】\n{conclusion}\n\n"
-        f"{refs}"
-    )
+    return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
 
 
 def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
@@ -292,17 +301,10 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
     if not chunks:
         return (
             f"用户问题：{query}\n\n"
-            "知识库中未检索到相关信息。请按以下格式回复：\n"
-            "【问题】\n"
-            f"{query}\n\n"
-            "【论据】\n"
-            "1. 知识库未检索到可用原文。\n\n"
-            "【分析】\n"
-            "现有检索结果不足，无法形成可靠判断。\n\n"
-            "【结论】\n"
-            "知识库中未找到相关信息，无法回答此问题。\n\n"
-            "【参考索引】\n"
-            "[1] 暂无可用来源"
+            "知识库中未检索到相关信息。请按以下结构回复：\n"
+            "第一段直接说明当前无法确认答案，不要复述问题。\n"
+            "第二段以\"简要分析：\"开头，说明知识库未检索到可用原文。\n"
+            "第三段以\"参考索引：\"开头，并写 [1] 暂无可用来源。"
         )
 
     chunks = sorted(chunks, key=lambda x: x.get("score", 0), reverse=True)
@@ -324,7 +326,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         display0 = fn.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
         first_ref = f"《{display0}》P{pg}" if fn else "来源[1]"
 
-    instruction4 = _QUERY_TYPE_INSTRUCTIONS.get(query_type, _QUERY_TYPE_INSTRUCTIONS["default"])
+    query_type_hint = _QUERY_TYPE_INSTRUCTIONS.get(query_type, _QUERY_TYPE_INSTRUCTIONS["default"])
 
     # 提取回退注记，用于提示合成器
     fallback_notices = []
@@ -338,7 +340,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
     fallback_hint = ""
     if fallback_notices:
         fallback_hint = (
-            "\n5. 检索结果含以下回退注记，表示原请求期间无数据，已返回最近可用期间数据。"
+            "\n4. 检索结果含以下回退注记，表示原请求期间无数据，已返回最近可用期间数据。"
             "请在答案中明确说明原期间缺失，并引用回退数据作参考：\n"
             + "\n".join(f"   - {n}" for n in fallback_notices) + "\n"
         )
@@ -349,19 +351,17 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"{chunks_text}\n"
         f"回答要求\n"
         f"1. 严格基于上述检索结果回答，每处数值后必须用【文件名 P页码】格式标注来源，如 【{first_ref}】；\n"
-        f"   每条价格数据至少标注一次来源，禁止用'来源为各期价格文件'等模糊表述代替具体引用\n"
+        f"   每条价格数据至少标注一次来源，禁止用\"来源为各期价格文件\"等模糊表述代替具体引用\n"
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
-        f"3. 如果检索结果不足以完整回答，明确说明哪些部分无法确认\n"
-        f"{instruction4}"
+        f"3. {query_type_hint}\n"
         f"{fallback_hint}\n"
         "格式要求（必须遵守）\n"
-        "1. 只允许输出以下四个区块，且区块标题必须完全一致：\n"
-        "【问题】\n【论据】\n【分析】\n【结论】\n"
-        "2. 禁止使用任何 Markdown 符号，包括 #、##、###、-、*、>、```、|。\n"
-        "3. 【论据】必须用 1. 2. 3. 这样的序号列出，不要用短横线列表。\n"
-        "4. 【问题】先准确复述用户问题；【结论】只给最终判断；【分析】写推理过程。\n"
+        "1. 第一段直接回答用户问题，不写\"【问题】\"\"【结论】\"等标签。\n"
+        "2. 第二段以\"简要分析：\"开头，只保留关键依据、对比逻辑或必要计算过程，不要展开冗长思维记录。\n"
+        "3. 否定答案简短处理——信息不足时一句说清缺什么即可，不要反复论证为什么缺。\n"
+        "4. 禁止使用任何 Markdown 符号，包括 #、##、###、-、*、>、```、|。\n"
         "5. 公式和计算仅用普通文本，不要 LaTeX，不要 Markdown 表格。\n"
-        "6. 禁止输出【参考索引】或\"参考索引\"段——系统会自动追加真实来源。\n"
+        "6. 禁止输出\"参考索引：\"段——系统会自动追加真实来源，你只需输出前两段。"
     )
 
 
@@ -813,7 +813,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
         runtime = state.get("llm_runtime") or {}
 
     from app.rag_pipeline import _strip_latex
-    final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text)
+    final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text, query_type)
 
     return {
         "messages": [AIMessage(content=final_answer)],
