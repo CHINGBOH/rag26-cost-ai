@@ -395,6 +395,7 @@ async def agent_query(request: AgentRequest):
             "step_hint": "",
             "pending_tool_calls": [],
             "step_summary": "",
+            "presentation": None,
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
@@ -406,6 +407,7 @@ async def agent_query(request: AgentRequest):
             "evaluation": result.get("evaluation"),
             "iterations": result.get("iterations", 0),
             "runtime": result.get("llm_runtime", {}),
+            "presentation": result.get("presentation"),
         }
     except Exception as e:
         logger.error(f"Agent pipeline error: {e}")
@@ -498,6 +500,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "step_hint": "",
                     "pending_tool_calls": [],
                     "step_summary": "",
+                    "presentation": None,
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -515,6 +518,7 @@ async def agent_query_stream(request: AgentStreamRequest):
         seen_chunk_ids: set[str] = set()
         current_runtime: dict[str, Any] = {}
         current_plan: list[str] = []
+        current_presentation: dict[str, Any] | None = None
 
         while True:
             try:
@@ -540,6 +544,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "model": current_runtime.get("model"),
                         "engine": current_runtime.get("engine"),
                         "route_mode": current_runtime.get("route_mode") or llm_config.get("route_mode"),
+                        "presentation": current_presentation,
                     },
                 )
                 break
@@ -646,6 +651,10 @@ async def agent_query_stream(request: AgentStreamRequest):
                 eval_result = node_output.get("evaluation") or {}
                 runtime = node_output.get("llm_runtime") or current_runtime
                 citations_text = node_output.get("citations_text", "")
+                presentation = node_output.get("presentation")
+                if presentation:
+                    current_presentation = presentation
+                    yield _sse_event("presentation", presentation)
 
                 if prompt:
                     try:

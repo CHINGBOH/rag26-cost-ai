@@ -18,6 +18,7 @@ import {
   SandboxExec,
   LoopState,
   RuntimeInfo,
+  PresentationPayload,
 } from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
 
@@ -38,6 +39,7 @@ export interface ChatMessage {
   engine?: string;
   routeMode?: string;
   error?: string;
+  presentation?: PresentationPayload | null;
 }
 
 export interface AgentConfig {
@@ -187,6 +189,8 @@ export function useAgent() {
                     model: data.model as string | undefined,
                     engine: data.engine as string | undefined,
                     routeMode: data.route_mode as string | undefined,
+                    presentation: (data.presentation as PresentationPayload | null | undefined)
+                      ?? finalRunStore.presentation,
                   });
                   finalRunStore.finishRun(data);
                 }
@@ -278,6 +282,9 @@ function handleSSEEvent(type: string, data: Record<string, unknown>) {
       break;
     case 'eval_scores':
       rs.setEvalScores(data as unknown as EvalScores);
+      break;
+    case 'presentation':
+      rs.setPresentation(data as unknown as PresentationPayload);
       break;
     case 'synthesizing':
       rs.setRuntimeInfo({

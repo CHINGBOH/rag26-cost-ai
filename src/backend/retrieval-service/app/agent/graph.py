@@ -216,6 +216,191 @@ def _build_evidence_block(chunks: list) -> str:
     return "\n".join(lines)
 
 
+def _parse_price_point(chunk: dict) -> dict | None:
+    metadata = chunk.get("metadata") or {}
+    content = chunk.get("content", "") or ""
+    doc_name = chunk.get("doc_filename") or chunk.get("source") or ""
+    page = chunk.get("page_number") or chunk.get("page") or None
+
+    label = metadata.get("year_month")
+    if not label:
+        period_match = re.search(r"期间[:：]\s*(20\d{2}-\d{2})", content)
+        if period_match:
+            label = period_match.group(1)
+
+    raw_value = metadata.get("avg_price")
+    if raw_value is None:
+        raw_value = metadata.get("price")
+    if raw_value is None:
+        value_match = re.search(r"(?:均价|价格)[:：]\s*([0-9]+(?:\.[0-9]+)?)", content)
+        if value_match:
+            raw_value = value_match.group(1)
+    if raw_value is None:
+        return None
+
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+    unit = metadata.get("unit")
+    if not unit:
+        unit_match = re.search(r"单位[:：]\s*([^\s]+)", content)
+        if unit_match:
+            unit = unit_match.group(1)
+        else:
+            unit_match = re.search(r"元/([^\s，,。；;]+)", content)
+            if unit_match:
+                unit = unit_match.group(1)
+
+    source_label = (
+        doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
+        if doc_name
+        else ""
+    )
+
+    return {
+        "label": label or "当前",
+        "value": round(value, 2),
+        "unit": unit or "",
+        "page": page,
+        "source": source_label,
+    }
+
+
+def _extract_title_parts_from_chunks(chunks: list[dict]) -> tuple[str, str]:
+    for chunk in chunks:
+        content = (chunk.get("content") or "").strip()
+        if not content:
+            continue
+        prefix = re.split(r"单位[:：]|价格走势", content, maxsplit=1)[0].strip()
+        parts = prefix.split()
+        if not parts:
+            continue
+        material = parts[0]
+        specification = " ".join(parts[1:]).strip()
+        return material, specification
+    return "", ""
+
+
+def _build_price_title(query: str, fallback: str, chunks: list[dict]) -> str:
+    analysis = _analyzer.analyze(query)
+    entities = analysis.get("entities", {}) if isinstance(analysis, dict) else analysis.entities
+    material = entities.get("material_name") or ""
+    specification = entities.get("specification") or ""
+    if not specification or len(specification) < 4:
+        spec_match = re.search(r"(\d+(?:\.\d+)?/\d+\s*[Kk][Vv]\s*[A-Za-z]+\s*\d+\s*[×xX*]\s*\d+)", query)
+        if spec_match:
+            specification = re.sub(r"\s+", " ", spec_match.group(1)).strip()
+    if not material or len(material) < 2:
+        chunk_material, chunk_specification = _extract_title_parts_from_chunks(chunks)
+        material = material or chunk_material
+        if (not specification or len(specification) < 4) and chunk_specification:
+            specification = chunk_specification
+    if material and specification:
+        return f"{material} {specification}{fallback}"
+    if material:
+        return f"{material}{fallback}"
+    return fallback
+
+
+def _build_presentation_payload(query: str, query_type: str, chunks: list[dict]) -> dict | None:
+    if query_type not in {"comparison", "trend_chart", "price"}:
+        return None
+
+    parsed_points = []
+    for chunk in chunks:
+        point = _parse_price_point(chunk)
+        if point:
+            parsed_points.append(point)
+
+    if not parsed_points:
+        return None
+
+    grouped: dict[str, dict] = {}
+    for point in parsed_points:
+        entry = grouped.setdefault(
+            point["label"],
+            {
+                "label": point["label"],
+                "values": [],
+                "unit": point["unit"],
+                "pages": set(),
+                "sources": set(),
+            },
+        )
+        entry["values"].append(point["value"])
+        if point["page"]:
+            entry["pages"].add(point["page"])
+        if point["source"]:
+            entry["sources"].add(point["source"])
+        if not entry["unit"] and point["unit"]:
+            entry["unit"] = point["unit"]
+
+    points = []
+    for label in sorted(grouped.keys()):
+        entry = grouped[label]
+        values = entry["values"]
+        avg_value = sum(values) / len(values)
+        points.append(
+            {
+                "label": label,
+                "value": round(avg_value, 2),
+                "min_value": round(min(values), 2),
+                "max_value": round(max(values), 2),
+                "count": len(values),
+                "pages": sorted(entry["pages"]),
+                "sources": sorted(entry["sources"]),
+            }
+        )
+
+    if not points:
+        return None
+
+    unit = next((entry["unit"] for entry in grouped.values() if entry["unit"]), "")
+    note = ""
+    if any(point["count"] > 1 for point in points):
+        note = "同月存在多条报价时，图表按当月均值展示，卡片保留区间。"
+
+    if query_type == "comparison" and len(points) >= 2:
+        base = points[0]["value"]
+        target = points[-1]["value"]
+        delta = round(target - base, 2)
+        delta_percent = round(delta / base * 100, 2) if base else None
+        return {
+            "type": "price_comparison",
+            "title": _build_price_title(query, "价格对比", chunks),
+            "unit": unit,
+            "points": points,
+            "delta": delta,
+            "delta_percent": delta_percent,
+            "note": note,
+        }
+
+    if query_type == "trend_chart" and len(points) >= 2:
+        start_value = points[0]["value"]
+        end_value = points[-1]["value"]
+        delta = round(end_value - start_value, 2)
+        delta_percent = round(delta / start_value * 100, 2) if start_value else None
+        return {
+            "type": "price_trend",
+            "title": _build_price_title(query, "价格走势", chunks),
+            "unit": unit,
+            "points": points,
+            "delta": delta,
+            "delta_percent": delta_percent,
+            "note": note,
+        }
+
+    return {
+        "type": "price_snapshot",
+        "title": _build_price_title(query, "价格概览", chunks),
+        "unit": unit,
+        "points": points,
+        "note": note,
+    }
+
+
 def _clean_markdown_noise(text: str) -> str:
     text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
@@ -771,6 +956,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
     synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
     citations_text = _format_citations(all_chunks)
+    presentation = _build_presentation_payload(query, query_type, all_chunks)
 
     # 简单置信度估算（供 SSE eval_scores 事件用）
     n = len(all_chunks)
@@ -797,6 +983,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "citations_text": citations_text,
             "llm_runtime": runtime,
             "retrieved_chunks": all_chunks,
+            "presentation": presentation,
         }
 
     try:
@@ -823,6 +1010,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "citations_text": citations_text,
         "llm_runtime": runtime,
         "retrieved_chunks": all_chunks,
+        "presentation": presentation,
     }
 
 

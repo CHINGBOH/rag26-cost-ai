@@ -60,6 +60,26 @@ export interface RuntimeInfo {
   routeMode?: string;
 }
 
+export interface PresentationPoint {
+  label: string;
+  value: number;
+  min_value?: number;
+  max_value?: number;
+  count?: number;
+  pages?: number[];
+  sources?: string[];
+}
+
+export interface PresentationPayload {
+  type: 'price_comparison' | 'price_trend' | 'price_snapshot';
+  title: string;
+  unit?: string;
+  points: PresentationPoint[];
+  delta?: number | null;
+  delta_percent?: number | null;
+  note?: string;
+}
+
 export interface RunState {
   runId: string | null;
   isStreaming: boolean;
@@ -74,6 +94,7 @@ export interface RunState {
   sandboxExecs: SandboxExec[];
   loopStates: LoopState[];
   evalScores: EvalScores | null;
+  presentation: PresentationPayload | null;
 
   finalIterations: number;
   finalLatencyMs: number;
@@ -94,6 +115,7 @@ export interface RunState {
   addSandboxExec: (exec: SandboxExec) => void;
   addLoopState: (ls: LoopState) => void;
   setEvalScores: (scores: EvalScores) => void;
+  setPresentation: (payload: PresentationPayload | null) => void;
   finishRun: (data: {
     answer: string;
     iterations: number;
@@ -101,6 +123,7 @@ export interface RunState {
     tokens_in?: number;
     tokens_out?: number;
     tokens_think?: number;
+    presentation?: PresentationPayload | null;
   }) => void;
   clearRun: () => void;
 }
@@ -118,6 +141,7 @@ export const useRunStore = create<RunState>((set) => ({
   sandboxExecs: [],
   loopStates: [],
   evalScores: null,
+  presentation: null,
   finalIterations: 0,
   finalLatencyMs: 0,
   tokensIn: 0,
@@ -138,6 +162,7 @@ export const useRunStore = create<RunState>((set) => ({
       sandboxExecs: [],
       loopStates: [],
       evalScores: null,
+      presentation: null,
       finalIterations: 0,
       finalLatencyMs: 0,
       tokensIn: 0,
@@ -168,6 +193,7 @@ export const useRunStore = create<RunState>((set) => ({
   addSandboxExec: (exec) => set((s) => ({ sandboxExecs: [...s.sandboxExecs, exec] })),
   addLoopState: (ls) => set((s) => ({ loopStates: [...s.loopStates, ls] })),
   setEvalScores: (scores) => set({ evalScores: scores }),
+  setPresentation: (payload) => set({ presentation: payload }),
 
   finishRun: (data) =>
     set({
@@ -179,6 +205,7 @@ export const useRunStore = create<RunState>((set) => ({
       tokensIn: data.tokens_in ?? 0,
       tokensOut: data.tokens_out ?? 0,
       tokensThink: data.tokens_think ?? 0,
+      presentation: data.presentation ?? null,
     }),
 
   clearRun: () =>
@@ -195,5 +222,6 @@ export const useRunStore = create<RunState>((set) => ({
       sandboxExecs: [],
       loopStates: [],
       evalScores: null,
+      presentation: null,
     }),
 }));

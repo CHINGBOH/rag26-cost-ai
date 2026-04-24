@@ -5,7 +5,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useAgent, ChatMessage, AgentConfig } from '../hooks/useAgent';
-import { useRunStore } from '../stores/useRunStore';
+import { useRunStore, PresentationPayload, PresentationPoint } from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
 import {
   RadarChart,
@@ -14,6 +14,14 @@ import {
   Radar,
   ResponsiveContainer,
   Tooltip,
+  BarChart,
+  Bar,
+  LabelList,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  LineChart,
+  Line,
 } from 'recharts';
 import './AgentChat.css';
 
@@ -28,6 +36,122 @@ function renderMarkdown(text: string): string {
     // line breaks
     .replace(/\n/g, '<br />');
 }
+
+function formatPresentationValue(value?: number, unit?: string): string {
+  if (value == null || Number.isNaN(value)) return '—';
+  return `${value.toFixed(2)}${unit ? ` 元/${unit}` : ''}`;
+}
+
+function formatPointRange(point: PresentationPoint, unit?: string): string {
+  if (
+    point.min_value != null &&
+    point.max_value != null &&
+    Math.abs(point.max_value - point.min_value) > 0.001
+  ) {
+    return `${formatPresentationValue(point.min_value, unit)} - ${formatPresentationValue(point.max_value, unit)}`;
+  }
+  return formatPresentationValue(point.value, unit);
+}
+
+const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation }) => {
+  const chartData = presentation.points.map((point) => ({
+    label: point.label,
+    value: point.value,
+  }));
+
+  return (
+    <div className="presentation-card">
+      <div className="presentation-header">
+        <div>
+          <div className="presentation-title">{presentation.title}</div>
+          {presentation.note && <div className="presentation-note">{presentation.note}</div>}
+        </div>
+        {presentation.unit && <span className="presentation-unit">单位：元/{presentation.unit}</span>}
+      </div>
+
+      {presentation.type === 'price_comparison' && (
+        <div className="presentation-metrics">
+          {presentation.points.map((point) => (
+            <div key={point.label} className="presentation-metric">
+              <span className="presentation-metric-label">{point.label}</span>
+              <strong>{formatPointRange(point, presentation.unit)}</strong>
+            </div>
+          ))}
+          {presentation.delta != null && (
+            <div className={`presentation-metric ${presentation.delta >= 0 ? 'up' : 'down'}`}>
+              <span className="presentation-metric-label">差值</span>
+              <strong>
+                {presentation.delta > 0 ? '+' : ''}
+                {formatPresentationValue(presentation.delta, presentation.unit)}
+              </strong>
+              {presentation.delta_percent != null && (
+                <span className="presentation-metric-sub">
+                  {presentation.delta_percent > 0 ? '+' : ''}
+                  {presentation.delta_percent.toFixed(2)}%
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="presentation-chart">
+        <ResponsiveContainer width="100%" height={220}>
+          {presentation.type === 'price_trend' ? (
+            <LineChart data={chartData} margin={{ top: 18, right: 16, left: 4, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.55} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={72} />
+              <Tooltip formatter={(value: number) => formatPresentationValue(value, presentation.unit)} />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke="var(--color-primary)"
+                strokeWidth={2.5}
+                dot={{ r: 3.5, strokeWidth: 2, fill: '#fff' }}
+                activeDot={{ r: 5 }}
+              />
+            </LineChart>
+          ) : (
+            <BarChart data={chartData} margin={{ top: 22, right: 16, left: 4, bottom: 8 }} barCategoryGap="42%">
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.55} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={72} />
+              <Tooltip formatter={(value: number) => formatPresentationValue(value, presentation.unit)} />
+              <Bar
+                dataKey="value"
+                fill="var(--color-primary)"
+                radius={[8, 8, 0, 0]}
+                barSize={26}
+                maxBarSize={30}
+              >
+                <LabelList
+                  dataKey="value"
+                  position="top"
+                  offset={8}
+                  formatter={(value: number) => value.toFixed(2)}
+                  style={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
+                />
+              </Bar>
+            </BarChart>
+          )}
+        </ResponsiveContainer>
+      </div>
+
+      <div className="presentation-footnotes">
+        {presentation.points.map((point) => (
+          <div key={`${point.label}-refs`} className="presentation-footnote">
+            <span className="presentation-footnote-label">{point.label}</span>
+            <span>
+              {point.sources?.length ? point.sources.join(' / ') : '知识库记录'}
+              {point.pages?.length ? ` P${point.pages.join(', P')}` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 /* ── Config State ────────────────────────────────────── */
 
@@ -365,8 +489,11 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
   return (
     <div className={`message-row ${message.role}`}>
       <div className={`message-bubble ${message.role}`}>
+        {message.role === 'assistant' && message.presentation && (
+          <PresentationCard presentation={message.presentation} />
+        )}
         <div
-          className="message-content"
+          className={`message-content ${message.presentation ? 'with-presentation' : ''}`}
           dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
         />
 
@@ -453,8 +580,9 @@ const StreamingBubble: React.FC = () => {
   const queryAnalysis = useRunStore((s) => s.queryAnalysis);
   const statusMessage = useRunStore((s) => s.statusMessage);
   const runtimeInfo = useRunStore((s) => s.runtimeInfo);
+  const presentation = useRunStore((s) => s.presentation);
 
-  if (!streamingAnswer && !queryAnalysis) {
+  if (!streamingAnswer && !queryAnalysis && !presentation) {
     return (
       <div className="message-row assistant">
         <div className="message-bubble thinking">
@@ -470,7 +598,8 @@ const StreamingBubble: React.FC = () => {
   return (
     <div className="message-row assistant">
       <div className="message-bubble assistant streaming">
-        <div className="message-content">
+        {presentation && <PresentationCard presentation={presentation} />}
+        <div className={`message-content ${presentation ? 'with-presentation' : ''}`}>
           {streamingAnswer
             ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />
             : <span className="thinking-text">{statusMessage || '正在生成回答…'}</span>}
