@@ -221,9 +221,9 @@ export const ChatInterface: React.FC = () => {
     addMessage(sessionId, {
       id: assistantMsgId,
       role: 'assistant',
-      content: '⏳ 理解问题中...',
+      content: '',
       timestamp: Date.now(),
-      ragProcess: [{ type: 'intent_recognition', status: 'running', startTime }],
+      ragProcess: [{ type: 'intent_recognition', status: 'running', startTime, data: { label: '理解问题中...' } }],
     });
     setStreaming(assistantMsgId);
 
@@ -232,9 +232,8 @@ export const ChatInterface: React.FC = () => {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // 本地状态：追踪思考过程和 ragProcess 步骤
-    const thinkingLines: string[] = ['⏳ 理解问题中...'];
-    const ragSteps: RagProcessStep[] = [{ type: 'intent_recognition', status: 'running', startTime }];
+    // 本地状态：追踪 ragProcess 步骤
+    const ragSteps: RagProcessStep[] = [{ type: 'intent_recognition', status: 'running', startTime, data: { label: '理解问题中...' } }];
     let hasAnswer = false;
 
     const intentLabels: Record<string, string> = {
@@ -247,10 +246,9 @@ export const ChatInterface: React.FC = () => {
       calculator: '计算器', python_eval: '代码执行',
     };
 
-    // 同步当前思考状态到消息
-    const syncThinking = (extra: Partial<ChatMessageType> = {}) => {
+    // 同步当前步骤到消息（不修改 content）
+    const syncSteps = (extra: Partial<ChatMessageType> = {}) => {
       updateMessage(sessionId!, assistantMsgId, {
-        content: thinkingLines.join('\n'),
         ragProcess: [...ragSteps],
         ...extra,
       });
@@ -292,61 +290,57 @@ export const ChatInterface: React.FC = () => {
             case 'query_analysis': {
               const intent = (data.intent as string) || '';
               const label = intentLabels[intent] || intent;
-              ragSteps[0] = { type: 'intent_recognition', status: 'completed', endTime: Date.now() };
-              thinkingLines.length = 0;
-              thinkingLines.push(`✅ 问题理解${label ? `：${label}` : '完成'}`);
-              // 闲聊/话题外：不会有 plan 事件，直接等 token
+              ragSteps[0] = { type: 'intent_recognition', status: 'completed', endTime: Date.now(), data: { label: `问题理解${label ? `：${label}` : '完成'}` } };
+              // 闲聊/话题外：直接等 token，无 plan 事件
               if (intent === 'chitchat' || intent === 'off_topic') {
-                thinkingLines.push('⏳ 生成回答...');
-                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now() });
+                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now(), data: { label: '生成回答中...' } });
               } else {
-                thinkingLines.push('⏳ 制定检索计划...');
-                ragSteps.push({ type: 'task_decomposition', status: 'running', startTime: Date.now() });
+                ragSteps.push({ type: 'task_decomposition', status: 'running', startTime: Date.now(), data: { label: '制定检索计划...' } });
               }
-              syncThinking();
+              syncSteps();
               break;
             }
 
             case 'plan': {
               const steps = (data.steps as string[]) || [];
               const tdIdx = ragSteps.findIndex(s => s.type === 'task_decomposition');
-              if (tdIdx >= 0) ragSteps[tdIdx] = { ...ragSteps[tdIdx], status: 'completed', endTime: Date.now() };
-              thinkingLines.length = 0;
-              thinkingLines.push('✅ 问题理解完成');
-              thinkingLines.push(`📋 检索计划（共 ${steps.length} 步）`);
-              steps.forEach((s, i) => {
-                // parse "text_search query=\"...\""  → 检索："..."
+              const planSteps = steps.map(s => {
                 const qMatch = s.match(/query="([^"]+)"/);
-                const label = qMatch ? `检索："${qMatch[1]}"` : s;
-                thinkingLines.push(`   ${i + 1}. ${label}`);
+                return qMatch ? `检索："${qMatch[1]}"` : s;
               });
-              thinkingLines.push('⏳ 执行检索中...');
-              ragSteps.push({ type: 'query_generation', status: 'running', startTime: Date.now() });
-              syncThinking();
+              if (tdIdx >= 0) {
+                ragSteps[tdIdx] = {
+                  ...ragSteps[tdIdx],
+                  status: 'completed',
+                  endTime: Date.now(),
+                  data: { label: `检索计划（共 ${steps.length} 步）`, planSteps },
+                };
+              }
+              ragSteps.push({ type: 'knowledge_retrieval', status: 'running', startTime: Date.now(), data: { label: '执行检索中...' } });
+              syncSteps();
               break;
             }
 
             case 'tool_call_end': {
               const tool = (data.tool as string) || '';
               const summary = ((data.result_summary as string) || '').slice(0, 60);
+              const durationMs = (data.duration_ms as number) | 0;
               const label = toolLabels[tool] || tool;
-              // 将最后一个 ⏳ 行替换为完成标记
-              for (let i = thinkingLines.length - 1; i >= 0; i--) {
-                if (thinkingLines[i].startsWith('⏳')) {
-                  thinkingLines[i] = `   ✅ ${label}${summary ? `：${summary}` : ''}`;
-                  break;
-                }
-              }
-              thinkingLines.push('⏳ 继续检索中...');
-              // 标记最后一个 running 步骤为完成
+              // Mark last running step complete
               for (let i = ragSteps.length - 1; i >= 0; i--) {
                 if (ragSteps[i].status === 'running') {
-                  ragSteps[i] = { ...ragSteps[i], status: 'completed', endTime: Date.now() };
-                  ragSteps.push({ type: 'knowledge_retrieval', status: 'running', startTime: Date.now() });
+                  ragSteps[i] = {
+                    ...ragSteps[i],
+                    status: 'completed',
+                    endTime: Date.now(),
+                    latency: durationMs || undefined,
+                    data: { label: `${label}${summary ? `：${summary}` : ''}` },
+                  };
+                  ragSteps.push({ type: 'knowledge_retrieval', status: 'running', startTime: Date.now(), data: { label: '继续检索中...' } });
                   break;
                 }
               }
-              syncThinking();
+              syncSteps();
               break;
             }
 
@@ -355,18 +349,13 @@ export const ChatInterface: React.FC = () => {
               if (!delta) break;
               if (!hasAnswer) {
                 hasAnswer = true;
-                // 移除末尾 ⏳，添加综合分析标记
-                while (thinkingLines.length > 0 && thinkingLines[thinkingLines.length - 1].startsWith('⏳')) {
-                  thinkingLines.pop();
-                }
-                thinkingLines.push('💡 综合分析中...');
+                // Mark all running as completed, add llm_generation running
                 ragSteps.forEach((s, i) => {
                   if (s.status === 'running') ragSteps[i] = { ...s, status: 'completed', endTime: Date.now() };
                 });
-                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now() });
-                // 首个 token：设置思考块 + 分隔线 + 首个 token
+                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now(), data: { label: '综合分析中...' } });
                 updateMessage(sessionId!, assistantMsgId, {
-                  content: thinkingLines.join('\n') + '\n\n────────────────────\n\n' + delta,
+                  content: delta,
                   ragProcess: [...ragSteps],
                 });
               } else {
@@ -379,7 +368,7 @@ export const ChatInterface: React.FC = () => {
               ragSteps.forEach((s, i) => {
                 if (s.status === 'running') ragSteps[i] = { ...s, status: 'completed', endTime: Date.now() };
               });
-              ragSteps.push({ type: 'answer_formatting', status: 'completed', startTime: Date.now(), endTime: Date.now() });
+              ragSteps.push({ type: 'answer_formatting', status: 'completed', startTime: Date.now(), endTime: Date.now(), data: { label: '回答完成' } });
               updateMessage(sessionId!, assistantMsgId, {
                 ragProcess: [...ragSteps],
                 latency: Date.now() - startTime,
@@ -392,7 +381,7 @@ export const ChatInterface: React.FC = () => {
             case 'error': {
               const errMsg = (data.message as string) || '未知错误';
               ragSteps.forEach((s, i) => {
-                if (s.status === 'running') ragSteps[i] = { ...s, status: 'failed' as const };
+                if (s.status === 'running') ragSteps[i] = { ...s, status: 'failed' as const, data: { label: `错误：${errMsg}` } };
               });
               updateMessage(sessionId!, assistantMsgId, {
                 content: `❌ 出错了：${errMsg}`,

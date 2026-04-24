@@ -186,6 +186,11 @@ export interface RagProcessStep {
     tokensPerSecond?: number;
     firstTokenLatency?: number;
     model?: string;
+    
+    // UI display
+    label?: string;
+    planSteps?: string[];
+    summary?: string;
   };
   
   // 错误信息

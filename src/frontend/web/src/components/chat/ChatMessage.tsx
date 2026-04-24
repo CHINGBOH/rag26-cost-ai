@@ -12,6 +12,7 @@ import { ExecutableCodeBlock, detectCodeBlocks } from './CodeExecutor';
 import { InlineReference } from './ReferencePanel';
 import { StatusBadge } from '../charts';
 import { uiConfig } from '../../config';
+import AgentThoughtChain from './AgentThoughtChain';
 import './Chat.css';
 
 interface ChatMessageProps {
@@ -103,6 +104,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
           )}
         </div>
 
+        {/* Agent 思考链 — 显示在回答内容上方 */}
+        {!isUser && message.ragProcess && message.ragProcess.length > 0 && (
+          <AgentThoughtChain steps={message.ragProcess} isStreaming={isStreaming} />
+        )}
+
         {/* 消息内容 */}
         <div className="message-body">
           {contentParts.map((part, index) => {
@@ -137,13 +143,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
           {/* 流式指示器 */}
           {isStreaming && <span className="streaming-cursor">▊</span>}
         </div>
-
-        {/* RAG 流程指示器 */}
-        {message.ragProcess && message.ragProcess.length > 0 && (
-          <div className="message-rag-indicator">
-            <RagProcessMini steps={message.ragProcess} />
-          </div>
-        )}
 
         {/* 代码执行结果 */}
         {message.codeExecution && (
@@ -307,56 +306,6 @@ function inlineMarkdown(text: string): React.ReactNode {
     </>
   );
 }
-
-// RAG 流程迷你指示器
-const RagProcessMini: React.FC<{ steps: import('@rag/shared').RagProcessStep[] }> = ({ steps }) => {
-  const completedSteps = steps.filter(s => s.status === 'completed').length;
-  const runningStep = steps.find(s => s.status === 'running');
-  
-  const stepLabels: Record<string, string> = {
-    intent_recognition: '意图',
-    task_decomposition: '拆解',
-    query_generation: '查询',
-    vector_retrieval: '向量',
-    knowledge_retrieval: '知识',
-    graph_retrieval: '图谱',
-    reranking: '精排',
-    prompt_assembly: '组装',
-    llm_generation: '生成',
-    answer_formatting: '格式化'
-  };
-
-  return (
-    <div className="rag-mini-indicator">
-      <div className="rag-progress-bar">
-        <div 
-          className="rag-progress-fill"
-          style={{ width: `${(completedSteps / steps.length) * 100}%` }}
-        />
-      </div>
-      <div className="rag-steps">
-        {steps.slice(0, uiConfig.messages.maxRagStepsDisplay).map((step) => (
-          <span 
-            key={step.type} 
-            className={`rag-step ${step.status}`}
-            title={stepLabels[step.type]}
-          >
-            {step.status === 'completed' ? '✓' : 
-             step.status === 'running' ? '◐' : '○'}
-          </span>
-        ))}
-        {steps.length > uiConfig.messages.maxRagStepsDisplay && (
-          <span className="rag-step-more">+{steps.length - uiConfig.messages.maxRagStepsDisplay}</span>
-        )}
-      </div>
-      {runningStep && (
-        <span className="rag-current">
-          {stepLabels[runningStep.type]}...
-        </span>
-      )}
-    </div>
-  );
-};
 
 // 系统消息
 export const SystemMessage: React.FC<{ content: string }> = ({ content }) => {
