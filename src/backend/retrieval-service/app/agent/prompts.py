@@ -78,7 +78,7 @@ def get_llm(thinking: bool = False, prefer_strong: bool = False):
         api_key=api_key,
         base_url=base_url,
         temperature=0.0,
-        max_tokens=1500 if thinking else 512,
-        timeout=120 if is_local else 60,
+        max_tokens=4096 if thinking else 2048,
+        timeout=120 if is_local else 90,
         http_async_client=http_client,
     )

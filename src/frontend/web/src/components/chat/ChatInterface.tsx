@@ -13,20 +13,16 @@ import { TokenUsageBar } from './TokenUsageBar';
 import { InfrastructureDashboard } from './InfrastructureDashboard';
 import { TaskPipelineVisual } from './TaskPipelineVisual';
 import { ChatMessage as ChatMessageType, ChatConfig, RagProcessStep, LLMProviderType } from '@rag/shared';
-import { sendLLMRequest, LLMMessage } from '../../services/llmApi';
 import { 
-  getActiveLLMConfig, 
+  getActiveLLMConfig,
   capabilities,
   branding,
   activeProvider,
-  shouldUseRAG,
-  retrievalConfig,
-  retrieveDocuments,
   uiConfig,
   chatFlowConfig
 } from '../../config';
 import './Chat.css';
-import { PipelineStage, PipelineState } from './types';
+import { PipelineState } from './types';
 
 export const ChatInterface: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -42,6 +38,9 @@ export const ChatInterface: React.FC = () => {
   const setActiveSession = useChatStore(state => state.setActiveSession);
   const addMessage = useChatStore(state => state.addMessage);
   const setSessionConfig = useChatStore(state => state.setSessionConfig);
+  const updateMessage = useChatStore(state => state.updateMessage);
+  const setStreaming = useChatStore(state => state.setStreaming);
+  const appendMessageContent = useChatStore(state => state.appendMessageContent);
   
   // 本地状态
   const [isControlPanelOpen, setIsControlPanelOpen] = useState(false);
@@ -55,8 +54,13 @@ export const ChatInterface: React.FC = () => {
     query: string;
     startTime: number;
   } | null>(null);
-  
-  // 获取当前会话
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // 组件卸载时终止进行中的请求
+  useEffect(() => {
+    return () => { abortControllerRef.current?.abort(); };
+  }, []);
   const activeSession = activeSessionId ? sessions[activeSessionId] : null;
   const messages = activeSession?.messages || [];
   const config = activeSession?.config || getDefaultConfig();
@@ -187,195 +191,221 @@ export const ChatInterface: React.FC = () => {
     resetPipeline();
   };
 
-  // 重置管道
+  // 重置管道（新会话/清除时用）
   const resetPipeline = () => {
     setPipeline({ stage: 'idle', progress: 0, status: 'pending' });
     setActiveTask(null);
+    abortControllerRef.current?.abort();
   };
 
-  // 模拟RAG任务流程 - 实时更新
-  const executeRAGPipeline = async (query: string) => {
-    const stages: { stage: PipelineStage; duration: number; details: string }[] = [
-      { stage: 'intent_analysis', duration: 600, details: '分析查询意图' },
-      { stage: 'query_decomposition', duration: 800, details: '分解子查询' },
-      { stage: 'vector_retrieval', duration: 1200, details: '向量库检索中...' },
-      { stage: 'knowledge_retrieval', duration: 1000, details: '知识库检索中...' },
-      { stage: 'graph_retrieval', duration: 800, details: '图数据库查询...' },
-      { stage: 'reranking', duration: 700, details: '精排筛选结果' },
-      { stage: 'context_assembly', duration: 500, details: '组装上下文' },
-      { stage: 'llm_generation', duration: 2500, details: '生成回答...' },
-    ];
-
-    setActiveTask({ query, startTime: Date.now() });
-    
-    for (let i = 0; i < stages.length; i++) {
-      const { stage, duration, details } = stages[i];
-      const progress = ((i + 1) / (stages.length + 1)) * 100;
-      
-      setPipeline({
-        stage,
-        progress,
-        status: 'running',
-        details,
-        metrics: generateStageMetrics(stage)
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, duration));
-    }
-
-    setPipeline({
-      stage: 'complete',
-      progress: 100,
-      status: 'completed',
-      details: '任务完成'
-    });
-
-    setTimeout(() => {
-      resetPipeline();
-    }, 2000);
-  };
-
-  // 生成阶段指标
-  const generateStageMetrics = (stage: PipelineStage): Record<string, number> => {
-    switch (stage) {
-      case 'vector_retrieval':
-        return { retrieved: 156, filtered: 89 };
-      case 'knowledge_retrieval':
-        return { articles: 23, entities: 45 };
-      case 'graph_retrieval':
-        return { nodes: 12, relationships: 28 };
-      case 'reranking':
-        return { input: 89, output: 15, topScore: 0.94 };
-      case 'llm_generation':
-        return { tokensPerSecond: 45, tokensGenerated: 0 };
-      default:
-        return {};
-    }
-  };
-
-  // 发送消息 - 真实 LLM API
+  // 发送消息 - Agent SSE 流式接入
   const handleSendMessage = async (content: string) => {
-    // 自动创建会话：如果没有活动会话，根据配置决定是否自动创建
     let sessionId = activeSessionId;
     if (!sessionId && chatFlowConfig.autoCreateSession) {
       sessionId = createSession();
     }
-    
-    if (!sessionId) return; // 如果仍未创建成功，不继续
+    if (!sessionId) return;
+
     const startTime = Date.now();
-    
+
     // 添加用户消息
-    const userMessage: ChatMessageType = {
-      id: `msg-${Date.now()}-user`,
+    addMessage(sessionId, {
+      id: `msg-${startTime}-user`,
       role: 'user',
       content,
-      timestamp: startTime
+      timestamp: startTime,
+    });
+
+    // 创建 Agent 占位回复（立即显示进度）
+    const assistantMsgId = `msg-${startTime}-assistant`;
+    addMessage(sessionId, {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '⏳ 理解问题中...',
+      timestamp: Date.now(),
+      ragProcess: [{ type: 'intent_recognition', status: 'running', startTime }],
+    });
+    setStreaming(assistantMsgId);
+
+    // 中止上一个请求
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // 本地状态：追踪思考过程和 ragProcess 步骤
+    const thinkingLines: string[] = ['⏳ 理解问题中...'];
+    const ragSteps: RagProcessStep[] = [{ type: 'intent_recognition', status: 'running', startTime }];
+    let hasAnswer = false;
+
+    const intentLabels: Record<string, string> = {
+      comparison: '对比分析', price: '价格查询', calculation: '计算分析',
+      trend_chart: '趋势分析', fact: '事实查询', chitchat: '闲聊', off_topic: '话题外',
     };
-    addMessage(sessionId, userMessage);
-    
-    // 智能路由：判断是否需要走 RAG 流程
-    const useRAG = shouldUseRAG(content);
-    
-    if (useRAG) {
-      // 执行完整 RAG 流程动画
-      await executeRAGPipeline(content);
-    } else {
-      // 简单查询：显示快速生成状态
-      setPipeline({
-        stage: 'llm_generation',
-        progress: 50,
-        status: 'running',
-        details: '直接生成回答...',
-        metrics: { directMode: 1 }
+    const toolLabels: Record<string, string> = {
+      text_search: '全文检索', vector_search: '向量检索', keyword_search: '关键词检索',
+      price_query: '价格查询', price_trend: '价格走势', category_search: '目录检索',
+      calculator: '计算器', python_eval: '代码执行',
+    };
+
+    // 同步当前思考状态到消息
+    const syncThinking = (extra: Partial<ChatMessageType> = {}) => {
+      updateMessage(sessionId!, assistantMsgId, {
+        content: thinkingLines.join('\n'),
+        ragProcess: [...ragSteps],
+        ...extra,
       });
-    }
-    
+    };
+
     try {
-      // 1. 检索相关文档
-      const references = useRAG ? await generateReferences(content) : [];
-      const hasReferences = references.length >= retrievalConfig.minReferences;
-      
-      // 2. 构建消息历史
-      const historyMessages: LLMMessage[] = messages
-        .filter(m => m.id !== userMessage.id)
-        .map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content
-        }));
-      
-      // 3. 构建系统提示
-      let systemPrompt = '你是一个智能助手，请帮助用户解答问题。';
-      
-      if (useRAG) {
-        if (hasReferences) {
-          // 有参考资料：要求基于资料回答
-          const contextText = references
-            .map((ref, i) => `[${i + 1}] ${ref.chunk.content}`)
-            .join('\n\n');
-          systemPrompt += `\n\n请基于以下参考资料回答用户问题。如果资料不足以回答问题，请明确说明。\n\n参考资料：\n${contextText}`;
-        } else {
-          // 无参考资料：明确告知不要瞎编
-          systemPrompt += `\n\n${retrievalConfig.noReferencesPrompt}\n\n重要：如果问题涉及专业知识且你不太确定，请明确告知用户"未在知识库中找到相关资料"，不要编造具体数据或标准。`;
+      const res = await fetch('/api/v1/agent/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: content, max_iterations: 3, score_threshold: 0.6, top_k: 8 }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? '';
+
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          let evtType = 'message';
+          let evtData = '';
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event: ')) evtType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) evtData = line.slice(6).trim();
+          }
+          if (!evtData) continue;
+          let data: Record<string, any>;
+          try { data = JSON.parse(evtData); } catch { continue; }
+
+          switch (evtType) {
+            case 'query_analysis': {
+              const intent = (data.intent as string) || '';
+              const label = intentLabels[intent] || intent;
+              ragSteps[0] = { type: 'intent_recognition', status: 'completed', endTime: Date.now() };
+              thinkingLines.length = 0;
+              thinkingLines.push(`✅ 问题理解${label ? `：${label}` : '完成'}`);
+              // 闲聊/话题外：不会有 plan 事件，直接等 token
+              if (intent === 'chitchat' || intent === 'off_topic') {
+                thinkingLines.push('⏳ 生成回答...');
+                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now() });
+              } else {
+                thinkingLines.push('⏳ 制定检索计划...');
+                ragSteps.push({ type: 'task_decomposition', status: 'running', startTime: Date.now() });
+              }
+              syncThinking();
+              break;
+            }
+
+            case 'plan': {
+              const steps = (data.steps as string[]) || [];
+              const tdIdx = ragSteps.findIndex(s => s.type === 'task_decomposition');
+              if (tdIdx >= 0) ragSteps[tdIdx] = { ...ragSteps[tdIdx], status: 'completed', endTime: Date.now() };
+              thinkingLines.length = 0;
+              thinkingLines.push('✅ 问题理解完成');
+              thinkingLines.push(`📋 检索计划（共 ${steps.length} 步）`);
+              steps.forEach((s, i) => thinkingLines.push(`   ${i + 1}. ${s}`));
+              thinkingLines.push('⏳ 执行检索中...');
+              ragSteps.push({ type: 'query_generation', status: 'running', startTime: Date.now() });
+              syncThinking();
+              break;
+            }
+
+            case 'tool_call_end': {
+              const tool = (data.tool as string) || '';
+              const summary = ((data.result_summary as string) || '').slice(0, 60);
+              const label = toolLabels[tool] || tool;
+              // 将最后一个 ⏳ 行替换为完成标记
+              for (let i = thinkingLines.length - 1; i >= 0; i--) {
+                if (thinkingLines[i].startsWith('⏳')) {
+                  thinkingLines[i] = `   ✅ ${label}${summary ? `：${summary}` : ''}`;
+                  break;
+                }
+              }
+              thinkingLines.push('⏳ 继续检索中...');
+              // 标记最后一个 running 步骤为完成
+              for (let i = ragSteps.length - 1; i >= 0; i--) {
+                if (ragSteps[i].status === 'running') {
+                  ragSteps[i] = { ...ragSteps[i], status: 'completed', endTime: Date.now() };
+                  ragSteps.push({ type: 'knowledge_retrieval', status: 'running', startTime: Date.now() });
+                  break;
+                }
+              }
+              syncThinking();
+              break;
+            }
+
+            case 'token': {
+              const delta = (data.delta as string) || '';
+              if (!delta) break;
+              if (!hasAnswer) {
+                hasAnswer = true;
+                // 移除末尾 ⏳，添加综合分析标记
+                while (thinkingLines.length > 0 && thinkingLines[thinkingLines.length - 1].startsWith('⏳')) {
+                  thinkingLines.pop();
+                }
+                thinkingLines.push('💡 综合分析中...');
+                ragSteps.forEach((s, i) => {
+                  if (s.status === 'running') ragSteps[i] = { ...s, status: 'completed', endTime: Date.now() };
+                });
+                ragSteps.push({ type: 'llm_generation', status: 'running', startTime: Date.now() });
+                // 首个 token：设置思考块 + 分隔线 + 首个 token
+                updateMessage(sessionId!, assistantMsgId, {
+                  content: thinkingLines.join('\n') + '\n\n────────────────────\n\n' + delta,
+                  ragProcess: [...ragSteps],
+                });
+              } else {
+                appendMessageContent(sessionId!, assistantMsgId, delta);
+              }
+              break;
+            }
+
+            case 'done': {
+              ragSteps.forEach((s, i) => {
+                if (s.status === 'running') ragSteps[i] = { ...s, status: 'completed', endTime: Date.now() };
+              });
+              ragSteps.push({ type: 'answer_formatting', status: 'completed', startTime: Date.now(), endTime: Date.now() });
+              updateMessage(sessionId!, assistantMsgId, {
+                ragProcess: [...ragSteps],
+                latency: Date.now() - startTime,
+                model: 'deepseek-chat',
+              });
+              setStreaming(null);
+              break;
+            }
+
+            case 'error': {
+              const errMsg = (data.message as string) || '未知错误';
+              ragSteps.forEach((s, i) => {
+                if (s.status === 'running') ragSteps[i] = { ...s, status: 'failed' as const };
+              });
+              updateMessage(sessionId!, assistantMsgId, {
+                content: `❌ 出错了：${errMsg}`,
+                ragProcess: [...ragSteps],
+              });
+              setStreaming(null);
+              break;
+            }
+          }
         }
       }
-      
-      // 4. 构建提示
-      const messagesToSend: LLMMessage[] = [
-        { role: 'system', content: systemPrompt },
-        ...historyMessages.slice(-4),
-        { role: 'user', content }
-      ];
-      
-      // 5. 调用真实 LLM API
-      const response = await sendLLMRequest(messagesToSend, {
-        temperature: config?.temperature ?? 0.7,
-        maxTokens: config?.maxTokens ?? 2000,
-        topP: config?.topP ?? 0.9
-      });
-      
-      const aiContent = response.choices[0]?.message?.content || '抱歉，无法生成回复';
-      const latency = Date.now() - startTime;
-      
-      // 6. 添加AI回复
-      const assistantMessage: ChatMessageType = {
-        id: `msg-${Date.now()}-assistant`,
-        role: 'assistant',
-        content: aiContent,
-        timestamp: Date.now(),
-        model: getActiveLLMConfig().defaultModel,
-        tokenCount: response.usage?.completion_tokens || Math.ceil(aiContent.length / 4),
-        latency,
-        references: hasReferences ? references : [],
-        ragProcess: generateRagProcess(hasReferences)
-      };
-      addMessage(sessionId, assistantMessage);
-      
-      // 完成 pipeline
-      setPipeline({
-        stage: 'complete',
-        progress: 100,
-        status: 'completed',
-        details: '完成'
-      });
-      
-      setTimeout(() => {
-        resetPipeline();
-      }, chatFlowConfig.pipeline.autoResetDelay);
-      
-    } catch (error) {
-      console.error('LLM API Error:', error);
-      
-      // 添加错误消息
-      const errorMessage: ChatMessageType = {
-        id: `msg-${Date.now()}-error`,
-        role: 'assistant',
-        content: chatFlowConfig.errorMessages.apiError(
-          error instanceof Error ? error.message : chatFlowConfig.errorMessages.genericError
-        ),
-        timestamp: Date.now(),
-        model: 'error'
-      };
-      addMessage(sessionId, errorMessage);
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        updateMessage(sessionId!, assistantMsgId, {
+          content: `❌ 请求失败：${(err as Error).message}`,
+        });
+      }
+      setStreaming(null);
     }
   };
 
@@ -551,143 +581,3 @@ export const ChatInterface: React.FC = () => {
     </div>
   );
 };
-
-// 生成引用 - 实际应调用向量检索
-async function generateReferences(query: string): Promise<import('@rag/shared').ChatReference[]> {
-  // 调用检索函数
-  const result = await retrieveDocuments(query);
-  
-  if (!result.found || result.references.length === 0) {
-    return []; // 没有找到相关资料
-  }
-  
-  // 过滤低于阈值的文档
-  const validRefs = result.references
-    .filter(ref => ref.score >= retrievalConfig.similarityThreshold)
-    .slice(0, retrievalConfig.maxReferences);
-  
-  if (validRefs.length < retrievalConfig.minReferences) {
-    return []; // 相关文档不足
-  }
-  
-  // 转换为 ChatReference 格式
-  return validRefs.map((ref, index) => ({
-    id: ref.id,
-    index: index + 1,
-    chunk: {
-      id: ref.id,
-      content: ref.content,
-      source: ref.source,
-      database: 'vector',
-      score: ref.score,
-      metadata: {}
-    },
-    relevanceScore: ref.score,
-    usedInAnswer: true
-  }));
-}
-
-// 生成RAG流程
-function generateRagProcess(hasReferences: boolean): RagProcessStep[] {
-  const now = Date.now();
-  
-  if (!hasReferences) {
-    // 无相关文档的流程
-    return [
-      {
-        type: 'intent_recognition',
-        status: 'completed',
-        startTime: now - 3000,
-        endTime: now - 2600,
-        latency: 400,
-        data: { intentType: 'general_query', confidence: 0.88 }
-      },
-      {
-        type: 'vector_retrieval',
-        status: 'completed',
-        startTime: now - 2600,
-        endTime: now - 2000,
-        latency: 600,
-        data: { dbType: 'qdrant', resultCount: 0 }
-      },
-      {
-        type: 'reranking',
-        status: 'completed',
-        startTime: now - 2000,
-        endTime: now - 1800,
-        latency: 200,
-        data: { inputCount: 0, outputCount: 0 }
-      },
-      {
-        type: 'prompt_assembly',
-        status: 'completed',
-        startTime: now - 1800,
-        endTime: now - 1700,
-        latency: 100,
-        data: { tokenCount: 500, contextLength: 0 }
-      },
-      {
-        type: 'llm_generation',
-        status: 'completed',
-        startTime: now - 1700,
-        endTime: now,
-        latency: 1700,
-        data: { tokensGenerated: 280, tokensPerSecond: 42 }
-      }
-    ];
-  }
-  
-  // 有相关文档的完整流程
-  return [
-    {
-      type: 'intent_recognition',
-      status: 'completed',
-      startTime: now - 5000,
-      endTime: now - 4600,
-      latency: 400,
-      data: { intentType: 'knowledge_query', confidence: 0.94 }
-    },
-    {
-      type: 'task_decomposition',
-      status: 'completed',
-      startTime: now - 4600,
-      endTime: now - 4100,
-      latency: 500,
-      data: { subQueries: [
-        { id: 'sq-1', query: '相关概念检索', targetDB: 'vector', status: 'completed' }
-      ]}
-    },
-    {
-      type: 'vector_retrieval',
-      status: 'completed',
-      startTime: now - 4100,
-      endTime: now - 3200,
-      latency: 900,
-      data: { dbType: 'qdrant', resultCount: 12 }
-    },
-    {
-      type: 'reranking',
-      status: 'completed',
-      startTime: now - 3200,
-      endTime: now - 2700,
-      latency: 500,
-      data: { inputCount: 12, outputCount: 3, topScore: 0.92 }
-    },
-    {
-      type: 'prompt_assembly',
-      status: 'completed',
-      startTime: now - 2700,
-      endTime: now - 2600,
-      latency: 100,
-      data: { tokenCount: 1200, contextLength: 3000 }
-    },
-    {
-      type: 'llm_generation',
-      status: 'completed',
-      startTime: now - 2600,
-      endTime: now,
-      latency: 2600,
-      data: { tokensGenerated: 380, tokensPerSecond: 45 }
-    }
-  ];
-}
