@@ -389,6 +389,12 @@ async def agent_query(request: AgentRequest):
             "llm_runtime": {},
             "stream_response": False,
             "synthesis_prompt": "",
+            "citations_text": "",
+            "step_number": 0,
+            "total_steps": 0,
+            "step_hint": "",
+            "pending_tool_calls": [],
+            "step_summary": "",
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
@@ -446,18 +452,21 @@ async def agent_query_stream(request: AgentStreamRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query 不能为空")
 
-    from app.agent.graph import get_agent_graph
-    from app.agent.prompts import stream_llm_response
-
     session_id = request.session_id or str(uuid.uuid4())
 
     async def event_generator():
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue = asyncio.Queue()
         llm_config = _build_llm_config(request)
+        start_time = loop.time()
+
+        yield _sse_event("progress", {"stage": "analysis", "message": "正在理解问题..."})
+        await asyncio.sleep(0)
 
         def run_graph():
             try:
+                from app.agent.graph import get_agent_graph
+
                 graph = get_agent_graph()
                 # 每次 stream 请求使用独立 thread_id，防止跨请求消息状态污染
                 config = {"configurable": {"thread_id": str(uuid.uuid4())}}
@@ -483,6 +492,12 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "llm_runtime": {},
                     "stream_response": True,
                     "synthesis_prompt": "",
+                    "citations_text": "",
+                    "step_number": 0,
+                    "total_steps": 0,
+                    "step_hint": "",
+                    "pending_tool_calls": [],
+                    "step_summary": "",
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -495,14 +510,11 @@ async def agent_query_stream(request: AgentStreamRequest):
         t = threading.Thread(target=run_graph, daemon=True)
         t.start()
 
-        start_time = loop.time()
         final_answer = ""
         total_iterations = 0
         seen_chunk_ids: set[str] = set()
         current_runtime: dict[str, Any] = {}
         current_plan: list[str] = []
-
-        yield _sse_event("progress", {"stage": "analysis", "message": "正在理解问题..."})
 
         while True:
             try:
@@ -633,9 +645,12 @@ async def agent_query_stream(request: AgentStreamRequest):
                 prompt = node_output.get("synthesis_prompt", "")
                 eval_result = node_output.get("evaluation") or {}
                 runtime = node_output.get("llm_runtime") or current_runtime
+                citations_text = node_output.get("citations_text", "")
 
                 if prompt:
                     try:
+                        from app.agent.prompts import stream_llm_response
+
                         async for stream_event in stream_llm_response(
                             [HumanMessage(content=prompt)],
                             thinking=False,
@@ -668,6 +683,11 @@ async def agent_query_stream(request: AgentStreamRequest):
                     if answer:
                         final_answer = answer
                         yield _sse_event("token", {"delta": answer})
+
+                if citations_text and "【参考索引】" not in final_answer:
+                    citations_delta = ("\n\n" if final_answer else "") + citations_text
+                    final_answer += citations_delta
+                    yield _sse_event("token", {"delta": citations_delta})
 
                 if eval_result:
                     scores = {

@@ -194,10 +194,78 @@ def _format_citations(chunks: list) -> str:
             ordered.append(ref)
     if not ordered:
         return ""
-    lines = ["\n\n---\n**参考来源：**"]
+    lines = ["【参考索引】"]
     for i, ref in enumerate(ordered, 1):
-        lines.append(f"{i}. {ref}")
+        lines.append(f"[{i}] {ref}")
     return "\n".join(lines)
+
+
+def _build_evidence_block(chunks: list) -> str:
+    if not chunks:
+        return "1. 暂无可引用论据，知识库未检索到可支撑回答的原文。"
+
+    lines: list[str] = []
+    for i, c in enumerate(chunks[:3], 1):
+        doc_name = c.get("doc_filename") or c.get("source") or "未知来源"
+        page = c.get("page_number") or c.get("page") or "?"
+        content = re.sub(r"\s+", " ", c.get("content", "")).strip()[:120]
+        display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
+        lines.append(f"{i}. 《{display}》第 {page} 页")
+        if content:
+            lines.append(f"   引用：{content}")
+    return "\n".join(lines)
+
+
+def _clean_markdown_noise(text: str) -> str:
+    text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
+    text = text.replace("**", "").replace("```", "")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _normalize_final_answer(query: str, answer: str, chunks: list, citations_text: str) -> str:
+    answer = _clean_markdown_noise(_strip_think_tags(answer))
+    if all(tag in answer for tag in ["【问题】", "【论据】", "【分析】", "【结论】", "【参考索引】"]):
+        return answer
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer) if p.strip()]
+    conclusion = ""
+    analysis_parts: list[str] = []
+    pending_conclusion = False
+
+    for p in paragraphs:
+        normalized = p.replace("：", "").strip()
+        if "结论" in normalized[:8]:
+            pending_conclusion = True
+            cleaned = re.sub(r"^结论[:：]?\s*", "", p).strip()
+            if cleaned:
+                conclusion = cleaned
+            continue
+        if pending_conclusion and not conclusion:
+            conclusion = p
+            pending_conclusion = False
+            continue
+        if not re.fullmatch(r"检索结果分析|分析|回答", normalized):
+            analysis_parts.append(p)
+
+    if not conclusion:
+        conclusion = paragraphs[-1] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
+
+    analysis = "\n\n".join(analysis_parts[:-1] if len(analysis_parts) > 1 else analysis_parts)
+    if not analysis:
+        analysis = "结合当前检索结果进行比对后，得到上述结论。"
+
+    evidence_text = _build_evidence_block(chunks)
+    refs = citations_text or "【参考索引】\n[1] 暂无可用来源"
+
+    return (
+        f"【问题】\n{query}\n\n"
+        f"【论据】\n{evidence_text}\n\n"
+        f"【分析】\n{analysis}\n\n"
+        f"【结论】\n{conclusion}\n\n"
+        f"{refs}"
+    )
 
 
 def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
@@ -222,7 +290,17 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
     if not chunks:
         return (
             f"用户问题：{query}\n\n"
-            "知识库中未检索到相关信息。请回复：知识库中未找到相关信息，无法回答此问题。"
+            "知识库中未检索到相关信息。请按以下格式回复：\n"
+            "【问题】\n"
+            f"{query}\n\n"
+            "【论据】\n"
+            "1. 知识库未检索到可用原文。\n\n"
+            "【分析】\n"
+            "现有检索结果不足，无法形成可靠判断。\n\n"
+            "【结论】\n"
+            "知识库中未找到相关信息，无法回答此问题。\n\n"
+            "【参考索引】\n"
+            "[1] 暂无可用来源"
         )
 
     chunks = sorted(chunks, key=lambda x: x.get("score", 0), reverse=True)
@@ -235,7 +313,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
         display = display.strip("《》")
         ref_label = f"《{display}》P{page}" if doc_name else f"来源[{i}]"
-        chunks_text += f"\n--- [{i}] {ref_label} (相关度: {score:.4f}) ---\n{content}\n"
+        chunks_text += f"\n证据{i}：来源 {ref_label}，相关度 {score:.4f}\n内容：{content}\n"
 
     first_ref = ""
     if chunks:
@@ -264,21 +342,24 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         )
 
     return (
-        f"## 用户问题\n{query}\n\n"
-        f"## 知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
+        f"用户问题：{query}\n\n"
+        f"知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
         f"{chunks_text}\n"
-        f"## 回答要求\n"
+        f"回答要求\n"
         f"1. 严格基于上述检索结果回答，每处数值后必须用【文件名 P页码】格式标注来源，如 【{first_ref}】；\n"
         f"   每条价格数据至少标注一次来源，禁止用'来源为各期价格文件'等模糊表述代替具体引用\n"
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
         f"3. 如果检索结果不足以完整回答，明确说明哪些部分无法确认\n"
         f"{instruction4}"
         f"{fallback_hint}\n"
-        f"## 格式要求（必须遵守）\n"
-        f"- 禁止使用 LaTeX（禁止 \\[ \\] \\( \\) \\times \\frac 等一切 LaTeX 语法）\n"
-        f"- 计算过程必须用 Markdown 表格展示（| 项目 | 计算 | 结果 |）\n"
-        f"- 章节标题用 ## 和 ### 开头\n"
-        f"- 公式用普通文本，例如：企业管理费 = (人工费 + 机械费×0.1) × 费率%\n"
+        "格式要求（必须遵守）\n"
+        "1. 只允许输出以下五个区块，且区块标题必须完全一致：\n"
+        "【问题】\n【论据】\n【分析】\n【结论】\n【参考索引】\n"
+        "2. 禁止使用任何 Markdown 符号，包括 #、##、###、-、*、>、```、|。\n"
+        "3. 【论据】必须用 1. 2. 3. 这样的序号列出，不要用短横线列表。\n"
+        "4. 【参考索引】必须用 [1] [2] 的形式列出来源。\n"
+        "5. 【问题】先准确复述用户问题；【结论】只给最终判断；【分析】写推理过程。\n"
+        "6. 公式和计算仅用普通文本，不要 LaTeX，不要 Markdown 表格。\n"
     )
 
 
@@ -691,6 +772,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     all_chunks = _enrich_chunks_with_filename(all_chunks)
     logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
     synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
+    citations_text = _format_citations(all_chunks)
 
     # 简单置信度估算（供 SSE eval_scores 事件用）
     n = len(all_chunks)
@@ -714,6 +796,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "final_answer": "",
             "evaluation": evaluation,
             "synthesis_prompt": synthesis_prompt,
+            "citations_text": citations_text,
             "llm_runtime": runtime,
             "retrieved_chunks": all_chunks,
         }
@@ -725,26 +808,21 @@ def synthesize_node(state: RAGAgentState) -> dict:
             prefer_strong=False,
             llm_config=llm_config,
         )
-        final_answer = _strip_think_tags(response.content or "")
-        final_answer = re.sub(r"^```\w*\n?|```$", "", final_answer).strip()
+        final_answer = response.content or ""
     except Exception as e:
         logger.error(f"[synthesize] LLM failed: {e}")
         final_answer = state.get("final_answer", "无法生成答案")
         runtime = state.get("llm_runtime") or {}
 
-    citations = _format_citations(all_chunks)
-    if citations:
-        final_answer += citations
-
-    # Post-process: strip LaTeX notation and auto-inject Python sandbox block
-    from app.rag_pipeline import _strip_latex, _inject_calc_code
-    final_answer = _inject_calc_code(query, _strip_latex(final_answer))
+    from app.rag_pipeline import _strip_latex
+    final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text)
 
     return {
         "messages": [AIMessage(content=final_answer)],
         "final_answer": final_answer,
         "evaluation": evaluation,
         "synthesis_prompt": synthesis_prompt,
+        "citations_text": citations_text,
         "llm_runtime": runtime,
         "retrieved_chunks": all_chunks,
     }

@@ -26,3 +26,9 @@ class RAGAgentState(TypedDict):
     llm_runtime: dict                   # actual runtime metadata of the active/final model
     stream_response: bool               # True when the API will stream synthesis tokens itself
     synthesis_prompt: str               # prepared synthesis prompt for streaming path
+    citations_text: str                 # normalized reference index block for final answer
+    step_number: int                    # current executing step number for SSE
+    total_steps: int                    # total planned steps for SSE
+    step_hint: str                      # current step detail for SSE
+    pending_tool_calls: list[dict]      # tool calls selected by executor for SSE start events
+    step_summary: str                   # summary text when a step finishes without more tool calls
