@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
+from langchain_core.messages import HumanMessage
 
 from domain_models.retrieval import RetrievalRequest, RetrievalConfig
 from domain_models.api import APIResponse
@@ -337,6 +338,10 @@ class AgentRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
     max_iterations: int = 5
+    llm_route: str = "deepseek"
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_engine: Optional[str] = None
 
 
 @router.post("/api/v1/agent")
@@ -369,6 +374,21 @@ async def agent_query(request: AgentRequest):
             "final_answer": "",
             "tool_call_cache": {},
             "calculation_inputs": {},
+            "plan": [],
+            "current_step": 0,
+            "thought_process": [],
+            "category_hints": [],
+            "fallback_mode": False,
+            "has_tool_calls": False,
+            "llm_config": {
+                "route_mode": request.llm_route,
+                "provider": request.llm_provider,
+                "model": request.llm_model,
+                "engine": request.llm_engine,
+            },
+            "llm_runtime": {},
+            "stream_response": False,
+            "synthesis_prompt": "",
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
@@ -379,6 +399,7 @@ async def agent_query(request: AgentRequest):
             "chunks": [_normalize_chunk(c) for c in result.get("retrieved_chunks", [])],
             "evaluation": result.get("evaluation"),
             "iterations": result.get("iterations", 0),
+            "runtime": result.get("llm_runtime", {}),
         }
     except Exception as e:
         logger.error(f"Agent pipeline error: {e}")
@@ -400,6 +421,23 @@ class AgentStreamRequest(BaseModel):
     top_k: int = 8
     search_mode: str = "hybrid"
     doc_types: list = []
+    llm_route: str = "deepseek"
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_engine: Optional[str] = None
+
+
+def _sse_event(event_type: str, data: dict[str, Any]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _build_llm_config(request: AgentStreamRequest | AgentRequest) -> dict[str, Any]:
+    return {
+        "route_mode": request.llm_route,
+        "provider": request.llm_provider,
+        "model": request.llm_model,
+        "engine": request.llm_engine,
+    }
 
 
 @router.post("/api/v1/agent/stream")
@@ -409,12 +447,14 @@ async def agent_query_stream(request: AgentStreamRequest):
         raise HTTPException(status_code=400, detail="query 不能为空")
 
     from app.agent.graph import get_agent_graph
+    from app.agent.prompts import stream_llm_response
 
     session_id = request.session_id or str(uuid.uuid4())
 
     async def event_generator():
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        llm_config = _build_llm_config(request)
 
         def run_graph():
             try:
@@ -436,6 +476,13 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "plan": [],
                     "current_step": 0,
                     "thought_process": [],
+                    "category_hints": [],
+                    "fallback_mode": False,
+                    "has_tool_calls": False,
+                    "llm_config": llm_config,
+                    "llm_runtime": {},
+                    "stream_response": True,
+                    "synthesis_prompt": "",
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -451,21 +498,38 @@ async def agent_query_stream(request: AgentStreamRequest):
         start_time = loop.time()
         final_answer = ""
         total_iterations = 0
+        seen_chunk_ids: set[str] = set()
+        current_runtime: dict[str, Any] = {}
+        current_plan: list[str] = []
+
+        yield _sse_event("progress", {"stage": "analysis", "message": "正在理解问题..."})
 
         while True:
             try:
                 kind, payload = await asyncio.wait_for(queue.get(), timeout=150.0)
             except asyncio.TimeoutError:
-                yield f"event: error\ndata: {json.dumps({'message': '请求超时，请稍后重试', 'code': 'TIMEOUT'}, ensure_ascii=False)}\n\n"
+                yield _sse_event("error", {"message": "请求超时，请稍后重试", "code": "TIMEOUT"})
                 break
 
             if kind == "error":
-                yield f"event: error\ndata: {json.dumps({'message': payload, 'code': 'AGENT_ERROR'}, ensure_ascii=False)}\n\n"
+                yield _sse_event("error", {"message": payload, "code": "AGENT_ERROR"})
                 break
 
             if kind == "done":
                 elapsed_ms = int((loop.time() - start_time) * 1000)
-                yield f"event: done\ndata: {json.dumps({'answer': final_answer, 'session_id': session_id, 'iterations': total_iterations, 'latency_ms': elapsed_ms}, ensure_ascii=False)}\n\n"
+                yield _sse_event(
+                    "done",
+                    {
+                        "answer": final_answer,
+                        "session_id": session_id,
+                        "iterations": total_iterations,
+                        "latency_ms": elapsed_ms,
+                        "provider": current_runtime.get("provider"),
+                        "model": current_runtime.get("model"),
+                        "engine": current_runtime.get("engine"),
+                        "route_mode": current_runtime.get("route_mode") or llm_config.get("route_mode"),
+                    },
+                )
                 break
 
             # kind == "chunk"
@@ -479,29 +543,73 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "sub_queries": node_output.get("sub_queries", []),
                     "entities": {},
                 }
-                yield f"event: query_analysis\ndata: {json.dumps(analysis, ensure_ascii=False)}\n\n"
+                yield _sse_event("query_analysis", analysis)
                 # chitchat / off-topic：直接以 token 事件推送答案（图在此结束，synthesize 不会运行）
                 off_answer = node_output.get("final_answer", "")
                 if off_answer:
                     final_answer = off_answer
-                    for _s in re.split(r"(?<=[。！？\n])", off_answer):
-                        if _s.strip():
-                            yield f"event: token\ndata: {json.dumps({'delta': _s}, ensure_ascii=False)}\n\n"
-                            await asyncio.sleep(0.01)
+                    yield _sse_event("synthesizing", {"provider": "builtin", "model": "builtin", "engine": "default", "route_mode": llm_config.get("route_mode")})
+                    yield _sse_event("token", {"delta": off_answer})
 
             elif node_name == "planner_node":
                 # 规划完成，发送步骤列表供前端展示进度
                 plan = node_output.get("plan", [])
-                yield f"event: plan\ndata: {json.dumps({'steps': plan}, ensure_ascii=False)}\n\n"
+                current_plan = plan
+                runtime = node_output.get("llm_runtime") or current_runtime
+                if runtime:
+                    current_runtime = runtime
+                yield _sse_event("progress", {"stage": "planning", "message": "制定检索计划..."})
+                yield _sse_event("plan", {"steps": plan})
 
             elif node_name == "executor_node":
-                # executor 只更新 messages/iterations/current_step，无需单独 SSE 事件
                 total_iterations = node_output.get("iterations", total_iterations)
+                runtime = node_output.get("llm_runtime") or current_runtime
+                if runtime:
+                    current_runtime = runtime
+                step_number = node_output.get("step_number", 0)
+                total_steps = node_output.get("total_steps", 0)
+                step_hint = node_output.get("step_hint", "")
+                if step_number:
+                    yield _sse_event(
+                        "executing",
+                        {
+                            "step": step_number,
+                            "total": total_steps,
+                            "message": f"执行步骤 {step_number}/{max(total_steps, 1)}",
+                            "query": step_hint,
+                        },
+                    )
+                for tool_call in node_output.get("pending_tool_calls", []) or []:
+                    yield _sse_event(
+                        "tool_call_start",
+                        {
+                            "call_id": tool_call.get("id", ""),
+                            "tool": tool_call.get("name", ""),
+                            "args": tool_call.get("args", {}),
+                            "step": step_number,
+                            "total": total_steps,
+                        },
+                    )
+                step_summary = node_output.get("step_summary")
+                if step_summary:
+                    yield _sse_event(
+                        "step_done",
+                        {
+                            "step": step_number,
+                            "total": total_steps,
+                            "message": step_summary,
+                        },
+                    )
 
             elif node_name == "tool_node":
                 # 新增 chunks → 逐条 emit retrieval_result
                 for c in node_output.get("retrieved_chunks", []):
-                    yield f"event: retrieval_result\ndata: {json.dumps(_normalize_chunk(c), ensure_ascii=False)}\n\n"
+                    normalized = _normalize_chunk(c)
+                    chunk_id = normalized["chunk_id"]
+                    if chunk_id in seen_chunk_ids:
+                        continue
+                    seen_chunk_ids.add(chunk_id)
+                    yield _sse_event("retrieval_result", normalized)
                 # tool call results
                 for msg in node_output.get("messages", []):
                     if hasattr(msg, "name") and hasattr(msg, "content"):
@@ -511,20 +619,56 @@ async def agent_query_stream(request: AgentStreamRequest):
                             "result_summary": str(msg.content)[:200],
                             "duration_ms": 0,
                         }
-                        yield f"event: tool_call_end\ndata: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
+                        yield _sse_event("tool_call_end", tool_data)
+                yield _sse_event(
+                    "step_done",
+                    {
+                        "step": node_output.get("current_step", 0) + 1,
+                        "total": max(len(current_plan), 1),
+                        "message": f"当前已检索到 {len(node_output.get('retrieved_chunks', []))} 个相关片段",
+                    },
+                )
 
             elif node_name == "synthesize_node":
-                # 最终答案 → token 流
-                answer = node_output.get("final_answer", "")
-                if answer:
-                    final_answer = answer
-                    sentences = re.split(r"(?<=[。！？\n])", answer)
-                    for sentence in sentences:
-                        if sentence:
-                            yield f"event: token\ndata: {json.dumps({'delta': sentence}, ensure_ascii=False)}\n\n"
-                            await asyncio.sleep(0.02)
-                # eval_scores + loop_state from synthesize evaluation
-                eval_result = node_output.get("evaluation", {})
+                prompt = node_output.get("synthesis_prompt", "")
+                eval_result = node_output.get("evaluation") or {}
+                runtime = node_output.get("llm_runtime") or current_runtime
+
+                if prompt:
+                    try:
+                        async for stream_event in stream_llm_response(
+                            [HumanMessage(content=prompt)],
+                            thinking=False,
+                            prefer_strong=False,
+                            llm_config=llm_config,
+                        ):
+                            if stream_event["type"] == "runtime":
+                                runtime = stream_event["runtime"]
+                                current_runtime = runtime
+                                yield _sse_event(
+                                    "synthesizing",
+                                    {
+                                        "provider": runtime.get("provider"),
+                                        "model": runtime.get("model"),
+                                        "engine": runtime.get("engine"),
+                                        "route_mode": runtime.get("route_mode"),
+                                        "fallback": stream_event.get("fallback", False),
+                                    },
+                                )
+                                continue
+
+                            delta = stream_event["delta"]
+                            final_answer += delta
+                            yield _sse_event("token", {"delta": delta})
+                    except Exception as exc:
+                        yield _sse_event("error", {"message": str(exc), "code": "SYNTHESIS_ERROR"})
+                        break
+                else:
+                    answer = node_output.get("final_answer", "")
+                    if answer:
+                        final_answer = answer
+                        yield _sse_event("token", {"delta": answer})
+
                 if eval_result:
                     scores = {
                         "completeness": eval_result.get("completeness", 0),
@@ -535,13 +679,13 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "fact_consistency": eval_result.get("fact_consistency", 0),
                         "coverage_estimate": eval_result.get("coverage_estimate", 0),
                     }
-                    yield f"event: eval_scores\ndata: {json.dumps(scores)}\n\n"
+                    yield _sse_event("eval_scores", scores)
                     loop_data = {
                         "iteration": total_iterations,
                         "eval_score": eval_result.get("confidence", 0),
                         "max_iterations": request.max_iterations,
                     }
-                    yield f"event: loop_state\ndata: {json.dumps(loop_data)}\n\n"
+                    yield _sse_event("loop_state", loop_data)
 
     return StreamingResponse(
         event_generator(),

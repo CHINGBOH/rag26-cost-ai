@@ -53,10 +53,19 @@ export interface EvalScores {
   coverage_estimate: number;
 }
 
+export interface RuntimeInfo {
+  provider?: string;
+  model?: string;
+  engine?: string;
+  routeMode?: string;
+}
+
 export interface RunState {
   runId: string | null;
   isStreaming: boolean;
   streamingAnswer: string;
+  statusMessage: string;
+  runtimeInfo: RuntimeInfo | null;
 
   queryAnalysis: QueryAnalysis | null;
   planSteps: string[];
@@ -75,6 +84,8 @@ export interface RunState {
   startRun: (runId: string) => void;
   setStreamingAnswer: (text: string) => void;
   appendToken: (delta: string) => void;
+  setStatusMessage: (text: string) => void;
+  setRuntimeInfo: (runtime: RuntimeInfo) => void;
   setQueryAnalysis: (qa: QueryAnalysis) => void;
   setPlanSteps: (steps: string[]) => void;
   addRetrievalChunk: (chunk: RetrievalChunk) => void;
@@ -98,6 +109,8 @@ export const useRunStore = create<RunState>((set) => ({
   runId: null,
   isStreaming: false,
   streamingAnswer: '',
+  statusMessage: '',
+  runtimeInfo: null,
   queryAnalysis: null,
   planSteps: [],
   retrievalChunks: [],
@@ -116,6 +129,8 @@ export const useRunStore = create<RunState>((set) => ({
       runId,
       isStreaming: true,
       streamingAnswer: '',
+      statusMessage: '正在理解问题...',
+      runtimeInfo: null,
       queryAnalysis: null,
       planSteps: [],
       retrievalChunks: [],
@@ -132,6 +147,8 @@ export const useRunStore = create<RunState>((set) => ({
 
   setStreamingAnswer: (text) => set({ streamingAnswer: text }),
   appendToken: (delta) => set((s) => ({ streamingAnswer: s.streamingAnswer + delta })),
+  setStatusMessage: (text) => set({ statusMessage: text }),
+  setRuntimeInfo: (runtime) => set((s) => ({ runtimeInfo: { ...s.runtimeInfo, ...runtime } })),
   setQueryAnalysis: (qa) => set({ queryAnalysis: qa }),
   setPlanSteps: (steps) => set({ planSteps: steps }),
   addRetrievalChunk: (chunk) => set((s) => ({ retrievalChunks: [...s.retrievalChunks, chunk] })),
@@ -156,6 +173,7 @@ export const useRunStore = create<RunState>((set) => ({
     set({
       isStreaming: false,
       streamingAnswer: data.answer,
+      statusMessage: '',
       finalIterations: data.iterations,
       finalLatencyMs: data.latency_ms,
       tokensIn: data.tokens_in ?? 0,
@@ -168,6 +186,8 @@ export const useRunStore = create<RunState>((set) => ({
       runId: null,
       isStreaming: false,
       streamingAnswer: '',
+      statusMessage: '',
+      runtimeInfo: null,
       queryAnalysis: null,
       planSteps: [],
       retrievalChunks: [],

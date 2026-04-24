@@ -26,7 +26,12 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.state import RAGAgentState
-from app.agent.prompts import get_llm, SYSTEM_PROMPT
+from app.agent.prompts import (
+    SYSTEM_PROMPT,
+    _strip_think_tags,
+    invoke_llm,
+    invoke_llm_with_tools,
+)
 from app.agent.retrieval_filter import filter_chunks
 from app.agent.query_analyzer import QueryAnalyzer
 from app.agent.tools import (
@@ -277,11 +282,6 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
     )
 
 
-def _strip_think_tags(text: str) -> str:
-    """去掉可能的 <think>...</think> 推理过程"""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-
 def _detect_loop(state: RAGAgentState) -> bool:
     """检测 tool_call 是否与缓存重复"""
     last_msg = state["messages"][-1]
@@ -409,19 +409,24 @@ def planner_node(state: RAGAgentState) -> dict:
     首次调用时向 messages channel 注入 system + user 消息。
     """
     query = state["query"]
-    # 使用强模型做规划（prefer_strong=True → DeepSeek；本地不可用时同样 fallback）
-    llm = get_llm(thinking=False, prefer_strong=True)
+    llm_config = state.get("llm_config") or {}
     logger.info(f"[planner] query='{query[:60]}'")
 
     try:
-        response = llm.invoke([
-            SystemMessage(content=_PLANNER_SYSTEM),
-            HumanMessage(content=f"用户问题：{query}"),
-        ])
+        response, runtime = invoke_llm(
+            [
+                SystemMessage(content=_PLANNER_SYSTEM),
+                HumanMessage(content=f"用户问题：{query}"),
+            ],
+            thinking=False,
+            prefer_strong=True,
+            llm_config=llm_config,
+        )
         steps = _parse_plan(response.content or "")
     except Exception as e:
         logger.error(f"[planner] LLM failed: {e}, fallback to single step")
         steps = [query]
+        runtime = state.get("llm_runtime") or {}
 
     if not steps or (len(steps) == 1 and not steps[0]):
         steps = [query]
@@ -468,6 +473,7 @@ def planner_node(state: RAGAgentState) -> dict:
         "thought_process": [],
         "category_hints": [],
         "fallback_mode": False,
+        "llm_runtime": runtime,
     }
 
 
@@ -483,12 +489,10 @@ def executor_node(state: RAGAgentState) -> dict:
     plan = state.get("plan") or [state["query"]]
     current_step = state.get("current_step", 0)
     thought_process = list(state.get("thought_process") or [])
+    llm_config = state.get("llm_config") or {}
 
-    # 本地轻模型执行检索（速度优先）
-    llm = get_llm(thinking=False, prefer_strong=False)
     # 最后一轮用 auto，允许 LLM 自行判断是否还需要工具
     tool_choice = "auto" if iteration >= max_iter - 1 else "required"
-    llm_with_tools = llm.bind_tools(REACT_TOOLS, tool_choice=tool_choice)
 
     messages = list(state["messages"])
 
@@ -534,10 +538,18 @@ def executor_node(state: RAGAgentState) -> dict:
     logger.info(f"[executor] iter={iteration}/{max_iter} step={progress} tool_choice={tool_choice}")
 
     try:
-        response = llm_with_tools.invoke(messages_for_llm)
+        response, runtime = invoke_llm_with_tools(
+            messages_for_llm,
+            REACT_TOOLS,
+            tool_choice=tool_choice,
+            thinking=False,
+            prefer_strong=False,
+            llm_config=llm_config,
+        )
     except Exception as e:
         logger.error(f"[executor] LLM failed: {e}")
         response = AIMessage(content="")
+        runtime = state.get("llm_runtime") or {}
 
     if response.tool_calls:
         logger.info(f"[executor] tool calls: {[tc['name'] for tc in response.tool_calls]}")
@@ -547,6 +559,11 @@ def executor_node(state: RAGAgentState) -> dict:
             "current_step": current_step,
             "thought_process": thought_process,
             "has_tool_calls": True,
+            "step_number": current_step + 1,
+            "total_steps": len(plan),
+            "step_hint": step_hint,
+            "pending_tool_calls": response.tool_calls,
+            "llm_runtime": runtime,
         }
     else:
         # 无工具调用：自省并推进步骤
@@ -559,6 +576,12 @@ def executor_node(state: RAGAgentState) -> dict:
             "current_step": current_step + 1,
             "thought_process": thought_process,
             "has_tool_calls": False,
+            "step_number": current_step + 1,
+            "total_steps": len(plan),
+            "step_hint": step_hint,
+            "pending_tool_calls": [],
+            "step_summary": thought[:200],
+            "llm_runtime": runtime,
         }
 
 
@@ -660,7 +683,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     """
     合成节点：用 messages channel 中积累的全部 chunks 生成最终答案。
     """
-    llm = get_llm(thinking=False)
+    llm_config = state.get("llm_config") or {}
     query = state["query"]
     query_type = state.get("query_type", "semantic")
     all_chunks = state.get("retrieved_chunks", [])
@@ -668,22 +691,6 @@ def synthesize_node(state: RAGAgentState) -> dict:
     all_chunks = _enrich_chunks_with_filename(all_chunks)
     logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
     synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
-
-    try:
-        response = llm.invoke([HumanMessage(content=synthesis_prompt)])
-        final_answer = _strip_think_tags(response.content or "")
-        final_answer = re.sub(r"^```\w*\n?|```$", "", final_answer).strip()
-    except Exception as e:
-        logger.error(f"[synthesize] LLM failed: {e}")
-        final_answer = state.get("final_answer", "无法生成答案")
-
-    citations = _format_citations(all_chunks)
-    if citations:
-        final_answer += citations
-
-    # Post-process: strip LaTeX notation and auto-inject Python sandbox block
-    from app.rag_pipeline import _strip_latex, _inject_calc_code
-    final_answer = _inject_calc_code(query, _strip_latex(final_answer))
 
     # 简单置信度估算（供 SSE eval_scores 事件用）
     n = len(all_chunks)
@@ -700,10 +707,46 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "feedback": "ok",
     }
 
+    if state.get("stream_response"):
+        runtime = state.get("llm_runtime") or {}
+        return {
+            "messages": [],
+            "final_answer": "",
+            "evaluation": evaluation,
+            "synthesis_prompt": synthesis_prompt,
+            "llm_runtime": runtime,
+            "retrieved_chunks": all_chunks,
+        }
+
+    try:
+        response, runtime = invoke_llm(
+            [HumanMessage(content=synthesis_prompt)],
+            thinking=False,
+            prefer_strong=False,
+            llm_config=llm_config,
+        )
+        final_answer = _strip_think_tags(response.content or "")
+        final_answer = re.sub(r"^```\w*\n?|```$", "", final_answer).strip()
+    except Exception as e:
+        logger.error(f"[synthesize] LLM failed: {e}")
+        final_answer = state.get("final_answer", "无法生成答案")
+        runtime = state.get("llm_runtime") or {}
+
+    citations = _format_citations(all_chunks)
+    if citations:
+        final_answer += citations
+
+    # Post-process: strip LaTeX notation and auto-inject Python sandbox block
+    from app.rag_pipeline import _strip_latex, _inject_calc_code
+    final_answer = _inject_calc_code(query, _strip_latex(final_answer))
+
     return {
         "messages": [AIMessage(content=final_answer)],
         "final_answer": final_answer,
         "evaluation": evaluation,
+        "synthesis_prompt": synthesis_prompt,
+        "llm_runtime": runtime,
+        "retrieved_chunks": all_chunks,
     }
 
 

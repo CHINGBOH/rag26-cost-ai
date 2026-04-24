@@ -119,6 +119,21 @@
   text-align: right;
 }
 
+.panel-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.panel-input:focus {
+  border-color: var(--color-primary);
+}
+
 .doctype-filters {
   display: flex;
   flex-direction: column;

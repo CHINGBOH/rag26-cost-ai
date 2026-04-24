@@ -37,6 +37,9 @@ interface ConfigState {
   scoreThreshold: number;
   topK: number;
   docTypes: string[];
+  llmRoute: 'auto' | 'local' | 'deepseek';
+  llmModel: string;
+  llmEngine: string;
 }
 
 const DEFAULT_CONFIG: ConfigState = {
@@ -45,9 +48,23 @@ const DEFAULT_CONFIG: ConfigState = {
   scoreThreshold: 0.6,
   topK: 8,
   docTypes: [],
+  llmRoute: 'deepseek',
+  llmModel: 'deepseek-chat',
+  llmEngine: 'api',
 };
 
 const DOC_TYPE_OPTIONS = ['信息价', '定额', '费率', '指南', '划分'];
+const LLM_ROUTE_OPTIONS: Array<ConfigState['llmRoute']> = ['auto', 'local', 'deepseek'];
+
+function getDefaultModel(route: ConfigState['llmRoute']): string {
+  if (route === 'local') return 'Qwen2.5-14B-Instruct';
+  if (route === 'auto') return 'Qwen2.5-14B-Instruct';
+  return 'deepseek-chat';
+}
+
+function getDefaultEngine(route: ConfigState['llmRoute']): string {
+  return route === 'deepseek' ? 'api' : 'llama.cpp';
+}
 
 /* ── Main Component ──────────────────────────────────── */
 
@@ -70,6 +87,10 @@ export const AgentChat: React.FC = () => {
       topK: config.topK,
       searchMode: config.searchMode,
       docTypes: config.docTypes,
+      llmRoute: config.llmRoute,
+      llmProvider: config.llmRoute === 'auto' ? undefined : config.llmRoute,
+      llmModel: config.llmModel,
+      llmEngine: config.llmEngine,
     };
     sendMessage(input, agentConfig);
     setInput('');
@@ -99,6 +120,52 @@ export const AgentChat: React.FC = () => {
           <div className="session-info">
             <span className="session-id">{sessionId ? sessionId.slice(0, 8) + '…' : '新会话'}</span>
             <button className="new-session-btn" onClick={clearMessages}>+ 新对话</button>
+          </div>
+        </div>
+
+        <div className="panel-section">
+          <h3 className="panel-title">推理路由</h3>
+          <div className="mode-select">
+            {LLM_ROUTE_OPTIONS.map((route) => (
+              <button
+                key={route}
+                className={`mode-btn ${config.llmRoute === route ? 'active' : ''}`}
+                onClick={() =>
+                  setConfig((c) => ({
+                    ...c,
+                    llmRoute: route,
+                    llmModel: getDefaultModel(route),
+                    llmEngine: getDefaultEngine(route),
+                  }))
+                }
+              >
+                {route}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel-section">
+          <h3 className="panel-title">模型</h3>
+          <input
+            className="panel-input"
+            value={config.llmModel}
+            onChange={(e) => setConfig((c) => ({ ...c, llmModel: e.target.value }))}
+          />
+        </div>
+
+        <div className="panel-section">
+          <h3 className="panel-title">引擎</h3>
+          <div className="mode-select">
+            {['api', 'llama.cpp'].map((engine) => (
+              <button
+                key={engine}
+                className={`mode-btn ${config.llmEngine === engine ? 'active' : ''}`}
+                onClick={() => setConfig((c) => ({ ...c, llmEngine: engine }))}
+              >
+                {engine}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -319,6 +386,18 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
             {message.latencyMs && (
               <span className="meta-tag latency">{(message.latencyMs / 1000).toFixed(1)}s</span>
             )}
+            {message.routeMode && (
+              <span className="meta-tag">路由 {message.routeMode}</span>
+            )}
+            {message.provider && (
+              <span className="meta-tag">{message.provider}</span>
+            )}
+            {message.engine && (
+              <span className="meta-tag">{message.engine}</span>
+            )}
+            {message.model && (
+              <span className="meta-tag">{message.model}</span>
+            )}
 
             {/* Feedback buttons */}
             <div className="feedback-btns">
@@ -372,6 +451,8 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
 const StreamingBubble: React.FC = () => {
   const streamingAnswer = useRunStore((s) => s.streamingAnswer);
   const queryAnalysis = useRunStore((s) => s.queryAnalysis);
+  const statusMessage = useRunStore((s) => s.statusMessage);
+  const runtimeInfo = useRunStore((s) => s.runtimeInfo);
 
   if (!streamingAnswer && !queryAnalysis) {
     return (
@@ -380,7 +461,7 @@ const StreamingBubble: React.FC = () => {
           <div className="thinking-dots">
             <span /><span /><span />
           </div>
-          <span className="thinking-text">正在检索和分析…</span>
+          <span className="thinking-text">{statusMessage || '正在检索和分析…'}</span>
         </div>
       </div>
     );
@@ -392,8 +473,15 @@ const StreamingBubble: React.FC = () => {
         <div className="message-content">
           {streamingAnswer
             ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />
-            : <span className="thinking-text">正在生成回答…</span>}
+            : <span className="thinking-text">{statusMessage || '正在生成回答…'}</span>}
         </div>
+        {runtimeInfo?.model && (
+          <div className="message-meta">
+            <span className="meta-tag">{runtimeInfo.routeMode || 'default'}</span>
+            <span className="meta-tag">{runtimeInfo.engine || runtimeInfo.provider || 'model'}</span>
+            <span className="meta-tag">{runtimeInfo.model}</span>
+          </div>
+        )}
         <span className="streaming-cursor" />
       </div>
     </div>
@@ -431,6 +519,22 @@ const ProcessVisualization: React.FC = () => {
         <span>⚙ 执行过程</span>
         {runStore.isStreaming && <span className="proc-live">● LIVE</span>}
       </div>
+
+      <Section id="runtime" title="运行引擎" count={runStore.runtimeInfo ? 1 : 0}>
+        {runStore.runtimeInfo ? (
+          <div className="qa-display">
+            <div className="qa-entity"><span className="qa-key">路由:</span><span>{runStore.runtimeInfo.routeMode || '–'}</span></div>
+            <div className="qa-entity"><span className="qa-key">引擎:</span><span>{runStore.runtimeInfo.engine || '–'}</span></div>
+            <div className="qa-entity"><span className="qa-key">Provider:</span><span>{runStore.runtimeInfo.provider || '–'}</span></div>
+            <div className="qa-entity"><span className="qa-key">Model:</span><span>{runStore.runtimeInfo.model || '–'}</span></div>
+            {runStore.statusMessage && (
+              <div className="qa-subquery">↳ {runStore.statusMessage}</div>
+            )}
+          </div>
+        ) : (
+          <p className="proc-empty">{runStore.statusMessage || '等待模型选择…'}</p>
+        )}
+      </Section>
 
       {/* 1. Query Analysis */}
       <Section id="qa" title="查询分析" count={runStore.queryAnalysis ? 1 : 0}>

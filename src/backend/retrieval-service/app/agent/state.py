@@ -22,3 +22,7 @@ class RAGAgentState(TypedDict):
     category_hints: list[str]          # category_search 返回的章节定位字符串，跨步骤传递
     fallback_mode: bool                 # True = 已触发位置词降级，防止无限循环
     has_tool_calls: bool                # executor_node 标记是否有待执行的 tool_calls
+    llm_config: dict                    # LLM routing config from request
+    llm_runtime: dict                   # actual runtime metadata of the active/final model
+    stream_response: bool               # True when the API will stream synthesis tokens itself
+    synthesis_prompt: str               # prepared synthesis prompt for streaming path

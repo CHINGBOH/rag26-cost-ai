@@ -5,6 +5,8 @@ Agent Prompts + LLM 初始化
 import os
 import re
 from pathlib import Path
+from typing import Any
+
 import httpx
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -54,35 +56,207 @@ def _strip_think_tags(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
-def get_llm(thinking: bool = False, prefer_strong: bool = False):
-    """
-    初始化 LLM。
+def _normalize_base_url(base_url: str) -> str:
+    base_url = (base_url or "").rstrip("/")
+    if not base_url:
+        base_url = "https://api.deepseek.com/v1"
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    return base_url
 
-    - 本地 llama-server（LLM_BASE_URL 含 localhost/127.0.0.1）：api_key 用 "none"
-    - 远程 API（DeepSeek 等）：使用 LLM_API_KEY
 
-    Args:
-        thinking: 是否允许更长输出（synthesis 阶段可开启）。
-        prefer_strong: 保留参数，当前无实际作用。
-    """
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    # 确保 base_url 以 /v1 结尾（兼容 llama-server 和 DeepSeek）
-    if not base_url.rstrip("/").endswith("/v1"):
-        base_url = base_url.rstrip("/") + "/v1"
+def _is_local_base_url(base_url: str) -> bool:
+    return any(host in base_url for host in ("localhost", "127.0.0.1", "::1"))
 
-    is_local = any(h in base_url for h in ("localhost", "127.0.0.1", "::1"))
-    api_key = "none" if is_local else os.getenv("LLM_API_KEY", "none")
 
-    # Local llama-server: bypass proxy env vars entirely so httpx doesn't route
-    # http://127.0.0.1:xxx through the system HTTP_PROXY.
-    http_client = httpx.AsyncClient(trust_env=False) if is_local else None
+def _build_runtime(
+    provider: str,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    engine: str,
+    route_mode: str,
+) -> dict[str, Any]:
+    normalized_base_url = _normalize_base_url(base_url)
+    is_local = _is_local_base_url(normalized_base_url)
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": normalized_base_url,
+        "api_key": "none" if is_local else (api_key or "none"),
+        "engine": engine,
+        "route_mode": route_mode,
+        "is_local": is_local,
+    }
 
+
+def resolve_llm_runtimes(
+    llm_config: dict[str, Any] | None = None,
+    *,
+    prefer_strong: bool = False,
+) -> list[dict[str, Any]]:
+    llm_config = llm_config or {}
+
+    explicit_route = str(llm_config.get("route_mode") or "").strip().lower()
+    requested_provider = str(llm_config.get("provider") or "").strip().lower()
+    requested_model = str(llm_config.get("model") or "").strip()
+    requested_engine = str(llm_config.get("engine") or "").strip()
+
+    configured_base_url = _normalize_base_url(
+        llm_config.get("base_url") or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
+    )
+
+    default_route = "local" if _is_local_base_url(configured_base_url) else "deepseek"
+    route_mode = explicit_route or default_route
+
+    deepseek_runtime = _build_runtime(
+        "deepseek",
+        model=requested_model or os.getenv("LLM_MODEL", "deepseek-chat"),
+        base_url=llm_config.get("deepseek_base_url")
+        or os.getenv("DEEPSEEK_BASE_URL")
+        or configured_base_url,
+        api_key=llm_config.get("api_key")
+        or os.getenv("DEEPSEEK_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("LLM_API_KEY", "none"),
+        engine="api",
+        route_mode=route_mode,
+    )
+
+    local_runtime = _build_runtime(
+        "local",
+        model=requested_model
+        or os.getenv("LOCAL_LLM_MODEL")
+        or os.getenv("LLM_LOCAL_MODEL")
+        or "Qwen2.5-14B-Instruct",
+        base_url=llm_config.get("local_base_url")
+        or os.getenv("LOCAL_LLM_BASE_URL")
+        or "http://127.0.0.1:8080/v1",
+        api_key="none",
+        engine=requested_engine or os.getenv("LOCAL_LLM_ENGINE") or "llama.cpp",
+        route_mode=route_mode,
+    )
+
+    if route_mode == "local" or requested_provider == "local":
+        return [local_runtime]
+    if route_mode == "deepseek" or requested_provider == "deepseek":
+        return [deepseek_runtime]
+    if route_mode != "auto":
+        return [deepseek_runtime]
+
+    return [deepseek_runtime, local_runtime] if prefer_strong else [local_runtime, deepseek_runtime]
+
+
+def create_llm(runtime: dict[str, Any], *, thinking: bool = False, streaming: bool = False) -> ChatOpenAI:
+    http_async_client = httpx.AsyncClient(trust_env=False) if runtime["is_local"] else None
+    http_client = httpx.Client(trust_env=False) if runtime["is_local"] else None
     return ChatOpenAI(
-        model=os.getenv("LLM_MODEL", "deepseek-chat"),
-        api_key=api_key,
-        base_url=base_url,
+        model=runtime["model"],
+        api_key=runtime["api_key"],
+        base_url=runtime["base_url"],
         temperature=0.0,
         max_tokens=4096 if thinking else 2048,
-        timeout=120 if is_local else 90,
-        http_async_client=http_client,
+        timeout=120 if runtime["is_local"] else 90,
+        http_async_client=http_async_client,
+        http_client=http_client,
+        streaming=streaming,
     )
+
+
+def invoke_llm(
+    messages: list[Any],
+    *,
+    thinking: bool = False,
+    prefer_strong: bool = False,
+    llm_config: dict[str, Any] | None = None,
+):
+    last_error = None
+    for runtime in resolve_llm_runtimes(llm_config, prefer_strong=prefer_strong):
+        try:
+            response = create_llm(runtime, thinking=thinking).invoke(messages)
+            return response, runtime
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No LLM runtime available")
+
+
+def invoke_llm_with_tools(
+    messages: list[Any],
+    tools: list[Any],
+    *,
+    tool_choice: str = "auto",
+    thinking: bool = False,
+    prefer_strong: bool = False,
+    llm_config: dict[str, Any] | None = None,
+):
+    last_error = None
+    for runtime in resolve_llm_runtimes(llm_config, prefer_strong=prefer_strong):
+        try:
+            llm = create_llm(runtime, thinking=thinking).bind_tools(tools, tool_choice=tool_choice)
+            response = llm.invoke(messages)
+            return response, runtime
+        except Exception as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No LLM runtime available")
+
+
+def extract_text_delta(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                text_parts.append(item)
+            elif isinstance(item, dict):
+                maybe_text = item.get("text") or item.get("content")
+                if isinstance(maybe_text, str):
+                    text_parts.append(maybe_text)
+        return "".join(text_parts)
+    if isinstance(content, dict):
+        maybe_text = content.get("text") or content.get("content")
+        return maybe_text if isinstance(maybe_text, str) else ""
+    return ""
+
+
+async def stream_llm_response(
+    messages: list[Any],
+    *,
+    thinking: bool = False,
+    prefer_strong: bool = False,
+    llm_config: dict[str, Any] | None = None,
+):
+    last_error = None
+    runtimes = resolve_llm_runtimes(llm_config, prefer_strong=prefer_strong)
+    for index, runtime in enumerate(runtimes):
+        llm = create_llm(runtime, thinking=thinking, streaming=True)
+        started = False
+        try:
+            yield {"type": "runtime", "runtime": runtime, "fallback": index > 0}
+            async for chunk in llm.astream(messages):
+                delta = extract_text_delta(getattr(chunk, "content", chunk))
+                if not delta:
+                    continue
+                started = True
+                yield {"type": "token", "delta": delta, "runtime": runtime}
+            return
+        except Exception as exc:
+            last_error = exc
+            if started or index == len(runtimes) - 1:
+                raise
+    if last_error is not None:
+        raise last_error
+
+
+def get_llm(
+    thinking: bool = False,
+    prefer_strong: bool = False,
+    llm_config: dict[str, Any] | None = None,
+):
+    runtime = resolve_llm_runtimes(llm_config, prefer_strong=prefer_strong)[0]
+    return create_llm(runtime, thinking=thinking)

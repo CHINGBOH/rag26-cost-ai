@@ -9,7 +9,16 @@
 import { useCallback, useRef } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { useRunStore, QueryAnalysis, RetrievalChunk, EvalScores, ToolCall, SandboxExec, LoopState } from '../stores/useRunStore';
+import {
+  useRunStore,
+  QueryAnalysis,
+  RetrievalChunk,
+  EvalScores,
+  ToolCall,
+  SandboxExec,
+  LoopState,
+  RuntimeInfo,
+} from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
 
 export interface ChatMessage {
@@ -24,6 +33,10 @@ export interface ChatMessage {
   iterations?: number;
   latencyMs?: number;
   evalScores?: EvalScores | null;
+  provider?: string;
+  model?: string;
+  engine?: string;
+  routeMode?: string;
   error?: string;
 }
 
@@ -33,6 +46,10 @@ export interface AgentConfig {
   topK?: number;
   searchMode?: string;
   docTypes?: string[];
+  llmRoute?: 'auto' | 'local' | 'deepseek';
+  llmProvider?: string;
+  llmModel?: string;
+  llmEngine?: string;
 }
 
 interface ChatStore {
@@ -117,6 +134,10 @@ export function useAgent() {
             top_k: config?.topK ?? 8,
             search_mode: config?.searchMode ?? 'hybrid',
             doc_types: config?.docTypes ?? [],
+            llm_route: config?.llmRoute ?? 'deepseek',
+            llm_provider: config?.llmProvider,
+            llm_model: config?.llmModel,
+            llm_engine: config?.llmEngine,
           }),
           signal,
         });
@@ -154,7 +175,7 @@ export function useAgent() {
                   _addMessage({
                     id: `assistant-${Date.now()}`,
                     role: 'assistant',
-                    content: data.answer,
+                    content: (data.answer as string) || finalRunStore.streamingAnswer,
                     timestamp: Date.now(),
                     sessionId: currentSessionId,
                     runId,
@@ -162,6 +183,10 @@ export function useAgent() {
                     latencyMs: data.latency_ms,
                     chunks: finalRunStore.retrievalChunks as AgentChunk[],
                     evalScores: finalRunStore.evalScores,
+                    provider: data.provider as string | undefined,
+                    model: data.model as string | undefined,
+                    engine: data.engine as string | undefined,
+                    routeMode: data.route_mode as string | undefined,
                   });
                   finalRunStore.finishRun(data);
                 }
@@ -214,24 +239,36 @@ type RunStoreState = ReturnType<typeof useRunStore.getState>;
 function handleSSEEvent(type: string, data: Record<string, unknown>) {
   const rs = useRunStore.getState() as RunStoreState;
   switch (type) {
+    case 'progress':
+      rs.setStatusMessage((data.message as string) ?? '');
+      break;
     case 'query_analysis':
       rs.setQueryAnalysis(data as unknown as QueryAnalysis);
       break;
     case 'plan':
       rs.setPlanSteps((data.steps as string[]) ?? []);
+      rs.setStatusMessage('检索计划已生成');
+      break;
+    case 'executing':
+      rs.setStatusMessage((data.message as string) ?? '正在执行检索步骤...');
       break;
     case 'retrieval_result':
       rs.addRetrievalChunk(data as unknown as RetrievalChunk);
       break;
     case 'tool_call_start':
       rs.startToolCall(data as unknown as Omit<ToolCall, 'status'>);
+      rs.setStatusMessage(`调用工具 ${(data.tool as string) ?? ''}...`);
       break;
     case 'tool_call_end':
       rs.endToolCall(
         data.call_id as string,
-        data.result,
+        data.result_summary ?? data.result,
         (data.duration_ms as number) ?? 0
       );
+      rs.setStatusMessage(`工具 ${(data.tool as string) ?? ''} 已返回结果`);
+      break;
+    case 'step_done':
+      rs.setStatusMessage((data.message as string) ?? '当前步骤完成');
       break;
     case 'sandbox_exec':
       rs.addSandboxExec(data as unknown as SandboxExec);
@@ -242,12 +279,23 @@ function handleSSEEvent(type: string, data: Record<string, unknown>) {
     case 'eval_scores':
       rs.setEvalScores(data as unknown as EvalScores);
       break;
+    case 'synthesizing':
+      rs.setRuntimeInfo({
+        provider: data.provider as string | undefined,
+        model: data.model as string | undefined,
+        engine: data.engine as string | undefined,
+        routeMode: data.route_mode as string | undefined,
+      } as RuntimeInfo);
+      rs.setStatusMessage(
+        `综合分析中 · ${(data.engine as string) || (data.provider as string) || '模型'}`
+      );
+      break;
     case 'token':
       rs.appendToken((data.delta as string) ?? '');
       break;
     case 'error':
+      rs.setStatusMessage((data.message as string) ?? '请求失败');
       console.error('Agent SSE error:', data);
       break;
   }
 }
-
