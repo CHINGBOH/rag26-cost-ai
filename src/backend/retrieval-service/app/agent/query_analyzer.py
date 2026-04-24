@@ -51,7 +51,7 @@ MATERIAL_LIST = [
     '种植屋面用耐根穿刺防水卷材', '混凝土路缘石', '沥青', '防水卷材', '防水涂料',
     '水泥', '钢筋', '混凝土', '中砂', '碎石', '块石', '毛石', '片石', '石粉渣',
     '白水泥', '砖', '涂料', '油漆', '防水', '保温', '管材', '电线', '电缆', '阀门',
-    '门窗', '模板', '脚手架', '玻璃', '钢材', '石膏', '铝材', '木材', '砂浆', '砌块',
+    '门窗', '模板', '脚手架', '玻璃地板', '玻璃', '钢材', '石膏', '铝材', '木材', '砂浆', '砌块',
     '卷材', '焊条', '钢板', '钢管', '角钢', '槽钢', '螺纹钢', '盘螺', '线材', '型材',
     '板材', '线管', '给水管', '排水管', '燃气管', '配电箱', '开关', '插座', '灯具',
     '风机', '水泵', '空调', '散热器', '石材', '瓷砖', '地板', '吊顶', '防火门',
@@ -96,6 +96,22 @@ UNIT_PATTERNS = [
     r"元\s*/\s*(t|m³|m²|㎡|m|kg|个|套|组|台|块|片|工日|支|根|卷|桶|箱|套|组|件|㎡|立方米|平方米|吨|千克|公斤|克|升|毫升|mm|cm|dm)",
     r"(?:每吨|每方|每平米|每立方|每米|每个|每公斤|每套|每组|每台|每块|每片|每工日|每支|每根|每卷|每桶|每箱|每件)",
 ]
+
+_QUOTA_PREFIX_PATTERNS = [
+    r"^\s*\d+\s*版",
+    r"(?:安装工程|装饰工程|市政工程|建筑工程)?消耗量标准中[，,\s]*",
+    r"(?:安装工程|装饰工程|市政工程|建筑工程)?工程消耗量标准中[，,\s]*",
+]
+_QUOTA_SUFFIX_PATTERN = re.compile(
+    r"(?:的)?(?:计算规则|人工费|材料费|机械费|工料机|参考价格|全费用参考综合单价|参考综合单价)"
+    r"(?:是|为)?(?:多少|什么)?[？?]?$"
+)
+_QUOTA_NOISE_PATTERN = re.compile(
+    r"[，,。；;：:“”\"'‘’（）()【】\[\]\s]|请问|根据|按照|按|标准|消耗量|工程|版"
+)
+_QUOTA_LOCATION_PATTERN = re.compile(
+    r"楼梯|墙面|柱面|台阶|天棚|楼地面|地面|顶面|踢脚|外墙|内墙|屋面|坡屋面|吊顶|地坪|面层"
+)
 
 
 class QueryAnalysis(TypedDict):
@@ -170,6 +186,23 @@ def _extract_unit(query: str) -> str:
         if m:
             return m.group(1).strip() if m.lastindex else ""
     return ""
+
+
+def extract_quota_search_term(query: str) -> str:
+    material = _extract_material(query)
+    if material:
+        return material
+
+    cleaned = query.strip()
+    cleaned = re.sub(r"20\d{2}\s*年\s*\d{1,2}\s*月", "", cleaned)
+    cleaned = re.sub(r"20\d{2}-\d{1,2}", "", cleaned)
+    for pattern in _QUOTA_PREFIX_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned)
+    cleaned = _QUOTA_LOCATION_PATTERN.sub("", cleaned)
+    cleaned = _QUOTA_SUFFIX_PATTERN.sub("", cleaned)
+    cleaned = re.sub(r"(是什么|是多少|怎么计算|如何计算|如何规定|如何取值)[？?]?$", "", cleaned)
+    cleaned = _QUOTA_NOISE_PATTERN.sub("", cleaned).strip()
+    return cleaned or query.strip()
 
 
 def _decompose(query: str, intent: str) -> list[str]:

@@ -33,7 +33,7 @@ from app.agent.prompts import (
     invoke_llm_with_tools,
 )
 from app.agent.retrieval_filter import filter_chunks
-from app.agent.query_analyzer import QueryAnalyzer
+from app.agent.query_analyzer import QueryAnalyzer, extract_quota_search_term
 from app.agent.tools import (
     vector_search,
     keyword_search,
@@ -226,8 +226,10 @@ def _clean_markdown_noise(text: str) -> str:
 
 def _normalize_final_answer(query: str, answer: str, chunks: list, citations_text: str) -> str:
     answer = _clean_markdown_noise(_strip_think_tags(answer))
-    if all(tag in answer for tag in ["【问题】", "【论据】", "【分析】", "【结论】", "【参考索引】"]):
-        return answer
+    if all(tag in answer for tag in ["【问题】", "【论据】", "【分析】", "【结论】"]):
+        answer_without_refs = re.split(r"\n\s*【参考索引】", answer, maxsplit=1)[0].strip()
+        refs = citations_text or "【参考索引】\n[1] 暂无可用来源"
+        return answer_without_refs + "\n\n" + refs
 
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer) if p.strip()]
     conclusion = ""
@@ -353,13 +355,13 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"{instruction4}"
         f"{fallback_hint}\n"
         "格式要求（必须遵守）\n"
-        "1. 只允许输出以下五个区块，且区块标题必须完全一致：\n"
-        "【问题】\n【论据】\n【分析】\n【结论】\n【参考索引】\n"
+        "1. 只允许输出以下四个区块，且区块标题必须完全一致：\n"
+        "【问题】\n【论据】\n【分析】\n【结论】\n"
         "2. 禁止使用任何 Markdown 符号，包括 #、##、###、-、*、>、```、|。\n"
         "3. 【论据】必须用 1. 2. 3. 这样的序号列出，不要用短横线列表。\n"
-        "4. 【参考索引】必须用 [1] [2] 的形式列出来源。\n"
-        "5. 【问题】先准确复述用户问题；【结论】只给最终判断；【分析】写推理过程。\n"
-        "6. 公式和计算仅用普通文本，不要 LaTeX，不要 Markdown 表格。\n"
+        "4. 【问题】先准确复述用户问题；【结论】只给最终判断；【分析】写推理过程。\n"
+        "5. 公式和计算仅用普通文本，不要 LaTeX，不要 Markdown 表格。\n"
+        "6. 禁止输出【参考索引】或\"参考索引\"段——系统会自动追加真实来源。\n"
     )
 
 
@@ -417,7 +419,7 @@ _QUOTA_RE = re.compile(
 
 # 位置限定词 — 检索失败时从查询词中剔除
 _STRIP_LOCATION_RE = re.compile(
-    r"楼梯|墙面|柱面|台阶|天棚|楼地面|地面|顶面|踢脚|外墙|内墙|屋面|坡屋面|吊顶|地坪"
+    r"楼梯|墙面|柱面|台阶|天棚|楼地面|地面|顶面|踢脚|外墙|内墙|屋面|坡屋面|吊顶|地坪|面层"
 )
 
 # 价格对比查询检测 — 提取两个时间段
@@ -516,11 +518,7 @@ def planner_node(state: RAGAgentState) -> dict:
     if _QUOTA_RE.search(query):
         first_step_lower = steps[0].lower() if steps else ""
         if "category_search" not in first_step_lower and "目录" not in steps[0]:
-            # 从查询中去掉位置限定词，提取核心材料/工艺关键词
-            core_material = _STRIP_LOCATION_RE.sub("", query).strip()
-            # 去掉常见问句词，保留名词
-            core_material = re.sub(r"[的中是在有多少什么怎么如何查询请问]", "", core_material).strip()
-            core_material = core_material or query
+            core_material = extract_quota_search_term(query) or query
             steps = [f"调用 category_search 确认『{core_material}』所在章节编号"] + steps
             logger.info(f"[planner] quota query detected, prepended category_search step, core='{core_material}'")
 
@@ -723,7 +721,7 @@ def tool_node(state: RAGAgentState) -> dict:
                     if tc["name"] in {"text_search", "keyword_search", "vector_search"}:
                         original_query = tc["args"].get("query", "")
                         break
-            stripped_query = _STRIP_LOCATION_RE.sub("", original_query).strip() if original_query else ""
+            stripped_query = extract_quota_search_term(original_query) if original_query else ""
             if stripped_query and stripped_query != original_query:
                 hint = (
                     f"检索词『{original_query}』含位置限定词，导致零结果。"

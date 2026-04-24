@@ -102,6 +102,58 @@ def _chunk_from_pg_row(row: tuple, source_db: str, score: float = 0.0) -> dict:
     }
 
 
+_STRUCTURED_TABLE_QUERY_HINTS = (
+    "费率",
+    "推荐费率",
+    "推荐系数",
+    "费率标准",
+    "企业管理费",
+    "利润率",
+    "安全文明施工费",
+    "赶工措施费",
+    "总包管理服务费",
+    "计算基数",
+)
+
+
+def _should_include_structured_tables(query: str) -> bool:
+    normalized = (query or "").strip()
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _STRUCTURED_TABLE_QUERY_HINTS)
+
+
+def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
+    if not query.strip():
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT id, doc_id, page_number, content
+                FROM text_chunks
+                WHERE content ILIKE %s
+                ORDER BY length(content)
+                LIMIT %s
+            """,
+            (f"%{query.strip()}%", top_k),
+        )
+        rows = cur.fetchall()
+
+    return [
+        {
+            "chunk_id": f"tc_{row[0]}",
+            "doc_id": str(row[1] or ""),
+            "page_number": row[2] or 1,
+            "source_db": "literal_text",
+            "content": row[3] or "",
+            "score": 0.72,
+            "metadata": {},
+        }
+        for row in rows
+    ]
+
+
 def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     """
     查询结构化表（fee_rates 等）并返回 chunk list。
@@ -111,7 +163,7 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     匹配策略：先整串 ILIKE，若无结果则对 2~8 字中文片段逐一匹配（支持长查询句）。
     """
     results: list[dict] = []
-    if not query.strip():
+    if not query.strip() or not _should_include_structured_tables(query):
         return results
     q = query.strip()
 
@@ -272,7 +324,11 @@ def keyword_search(query: str, top_k: int = 10) -> str:
                 })
 
         # also query fee_rates and other structured tables
-        results.extend(_query_structured_tables(query, top_k))
+        if _should_include_structured_tables(query):
+            results.extend(_query_structured_tables(query, top_k))
+        for chunk in _query_text_chunks_literal(conn, query, top_k):
+            if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
+                results.append(chunk)
 
         return json.dumps(results, ensure_ascii=False)
     except Exception as e:
@@ -347,15 +403,16 @@ def category_search(query: str, top_k: int = 5) -> str:
             })
 
         # 额外查询 fee_rates 等结构化表
-        for chunk in _query_structured_tables(query, top_k):
-            results.append({
-                "chunk_id": chunk["chunk_id"],
-                "doc_id": chunk["doc_id"],
-                "page_number": chunk["page_number"],
-                "section": chunk.get("metadata", {}).get("fee_name", ""),
-                "content": chunk["content"],
-                "score": chunk["score"],
-            })
+        if _should_include_structured_tables(query):
+            for chunk in _query_structured_tables(query, top_k):
+                results.append({
+                    "chunk_id": chunk["chunk_id"],
+                    "doc_id": chunk["doc_id"],
+                    "page_number": chunk["page_number"],
+                    "section": chunk.get("metadata", {}).get("fee_name", ""),
+                    "content": chunk["content"],
+                    "score": chunk["score"],
+                })
 
         logger.info(f"[category_search] query='{query}' hits={len(results)}")
         return json.dumps(results, ensure_ascii=False)
@@ -396,28 +453,32 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
         with conn.cursor() as cur:
             # 向量路
             if query_embedding:
-                cur.execute("""
-                    SELECT id, doc_id, page_number, content,
-                           1 - (embedding <=> %s::vector) AS score
-                    FROM text_chunks
-                    WHERE embedding IS NOT NULL
-                      AND 1 - (embedding <=> %s::vector) >= 0.40
-                    ORDER BY embedding <=> %s::vector
-                    LIMIT %s
-                """, (query_embedding, query_embedding, query_embedding, top_k))
-                for row in cur.fetchall():
-                    cid = row[0]
-                    if cid not in seen_ids:
-                        seen_ids.add(cid)
-                        results.append({
-                            "chunk_id": f"tc_{cid}",
-                            "doc_id": str(row[1] or ""),
-                            "page_number": row[2] or 1,
-                            "source_db": "hybrid_vector",
-                            "content": row[3] or "",
-                            "score": round(float(row[4] or 0), 4),
-                            "metadata": {},
-                        })
+                try:
+                    cur.execute("""
+                        SELECT id, doc_id, page_number, content,
+                               1 - (embedding <=> %s::vector) AS score
+                        FROM text_chunks
+                        WHERE embedding IS NOT NULL
+                          AND 1 - (embedding <=> %s::vector) >= 0.40
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_embedding, query_embedding, query_embedding, top_k))
+                    for row in cur.fetchall():
+                        cid = row[0]
+                        if cid not in seen_ids:
+                            seen_ids.add(cid)
+                            results.append({
+                                "chunk_id": f"tc_{cid}",
+                                "doc_id": str(row[1] or ""),
+                                "page_number": row[2] or 1,
+                                "source_db": "hybrid_vector",
+                                "content": row[3] or "",
+                                "score": round(float(row[4] or 0), 4),
+                                "metadata": {},
+                            })
+                except Exception as e:
+                    logger.error(f"[hybrid_search] vector error: {e}")
+                    conn.rollback()
 
             # 全文路
             cur.execute("""
@@ -443,7 +504,13 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                     })
 
         # fee_rates 结构化表
-        for chunk in _query_structured_tables(query, top_k):
+        if _should_include_structured_tables(query):
+            for chunk in _query_structured_tables(query, top_k):
+                if chunk["chunk_id"] not in seen_ids:
+                    seen_ids.add(chunk["chunk_id"])
+                    results.append(chunk)
+
+        for chunk in _query_text_chunks_literal(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
@@ -528,9 +595,17 @@ def text_search(query: str, top_k: int = 8) -> str:
                             })
         except Exception as e:
             logger.error(f"[text_search] vector error: {e}")
+            if conn is not None:
+                conn.rollback()
 
         # 3. fee_rates and other structured tables — score 0.9, always passes filter
-        for chunk in _query_structured_tables(query, top_k):
+        if _should_include_structured_tables(query):
+            for chunk in _query_structured_tables(query, top_k):
+                if chunk["chunk_id"] not in seen_ids:
+                    seen_ids.add(chunk["chunk_id"])
+                    results.append(chunk)
+
+        for chunk in _query_text_chunks_literal(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)

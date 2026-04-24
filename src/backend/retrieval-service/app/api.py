@@ -684,7 +684,8 @@ async def agent_query_stream(request: AgentStreamRequest):
                         final_answer = answer
                         yield _sse_event("token", {"delta": answer})
 
-                if citations_text and "【参考索引】" not in final_answer:
+                if citations_text:
+                    final_answer = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
                     citations_delta = ("\n\n" if final_answer else "") + citations_text
                     final_answer += citations_delta
                     yield _sse_event("token", {"delta": citations_delta})
