@@ -314,7 +314,12 @@ export const ChatInterface: React.FC = () => {
               thinkingLines.length = 0;
               thinkingLines.push('✅ 问题理解完成');
               thinkingLines.push(`📋 检索计划（共 ${steps.length} 步）`);
-              steps.forEach((s, i) => thinkingLines.push(`   ${i + 1}. ${s}`));
+              steps.forEach((s, i) => {
+                // parse "text_search query=\"...\""  → 检索："..."
+                const qMatch = s.match(/query="([^"]+)"/);
+                const label = qMatch ? `检索："${qMatch[1]}"` : s;
+                thinkingLines.push(`   ${i + 1}. ${label}`);
+              });
               thinkingLines.push('⏳ 执行检索中...');
               ragSteps.push({ type: 'query_generation', status: 'running', startTime: Date.now() });
               syncThinking();
