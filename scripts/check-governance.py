@@ -449,7 +449,7 @@ class ArchitectureGovernanceChecker:
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
                         imports.add(node.module)
-        except:
+        except Exception:
             pass
         return imports
     
@@ -459,7 +459,7 @@ class ArchitectureGovernanceChecker:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             return 'if __name__ == "__main__"' in content or "if __name__ == '__main__'" in content
-        except:
+        except Exception:
             return False
     
     def check_and_update_agents_md(self) -> bool:

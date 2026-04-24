@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 EVAL_SET_PATH = Path("/home/l/rag-dashboard/data/eval/golden_test_set.json")
-DB_CONFIG = dict(host="localhost", dbname="rag_db", user="rag_user", password="rag_password")
+DB_CONFIG = dict(host="localhost", dbname="rag_db", user="rag_user", password=os.environ.get("POSTGRES_PASSWORD", "rag_password"))
 
 LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8080/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "no-key")

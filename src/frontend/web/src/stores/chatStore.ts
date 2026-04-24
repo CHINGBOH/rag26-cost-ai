@@ -13,7 +13,7 @@ import {
 
 interface ChatStore {
   // 状态
-  sessions: Map<string, ChatSession>;
+  sessions: Record<string, ChatSession>;
   activeSessionId: string | null;
   isLoading: boolean;
   streamingMessageId: string | null;
@@ -21,6 +21,7 @@ interface ChatStore {
   // Actions
   createSession: () => string;
   deleteSession: (id: string) => void;
+  clearMessages: (sessionId: string) => void;
   setActiveSession: (id: string | null) => void;
   addMessage: (sessionId: string, message: ChatMessage) => void;
   updateMessage: (sessionId: string, messageId: string, updates: Partial<ChatMessage>) => void;
@@ -35,7 +36,7 @@ interface ChatStore {
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
-  sessions: new Map(),
+  sessions: {},
   activeSessionId: null,
   isLoading: false,
   streamingMessageId: null,
@@ -52,31 +53,37 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       status: 'idle'
     };
     
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      newSessions.set(id, session);
-      return { 
-        sessions: newSessions, 
-        activeSessionId: id 
-      };
-    });
+    set((state) => ({ 
+      sessions: { ...state.sessions, [id]: session },
+      activeSessionId: id 
+    }));
     
     return id;
   },
 
   deleteSession: (id) => set((state) => {
-    const newSessions = new Map(state.sessions);
-    newSessions.delete(id);
+    const { [id]: _, ...rest } = state.sessions;
     return { 
-      sessions: newSessions,
+      sessions: rest,
       activeSessionId: state.activeSessionId === id ? null : state.activeSessionId
+    };
+  }),
+
+  clearMessages: (sessionId) => set((state) => {
+    const session = state.sessions[sessionId];
+    if (!session) return state;
+    return { 
+      sessions: { 
+        ...state.sessions, 
+        [sessionId]: { ...session, messages: [], updatedAt: Date.now() } 
+      } 
     };
   }),
 
   setActiveSession: (id) => set({ activeSessionId: id }),
 
   addMessage: (sessionId, message) => set((state) => {
-    const session = state.sessions.get(sessionId);
+    const session = state.sessions[sessionId];
     if (!session) return state;
     
     const newMessages = [...session.messages, message];
@@ -91,51 +98,41 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       newSession.title = message.content.slice(0, 30) + (message.content.length > 30 ? '...' : '');
     }
     
-    const newSessions = new Map(state.sessions);
-    newSessions.set(sessionId, newSession);
-    return { sessions: newSessions };
+    return { sessions: { ...state.sessions, [sessionId]: newSession } };
   }),
 
   updateMessage: (sessionId, messageId, updates) => set((state) => {
-    const session = state.sessions.get(sessionId);
+    const session = state.sessions[sessionId];
     if (!session) return state;
     
     const newMessages = session.messages.map(m => 
       m.id === messageId ? { ...m, ...updates } : m
     );
     
-    const newSession = { ...session, messages: newMessages };
-    const newSessions = new Map(state.sessions);
-    newSessions.set(sessionId, newSession);
-    return { sessions: newSessions };
+    return { sessions: { ...state.sessions, [sessionId]: { ...session, messages: newMessages } } };
   }),
 
   setSessionConfig: (sessionId, config) => set((state) => {
-    const session = state.sessions.get(sessionId);
+    const session = state.sessions[sessionId];
     if (!session) return state;
     
-    const newSession = {
-      ...session,
-      config: { ...session.config, ...config }
+    return {
+      sessions: {
+        ...state.sessions,
+        [sessionId]: { ...session, config: { ...session.config, ...config } }
+      }
     };
-    
-    const newSessions = new Map(state.sessions);
-    newSessions.set(sessionId, newSession);
-    return { sessions: newSessions };
   }),
 
   updateRagProcess: (sessionId, messageId, steps) => set((state) => {
-    const session = state.sessions.get(sessionId);
+    const session = state.sessions[sessionId];
     if (!session) return state;
     
     const newMessages = session.messages.map(m => 
       m.id === messageId ? { ...m, ragProcess: steps } : m
     );
     
-    const newSession = { ...session, messages: newMessages };
-    const newSessions = new Map(state.sessions);
-    newSessions.set(sessionId, newSession);
-    return { sessions: newSessions };
+    return { sessions: { ...state.sessions, [sessionId]: { ...session, messages: newMessages } } };
   }),
 
   setStreaming: (messageId) => set({ 
@@ -144,7 +141,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   }),
 
   appendMessageContent: (sessionId, messageId, content) => set((state) => {
-    const session = state.sessions.get(sessionId);
+    const session = state.sessions[sessionId];
     if (!session) return state;
     
     const newMessages = session.messages.map(m => 
@@ -153,19 +150,15 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         : m
     );
     
-    const newSession = { ...session, messages: newMessages };
-    const newSessions = new Map(state.sessions);
-    newSessions.set(sessionId, newSession);
-    return { sessions: newSessions };
+    return { sessions: { ...state.sessions, [sessionId]: { ...session, messages: newMessages } } };
   }),
 
   getActiveSession: () => {
     const { activeSessionId, sessions } = get();
-    return activeSessionId ? sessions.get(activeSessionId) : undefined;
+    return activeSessionId ? sessions[activeSessionId] : undefined;
   },
 
   getSessionMessages: (sessionId) => {
-    const session = get().sessions.get(sessionId);
-    return session?.messages || [];
+    return get().sessions[sessionId]?.messages ?? [];
   }
 }));

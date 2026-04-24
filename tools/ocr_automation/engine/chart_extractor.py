@@ -329,5 +329,5 @@ class ChartExtractor:
         s = s.strip().replace(',', '')
         try:
             return float(s)
-        except:
+        except Exception:
             return None

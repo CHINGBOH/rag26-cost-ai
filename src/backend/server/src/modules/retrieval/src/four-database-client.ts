@@ -6,7 +6,7 @@ const QDRANT_PORT = parseInt(process.env.QDRANT_PORT || '6333');
 
 const PG_HOST = process.env.PG_HOST || process.env.POSTGRES_HOST || 'localhost';
 const PG_PORT = parseInt(process.env.PG_PORT || process.env.POSTGRES_PORT || '5432');
-const PG_DB = process.env.PG_DB || process.env.POSTGRES_DB || 'rag_structured';
+const PG_DB = process.env.PG_DB || process.env.POSTGRES_DB || 'rag_db';
 const PG_USER = process.env.PG_USER || process.env.POSTGRES_USER || 'rag_user';
 const PG_PASSWORD = process.env.PG_PASSWORD || process.env.POSTGRES_PASSWORD || 'rag_password';
 

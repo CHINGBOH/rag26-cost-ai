@@ -174,7 +174,7 @@ def generate_merge_report(successful, failed):
                     'processing_time': merged_data.get('processing_time'),
                     'average_confidence': merged_data.get('average_confidence')
                 })
-            except:
+            except Exception:
                 pass
     
     # 保存报告

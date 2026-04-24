@@ -43,12 +43,14 @@ services:
   # Python Rerank服务
   rerank-service:
     build: ./src/backend/python-legacy
-    command: python -c "
-from rag_llm_pipeline import RerankService
-from rag_enhanced_api import app
-import uvicorn
-uvicorn.run(app, host='0.0.0.0', port=8002)
-"
+    command:
+      - python
+      - -c
+      - |
+        from rag_llm_pipeline import RerankService
+        from rag_enhanced_api import app
+        import uvicorn
+        uvicorn.run(app, host='0.0.0.0', port=8002)
     ports:
       - "8002:8002"
     environment:
@@ -63,18 +65,21 @@ uvicorn.run(app, host='0.0.0.0', port=8002)
   # Python LLM服务
   llm-service:
     build: ./src/backend/python-legacy
-    command: python -c "
-from llm_service import LLMService
-import uvicorn
-app = FastAPI()
-llm_service = LLMService()
+    command:
+      - python
+      - -c
+      - |
+        from llm_service import LLMService
+        import uvicorn
+        from fastapi import FastAPI
+        app = FastAPI()
+        llm_service = LLMService()
 
-@app.post('/api/generate')
-async def generate(request):
-    return await llm_service.generate(request.query, request.options)
+        @app.post('/api/generate')
+        async def generate(request):
+            return await llm_service.generate(request.query, request.options)
 
-uvicorn.run(app, host='0.0.0.0', port=8003)
-"
+        uvicorn.run(app, host='0.0.0.0', port=8003)
     ports:
       - "8003:8003"
     environment:

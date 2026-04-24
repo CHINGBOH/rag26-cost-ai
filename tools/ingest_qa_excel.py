@@ -4,12 +4,13 @@ Ingest Q&A test questions from Excel:
 1. Insert as text_chunks (type='qa_question') into PostgreSQL
 2. Export as JSON evaluation set for RAGAS
 """
+import os
 import json
 import psycopg2
 import openpyxl
 from pathlib import Path
 
-DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password='rag_password')
+DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
 EXCEL_PATH = Path('/home/l/rag-dashboard/data/knowledge_base/智能体问答.xlsx')
 EVAL_OUTPUT = Path('/home/l/rag-dashboard/data/eval/golden_test_set.json')
 

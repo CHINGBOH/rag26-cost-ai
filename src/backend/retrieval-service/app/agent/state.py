@@ -21,3 +21,4 @@ class RAGAgentState(TypedDict):
     calculation_inputs: dict            # 从 chunks 中提取的数值 {name: value}
     category_hints: list[str]          # category_search 返回的章节定位字符串，跨步骤传递
     fallback_mode: bool                 # True = 已触发位置词降级，防止无限循环
+    has_tool_calls: bool                # executor_node 标记是否有待执行的 tool_calls

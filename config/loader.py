@@ -72,7 +72,7 @@ class StructuredStoreConfig(BaseSettings):
     type: str = "postgresql"
     host: str = "localhost"
     port: int = Field(default=5432, ge=1, le=65535)
-    database: str = "rag_structured"
+    database: str = "rag_db"
     username: str = "rag_user"
     password: SecretStr = SecretStr("")
     table_formats: list = Field(default_factory=lambda: ["json", "markdown", "csv"])

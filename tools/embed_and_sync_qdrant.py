@@ -4,6 +4,7 @@ Generate embeddings for text_chunks and upsert to Qdrant documents collection.
 Uses local BAAI/bge-m3 model.
 Updates text_chunks.embedding column in PostgreSQL.
 """
+import os
 import sys
 import psycopg2
 import numpy as np
@@ -17,7 +18,7 @@ QDRANT_URL = 'http://localhost:6333'
 COLLECTION = 'documents'
 BATCH_SIZE = 128
 
-DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password='rag_password')
+DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
 
 
 def get_conn():

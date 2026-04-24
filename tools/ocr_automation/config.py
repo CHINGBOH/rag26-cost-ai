@@ -25,7 +25,7 @@ class DBConfig:
     port: int = 5432
     dbname: str = "rag_db"
     user: str = "rag_user"
-    password: str = "rag_password"
+    password: str = os.environ.get("POSTGRES_PASSWORD", "rag_password")
 
 
 @dataclass

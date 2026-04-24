@@ -27,7 +27,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 CHARTS_DIR = OUTPUT_DIR / "charts_2026_01"
 CHARTS_DIR.mkdir(exist_ok=True)
 
-DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password='rag_password')
+DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
 DOC_PERIOD = "2026-01"
 DOC_FNAME = "《深圳建设工程价格信息》2026年1月.pdf"
 
@@ -127,7 +127,7 @@ def clean_price(val_str):
     s = re.sub(r'[元\s￥$]+$', '', s)
     try:
         return float(s)
-    except:
+    except Exception:
         return None
 
 def clean_unit(val_str):

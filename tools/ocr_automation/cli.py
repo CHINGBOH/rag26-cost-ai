@@ -456,7 +456,7 @@ class OCRPipeline:
             if i == len(row) - 1:
                 try:
                     price = float(cell_str.replace(',', ''))
-                except:
+                except Exception:
                     pass
                 continue
             

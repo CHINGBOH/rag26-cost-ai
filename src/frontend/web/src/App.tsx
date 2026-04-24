@@ -10,6 +10,7 @@ import { initTheme } from './config/theme';
 
 // Core pages
 import { AgentChat } from './pages/AgentChat';
+import { AgentManagePage } from './pages/AgentManagePage';
 import { SearchPage } from './pages/SearchPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { SystemPage } from './pages/SystemPage';
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { path: '/ops', label: '运维', icon: '📊' },
   { path: '/system', label: '系统', icon: '🏥' },
   { path: '/learning', label: '学习', icon: '🧠' },
+  { path: '/agents', label: 'Agents', icon: '🤖' },
 ] as const;
 
 function Navigation() {
@@ -78,6 +80,7 @@ export default function App() {
             <Route path="/ops" element={<OpsPage />} />
             <Route path="/system" element={<SystemPage />} />
             <Route path="/learning" element={<LearningPage />} />
+            <Route path="/agents" element={<AgentManagePage />} />
             {/* Archive pages, hidden from nav */}
             <Route path="/archive/deep-dive" element={<AgentRuntimeDeepDive />} />
             <Route path="/archive/deep-dive-folk" element={<AgentRuntimeFolk />} />

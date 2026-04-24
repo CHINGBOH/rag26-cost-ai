@@ -53,7 +53,7 @@ class QdrantVectorStoreAdapter(VectorStorePort):
         try:
             self._client.get_collections()
             return True
-        except:
+        except Exception:
             return False
 
     async def search(

@@ -3,6 +3,7 @@ PostgreSQL + pgvector 导入器
 """
 
 import json
+import os
 import logging
 import hashlib
 from typing import List, Dict, Optional
@@ -19,7 +20,7 @@ class PGStore:
 
     def __init__(self, host: str = "localhost", port: int = 5432,
                  dbname: str = "rag_db", user: str = "rag_user",
-                 password: str = "rag_password"):
+                 password: str = os.environ.get("POSTGRES_PASSWORD", "rag_password")):
         self.conn = psycopg2.connect(
             host=host, port=port, dbname=dbname,
             user=user, password=password

@@ -38,6 +38,7 @@ export const ChatInterface: React.FC = () => {
   const streamingMessageId = useChatStore(state => state.streamingMessageId);
   
   const createSession = useChatStore(state => state.createSession);
+  const clearMessages = useChatStore(state => state.clearMessages);
   const setActiveSession = useChatStore(state => state.setActiveSession);
   const addMessage = useChatStore(state => state.addMessage);
   const setSessionConfig = useChatStore(state => state.setSessionConfig);
@@ -56,7 +57,7 @@ export const ChatInterface: React.FC = () => {
   } | null>(null);
   
   // 获取当前会话
-  const activeSession = activeSessionId ? sessions.get(activeSessionId) : null;
+  const activeSession = activeSessionId ? sessions[activeSessionId] : null;
   const messages = activeSession?.messages || [];
   const config = activeSession?.config || getDefaultConfig();
   
@@ -381,7 +382,7 @@ export const ChatInterface: React.FC = () => {
   // 清除对话
   const handleClear = () => {
     if (activeSessionId && confirm(chatFlowConfig.confirmDialog.clearChat)) {
-      // TODO: 清除消息
+      clearMessages(activeSessionId);
       resetPipeline();
     }
   };
@@ -413,7 +414,7 @@ export const ChatInterface: React.FC = () => {
           
           {!sidebarCollapsed && (
             <div className="sessions-list">
-              {Array.from(sessions.values())
+              {Object.values(sessions)
                 .sort((a, b) => b.updatedAt - a.updatedAt)
                 .map(session => (
                   <div
@@ -511,28 +512,22 @@ export const ChatInterface: React.FC = () => {
                 // 模型和温度控制 - 绑定到会话配置（无会话时自动创建）
                 selectedModel={config.model}
                 onModelChange={(model) => {
-                  console.log('模型变更:', model, '当前会话:', activeSessionId);
                   let sessionId = activeSessionId;
                   if (!sessionId) {
                     sessionId = createSession();
-                    console.log('创建新会话:', sessionId);
                   }
                   if (sessionId) {
                     setSessionConfig(sessionId, { model });
-                    console.log('设置模型完成');
                   }
                 }}
                 temperature={config.temperature}
                 onTemperatureChange={(temperature) => {
-                  console.log('温度变更:', temperature, '当前会话:', activeSessionId);
                   let sessionId = activeSessionId;
                   if (!sessionId) {
                     sessionId = createSession();
-                    console.log('创建新会话:', sessionId);
                   }
                   if (sessionId) {
                     setSessionConfig(sessionId, { temperature });
-                    console.log('设置温度完成');
                   }
                 }}
                 onSettingsClick={() => setIsControlPanelOpen(true)}

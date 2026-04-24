@@ -28,8 +28,32 @@ interface ConfigSetting {
   description?: string;
 }
 
+const STORAGE_KEY = 'rag_dashboard_config_panel';
+
+function loadInitialConfigs(defaults: ConfigSection[]): ConfigSection[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) return defaults;
+    const parsed: ConfigSection[] = JSON.parse(stored);
+    // Merge: keep default structure, overwrite values from storage
+    return defaults.map(section => {
+      const storedSection = parsed.find(s => s.id === section.id);
+      if (!storedSection) return section;
+      return {
+        ...section,
+        settings: section.settings.map(setting => {
+          const storedSetting = storedSection.settings.find(s => s.key === setting.key);
+          return storedSetting ? { ...setting, value: storedSetting.value } : setting;
+        }),
+      };
+    });
+  } catch {
+    return defaults;
+  }
+}
+
 export const ConfigPanel: React.FC = () => {
-  const [configs, setConfigs] = useState<ConfigSection[]>([
+  const defaultConfigs: ConfigSection[] = [
     {
       id: 'recursion',
       title: '🔁 递归控制',
@@ -196,7 +220,10 @@ export const ConfigPanel: React.FC = () => {
         }
       ]
     }
-  ]);
+  ];
+
+  const [configs, setConfigs] = useState<ConfigSection[]>(() => loadInitialConfigs(defaultConfigs));
+  const [saved, setSaved] = useState(false);
 
   const handleChange = (sectionId: string, key: string, value: any) => {
     setConfigs(prev => prev.map(section => {
@@ -209,18 +236,24 @@ export const ConfigPanel: React.FC = () => {
         })
       };
     }));
+    setSaved(false);
   };
 
   const handleSave = () => {
-    // TODO: 调用 API 保存配置
-    console.log('Saving configs:', configs);
-    alert('配置已保存（模拟）');
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(configs));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      alert('保存失败：' + (e instanceof Error ? e.message : String(e)));
+    }
   };
 
   const handleReset = () => {
-    // TODO: 重置为默认值
     if (confirm('确定要重置所有配置吗？')) {
-      window.location.reload();
+      localStorage.removeItem(STORAGE_KEY);
+      setConfigs(defaultConfigs);
+      setSaved(false);
     }
   };
 
@@ -238,7 +271,7 @@ export const ConfigPanel: React.FC = () => {
             重置
           </button>
           <button className="btn-primary" onClick={handleSave}>
-            保存配置
+            {saved ? '已保存 ✓' : '保存配置'}
           </button>
         </div>
       </div>

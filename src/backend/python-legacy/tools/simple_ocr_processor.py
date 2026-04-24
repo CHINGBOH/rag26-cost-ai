@@ -23,7 +23,7 @@ POSTGRES_HOST = "localhost"
 POSTGRES_PORT = 5432
 POSTGRES_DB = "rag_db"
 POSTGRES_USER = "rag_user"
-POSTGRES_PASSWORD = "rag_password"
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "rag_password")
 
 # 日志配置
 logging.basicConfig(

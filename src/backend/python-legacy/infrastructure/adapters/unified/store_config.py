@@ -26,7 +26,7 @@ class PostgresConfig:
     """PostgreSQL 配置"""
     host: str = "localhost"
     port: int = 5432
-    database: str = "rag_structured"
+    database: str = "rag_db"
     user: str = "rag_user"
     password: str = ""
     max_connections: int = 20
@@ -78,7 +78,7 @@ class StoreConfig:
             postgres=PostgresConfig(
                 host=os.getenv("POSTGRES_HOST", "localhost"),
                 port=int(os.getenv("POSTGRES_PORT", "5432")),
-                database=os.getenv("POSTGRES_DB", "rag_structured"),
+                database=os.getenv("POSTGRES_DB", "rag_db"),
                 user=os.getenv("POSTGRES_USER", "rag_user"),
                 password=os.getenv("POSTGRES_PASSWORD", ""),
                 max_connections=int(os.getenv("POSTGRES_MAX_CONNECTIONS", "20")),

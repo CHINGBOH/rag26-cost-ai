@@ -1,0 +1,198 @@
+.agent-manage-page {
+  padding: 32px 40px;
+  max-width: 1300px;
+  margin: 0 auto;
+}
+
+/* ── Section ─────────────────────────────────────────── */
+
+.section-block {
+  margin-bottom: 48px;
+}
+
+.section-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+/* ── Task Queue ──────────────────────────────────────── */
+
+.task-queue-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+}
+
+@media (max-width: 900px) {
+  .task-queue-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 560px) {
+  .task-queue-grid { grid-template-columns: 1fr; }
+}
+
+.task-column {
+  background: var(--bg-surface, #fdf8f0);
+  border-radius: 12px;
+  padding: 16px;
+  min-height: 320px;
+}
+
+.task-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 2px solid transparent;
+}
+
+.accent-pending   { border-bottom-color: #f59e0b; }
+.accent-inprogress { border-bottom-color: #10b981; }
+.accent-completed { border-bottom-color: #22c55e; }
+.accent-failed    { border-bottom-color: #ef4444; }
+
+.col-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.col-count {
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--bg-base, #f5efe0);
+  color: var(--text-secondary, #666);
+  border-radius: 6px;
+  padding: 2px 10px;
+}
+
+.task-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Task Card ───────────────────────────────────────── */
+
+.task-card {
+  background: var(--bg-base, #fffdf7);
+  border: 1px solid var(--border-default, #e8e0d0);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.task-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  width: fit-content;
+}
+
+.tag-eng  { background: #dbeafe; color: #1d4ed8; }
+.tag-qa   { background: #d1fae5; color: #065f46; }
+.tag-ops  { background: #fef3c7; color: #92400e; }
+.tag-biz  { background: #ede9fe; color: #5b21b6; }
+.tag-review { background: #fee2e2; color: #991b1b; }
+
+.task-label {
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.4;
+}
+
+/* ── Agents Grid ─────────────────────────────────────── */
+
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+/* ── Agent Card ──────────────────────────────────────── */
+
+.agent-card {
+  background: var(--bg-surface, #fdf8f0);
+  border: 1px solid var(--border-default, #e8e0d0);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-card.agent-completed {
+  opacity: 0.75;
+}
+
+.agent-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.agent-model-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.model-sonnet { background: #e0f2fe; color: #0369a1; }
+.model-haiku  { background: #d1fae5; color: #065f46; }
+.model-opus   { background: #fef3c7; color: #92400e; }
+
+.agent-role {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+}
+
+.agent-desc {
+  font-size: 13px;
+  color: var(--text-secondary, #555);
+  line-height: 1.5;
+}
+
+.agent-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  border-top: 1px solid var(--border-default, #e8e0d0);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.agent-footer {
+  font-size: 12px;
+}
+
+.agent-status-dot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.agent-status-dot.active    { color: #10b981; }
+.agent-status-dot.completed { color: var(--text-muted, #999); }

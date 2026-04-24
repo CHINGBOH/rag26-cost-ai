@@ -39,6 +39,7 @@ from app.agent.tools import (
     calculator,
     python_eval,
     category_search,
+    price_trend,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 
@@ -49,7 +50,7 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [price_query, text_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [price_query, price_trend, text_search, vector_search, keyword_search, category_search, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -58,15 +59,18 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
 - text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
 - price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
+- price_trend(material_name, start_month=None, end_month=None)：时序价格走势查询，返回某材料在时间范围内的月度均价列表（走势/趋势分析必用此工具）
 - vector_search(query, top_k=10)：向量相似度检索，适合语义相关段落
 - keyword_search(query, top_k=10)：关键词全文检索，适合精确名称匹配；自动检索 fee_rates 结构化表
 - calculator(expression)：数学表达式计算
 - python_eval(code)：Python代码执行（适合复杂计算）
 
 费率标准专用路由规则（重要）：
-- 含"推荐系数"、"推荐费率"、"费率标准"、"赶工措施费"、"文明施工费"的问题 → 使用 text_search 或 category_search
+- 含“推荐系数”、“推荐费率”、“费率标准”、“赶工措施费”、“文明施工费”的问题 → 使用 text_search 或 category_search
 - 严禁对费率标准类问题使用 price_query（price_query 只查材料单价，不含费率系数）
 - fee_rates 表会被 text_search/keyword_search/category_search 自动检索，无需手动 SQL
+- 价格走势/趋势/变化幅度类问题 → 必须使用 price_trend，不得用 price_query 逐期查询
+- 费率版本对比（2023版 vs 2025版）→ 使用 keyword_search 并在参数中包含版本年份关键词
 
 工作方式：
 1. 执行当前计划步骤，选用最合适的工具（价格类用 price_query，规范文件用 text_search）
@@ -97,7 +101,12 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
   例："赶工措施费推荐系数" → 步骤1: text_search query="赶工措施费"
 - 价格对比查询规则（重要）：若问题要求对比不同时期的价格，必须拆分为多步，
   每步单独调用 price_query 并指定对应 year_month，不得合并为一步
-  例："对比2025-12和2023-12" → 步骤1: price_query year_month=2025-12，步骤2: price_query year_month=2023-12
+  例：“对比2025-12和2023-12” → 步骤1: price_query year_month=2025-12，步骤2: price_query year_month=2023-12
+- 价格走势/趋势分析查询（重要）：若问题涉及价格走势、变化趋势、同比/环比，必须使用 price_trend
+  例：“从25年开始至今的价格走势” → 步骤1: price_trend material_name=xxx start_month=2025-01
+- 费率版本对比（重要）：若问题含“2023版”/“2025版”，使用 keyword_search/text_search 时
+  必须在查询词中包含版本年份，以确保分版本检索
+  例：“2023版与2025版利润率” → 步骤1: keyword_search "2023 利润率"，步骤2: keyword_search "2025 利润率"
 
 定额子目检索规则（重要）：
 - 若问题涉及定额子目的人工费/材料费/机械费/消耗量，第一步必须是：
@@ -123,24 +132,38 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
 
 def _enrich_chunks_with_filename(chunks: list) -> list:
-    """批量查 PG documents 表，给 chunks 注入 doc_filename 字段"""
+    """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
     if not chunks:
         return chunks
     doc_ids = list({c.get("doc_id") for c in chunks if c.get("doc_id")})
     if not doc_ids:
         return chunks
     try:
-        from app.agent.tools import _get_pg_conn
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
         conn = _get_pg_conn()
-        with conn.cursor() as cur:
-            placeholders = ",".join(["%s"] * len(doc_ids))
-            cur.execute(
-                f"SELECT id, file_name FROM documents WHERE id IN ({placeholders})",
-                [int(d) for d in doc_ids if str(d).isdigit()],
-            )
-            id_to_name = {str(r[0]): r[1] for r in cur.fetchall()}
+        id_to_name: dict = {}
+        try:
+            with conn.cursor() as cur:
+                placeholders = ",".join(["%s"] * len(doc_ids))
+                cur.execute(
+                    f"SELECT DISTINCT doc_id, file_name FROM text_chunks WHERE doc_id IN ({placeholders})",
+                    doc_ids,
+                )
+                id_to_name = {r[0]: r[1] for r in cur.fetchall()}
+                # 兜底：price_records 中查找 text_chunks 未覆盖的 doc_id
+                missing = [d for d in doc_ids if d not in id_to_name]
+                if missing:
+                    m_ph = ",".join(["%s"] * len(missing))
+                    cur.execute(
+                        f"SELECT DISTINCT doc_id, file_name FROM price_records WHERE doc_id IN ({m_ph})",
+                        missing,
+                    )
+                    for r in cur.fetchall():
+                        id_to_name[r[0]] = r[1]
+        finally:
+            _put_pg_conn(conn)
         for c in chunks:
-            c["doc_filename"] = id_to_name.get(str(c.get("doc_id", "")), "")
+            c["doc_filename"] = id_to_name.get(c.get("doc_id", ""), "")
     except Exception as e:
         logger.warning(f"[enrich_filename] failed: {e}")
     return chunks
@@ -240,7 +263,8 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"## 知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
         f"{chunks_text}\n"
         f"## 回答要求\n"
-        f"1. 严格基于上述检索结果回答，引用时用【文件名 P页码】格式标注，如 【{first_ref}】\n"
+        f"1. 严格基于上述检索结果回答，每处数值后必须用【文件名 P页码】格式标注来源，如 【{first_ref}】；\n"
+        f"   每条价格数据至少标注一次来源，禁止用'来源为各期价格文件'等模糊表述代替具体引用\n"
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
         f"3. 如果检索结果不足以完整回答，明确说明哪些部分无法确认\n"
         f"{instruction4}"
@@ -695,20 +719,22 @@ def after_executor(state: RAGAgentState) -> str:
     max_iter = state.get("max_iterations", 3)
     plan = state.get("plan") or []
     current_step = state.get("current_step", 0)
-
-    # 必须先检查 tool_calls（在 max_iter 之前）
-    # 若跳过 tool_node 则 AIMessage(tool_calls=[...]) 遗留在 messages 中
-    # 下次同 thread_id 请求时 DeepSeek 返回 HTTP 400
+    iterations = state.get("iterations", 0)
     has_tool_calls = bool(state.get("has_tool_calls"))
-    logger.info(f"[after_executor] has_tool_calls={has_tool_calls}")
-    if has_tool_calls:
-        logger.info(f"[after_executor] → tool_node (has tool_calls)")
-        return "tool_node"
 
-    # 超出迭代上限，直接合成
-    if state.get("iterations", 0) >= max_iter:
+    logger.info(f"[after_executor] iter={iterations}/{max_iter} step={current_step}/{len(plan)} has_tool_calls={has_tool_calls}")
+
+    # 迭代上限优先：即使有 tool_calls 也强制合成，防止 LLM 无限循环调工具。
+    # 注意：executor_node 已通过 clean_messages 去除末尾无配对 ToolMessage 的
+    # AIMessage(tool_calls=[...])，所以这里跳过 tool_node 不会留下悬挂消息。
+    if iterations >= max_iter:
         logger.info(f"[after_executor] max_iter reached, synthesize")
         return "synthesize_node"
+
+    # 有待执行的工具调用
+    if has_tool_calls:
+        logger.info(f"[after_executor] → tool_node")
+        return "tool_node"
 
     # 无工具调用：若计划步骤还未完成，继续执行下一步
     if current_step < len(plan):

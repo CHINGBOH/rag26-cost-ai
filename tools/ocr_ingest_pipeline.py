@@ -25,7 +25,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 # ============ CONFIG ============
-DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password='rag_password')
+DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
 
 OCR_DIR       = Path('/home/l/rag-dashboard/data/ocr_outputs')
 PDF_XINXI     = Path('/home/l/rag-dashboard/data/knowledge_base/深圳信息价')

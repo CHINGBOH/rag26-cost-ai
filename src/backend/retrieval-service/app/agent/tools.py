@@ -7,38 +7,86 @@ import os
 import logging
 import json
 import re
+import threading as _threading
 from typing import List
 
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# ── PG 连接（优先环境变量）───────────────────────────────────────────────────
+# ── PG 连接池（模块级单例，防止每次工具调用新建连接）────────────────────────
+import psycopg2
+from psycopg2 import pool as _pg_pool_mod
+
 PG_CONFIG = {
     "host": os.environ.get("PG_HOST", "localhost"),
     "port": int(os.environ.get("PG_PORT", "5432")),
-    "database": os.environ.get("PG_DB", "rag_db"),
+    "dbname": os.environ.get("PG_DB", "rag_db"),
     "user": os.environ.get("PG_USER", "rag_user"),
-    "password": os.environ.get("PG_PASSWORD", "rag_password"),
+    "password": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("PG_PASSWORD") or "",
+    "connect_timeout": 5,
 }
 
+_pool_lock = _threading.Lock()
+_pg_pool: _pg_pool_mod.ThreadedConnectionPool | None = None
 
-def _get_pg_conn():
-    import psycopg2
-    cfg = {**PG_CONFIG, "connect_timeout": 5}
-    return psycopg2.connect(**cfg)
+
+def _get_pool() -> _pg_pool_mod.ThreadedConnectionPool:
+    """Lazy-init connection pool (minconn=1, maxconn=10)."""
+    global _pg_pool
+    if _pg_pool is not None:
+        return _pg_pool
+    with _pool_lock:
+        if _pg_pool is None:
+            _pg_pool = _pg_pool_mod.ThreadedConnectionPool(1, 10, **PG_CONFIG)
+            logger.info("[pg_pool] initialized (maxconn=10)")
+    return _pg_pool
+
+
+def _get_pg_conn() -> psycopg2.extensions.connection:
+    """Borrow a connection from the pool. Caller MUST call _put_pg_conn() in finally."""
+    return _get_pool().getconn()
+
+
+def _put_pg_conn(conn: psycopg2.extensions.connection, error: bool = False) -> None:
+    """Return a connection to the pool."""
+    try:
+        _get_pool().putconn(conn, close=error)
+    except Exception as e:
+        logger.warning(f"[pg_pool] putconn failed: {e}")
+
+
+# ── 模块级 embedding 单例（GPU 优先，启动时加载一次）────────────────────────
+_embedding_svc = None
+_embedding_lock = _threading.Lock()
+
+
+def _get_embedding_svc():
+    global _embedding_svc
+    if _embedding_svc is not None:
+        return _embedding_svc
+    with _embedding_lock:
+        if _embedding_svc is not None:  # double-checked locking
+            return _embedding_svc
+        from infrastructure.embedding_service import EmbeddingService
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            _embedding_svc = EmbeddingService(device=device, use_mock=False)
+            logger.info(f"[embedding] singleton loaded on {device}")
+        except Exception as e:
+            logger.warning(f"[embedding] load failed ({e}), falling back to mock")
+            _embedding_svc = EmbeddingService(use_mock=True)
+    return _embedding_svc
 
 
 def _get_embedding(text: str) -> List[float]:
-    """独立 embedding 实例（避免全局 mock）"""
-    from infrastructure.embedding_service import EmbeddingService
+    """向量化单条文本，复用模块级 GPU 单例"""
     try:
-        svc = EmbeddingService(device='cpu', use_mock=False)
-        return svc.encode_single(text)
+        return _get_embedding_svc().encode_single(text)
     except Exception as e:
-        logger.warning(f"Embedding failed, fallback to mock: {e}")
-        svc = EmbeddingService(use_mock=True)
-        return svc.encode_single(text)
+        logger.warning(f"Embedding failed: {e}")
+        return []
 
 
 def _chunk_from_pg_row(row: tuple, source_db: str, score: float = 0.0) -> dict:
@@ -51,19 +99,6 @@ def _chunk_from_pg_row(row: tuple, source_db: str, score: float = 0.0) -> dict:
         "content": row[3] or "",
         "score": round(score, 4),
         "metadata": row[4] if isinstance(row[4], dict) else {},
-    }
-
-
-def _row_to_chunk(row, source_db: str) -> dict:
-    """通用行转 chunk，兼容不同列数"""
-    return {
-        "chunk_id": f"{source_db}_{row[0]}",
-        "doc_id": row[1] or "",
-        "page_number": row[2] or 1,
-        "source_db": source_db,
-        "content": row[3] or "",
-        "score": round(row[-1], 4) if len(row) > 5 and isinstance(row[-1], (int, float)) else 0.0,
-        "metadata": row[4] if len(row) > 4 and isinstance(row[4], dict) else {},
     }
 
 
@@ -84,7 +119,7 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     import re as _re
     fragments: list[str] = [q]
     for _run in _re.findall(r'[\u4e00-\u9fff]+', q):
-        for _len in range(2, 8):
+        for _len in range(3, 8):
             for _s in range(len(_run) - _len + 1):
                 fragments.append(_run[_s:_s + _len])
     seen_fragments: set[str] = set()
@@ -94,6 +129,7 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
             seen_fragments.add(f)
             unique_fragments.append(f)
 
+    conn = None
     try:
         conn = _get_pg_conn()
         seen_ids: set[str] = set()
@@ -101,16 +137,22 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
             for frag in unique_fragments:
                 if len(results) >= top_k:
                     break
-                cur.execute("""
-                    SELECT id, document_id, fee_name, fee_category,
-                           rate_min, rate_max, rate_recommended,
-                           applicable_scope, base_formula, source_text, standard_year,
-                           calc_base
-                    FROM fee_rates
-                    WHERE fee_name ILIKE %s OR fee_category ILIKE %s
-                       OR source_text ILIKE %s
-                    LIMIT %s
-                """, (f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
+                try:
+                    cur.execute("""
+                        SELECT id, doc_id, fee_name, fee_category,
+                               rate_min, rate_max, rate_recommended,
+                               applicable_scope, base_formula, source_text, standard_year,
+                               calc_base
+                        FROM fee_rates
+                        WHERE fee_name ILIKE %s OR fee_category ILIKE %s
+                           OR source_text ILIKE %s
+                        LIMIT %s
+                    """, (f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
+                except Exception as _cur_err:
+                    import psycopg2
+                    if isinstance(_cur_err, psycopg2.errors.UndefinedTable):
+                        break  # fee_rates table doesn't exist yet
+                    raise
                 for fr in cur.fetchall():
                     fid, fdoc_id, fname, fcat, rmin, rmax, rrec, scope, formula, src, yr, cbase = fr
                     cid = f"fr_{fid}"
@@ -138,9 +180,11 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                         "score": 0.90,
                         "metadata": {},
                     })
-        conn.close()
     except Exception as e:
         logger.error(f"[_query_structured_tables] fee_rates error: {e}")
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
     return results
 
 
@@ -153,6 +197,7 @@ def vector_search(query: str, top_k: int = 10) -> str:
     if not query.strip():
         return json.dumps([])
 
+    conn = None
     try:
         query_embedding = _get_embedding(query.strip())
         if not query_embedding:
@@ -161,7 +206,7 @@ def vector_search(query: str, top_k: int = 10) -> str:
         conn = _get_pg_conn()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, document_id, page_number, content,
+                SELECT id, doc_id, page_number, content,
                        1 - (embedding <=> %s::vector) AS score
                 FROM text_chunks
                 WHERE embedding IS NOT NULL
@@ -186,6 +231,9 @@ def vector_search(query: str, top_k: int = 10) -> str:
     except Exception as e:
         logger.error(f"[vector_search] error: {e}")
         return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── 新工具：keyword_search（PG tsvector 全文检索）────────────────────────────
@@ -197,14 +245,15 @@ def keyword_search(query: str, top_k: int = 10) -> str:
     if not query.strip():
         return json.dumps([])
 
+    conn = None
     try:
         conn = _get_pg_conn()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT id, document_id, page_number, content,
-                       ts_rank(tsv, plainto_tsquery('simple', %s)) AS score
+                SELECT id, doc_id, page_number, content,
+                       ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
                 FROM text_chunks
-                WHERE tsv @@ plainto_tsquery('simple', %s)
+                WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
                 ORDER BY score DESC
                 LIMIT %s
             """, (query, query, top_k))
@@ -222,8 +271,6 @@ def keyword_search(query: str, top_k: int = 10) -> str:
                     "metadata": {},
                 })
 
-            pass  # structured tables queried below
-
         # also query fee_rates and other structured tables
         results.extend(_query_structured_tables(query, top_k))
 
@@ -231,6 +278,9 @@ def keyword_search(query: str, top_k: int = 10) -> str:
     except Exception as e:
         logger.error(f"[keyword_search] error: {e}")
         return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── category_search（目录索引检索）──────────────────────────────────────────
@@ -245,6 +295,7 @@ def category_search(query: str, top_k: int = 5) -> str:
     if not query.strip():
         return json.dumps([])
 
+    conn = None
     try:
         conn = _get_pg_conn()
         with conn.cursor() as cur:
@@ -252,7 +303,7 @@ def category_search(query: str, top_k: int = 5) -> str:
 
             # 策略1：ILIKE 精确字面匹配（中文复合词可靠），限制 < 600 chars，优先带章节号的短块
             cur.execute("""
-                SELECT id, document_id, page_number, content,
+                SELECT id, doc_id, page_number, content,
                        length(content) AS char_len
                 FROM text_chunks
                 WHERE content ILIKE %s
@@ -269,7 +320,7 @@ def category_search(query: str, top_k: int = 5) -> str:
             # 策略2：放宽至 length<1200 的任意 ILIKE 命中
             if not rows:
                 cur.execute("""
-                    SELECT id, document_id, page_number, content,
+                    SELECT id, doc_id, page_number, content,
                            length(content) AS char_len
                     FROM text_chunks
                     WHERE content ILIKE %s
@@ -278,8 +329,6 @@ def category_search(query: str, top_k: int = 5) -> str:
                     LIMIT %s
                 """, (f"%{q}%", top_k))
                 rows = cur.fetchall()
-
-        conn.close()
 
         results = []
         sec_re = re.compile(r'(\d+\.\d+(?:\.\d+)*)')
@@ -313,6 +362,9 @@ def category_search(query: str, top_k: int = 5) -> str:
     except Exception as e:
         logger.error(f"[category_search] error: {e}")
         return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── graph_search（已废弃，Neo4j 移除）────────────────────────────────────────
@@ -334,6 +386,7 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
     if not query.strip():
         return json.dumps([])
 
+    conn = None
     try:
         query_embedding = _get_embedding(query.strip())
         conn = _get_pg_conn()
@@ -344,7 +397,7 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
             # 向量路
             if query_embedding:
                 cur.execute("""
-                    SELECT id, document_id, page_number, content,
+                    SELECT id, doc_id, page_number, content,
                            1 - (embedding <=> %s::vector) AS score
                     FROM text_chunks
                     WHERE embedding IS NOT NULL
@@ -368,10 +421,10 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
 
             # 全文路
             cur.execute("""
-                SELECT id, document_id, page_number, content,
-                       ts_rank(tsv, plainto_tsquery('simple', %s)) AS score
+                SELECT id, doc_id, page_number, content,
+                       ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
                 FROM text_chunks
-                WHERE tsv @@ plainto_tsquery('simple', %s)
+                WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
                 ORDER BY score DESC
                 LIMIT %s
             """, (query, query, top_k))
@@ -389,12 +442,21 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                         "metadata": {},
                     })
 
+        # fee_rates 结构化表
+        for chunk in _query_structured_tables(query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
+
         # 按分数重排
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
         return json.dumps(results[:top_k], ensure_ascii=False)
     except Exception as e:
         logger.error(f"[hybrid_search] error: {e}")
         return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── text_search（PG 语义搜索，保留原名兼容）───────────────────────────────────
@@ -408,48 +470,21 @@ def text_search(query: str, top_k: int = 8) -> str:
 
     results = []
     seen_ids = set()
-    conn = _get_pg_conn()
-
-    # 1. Full-text search (tsv)
+    conn = None
     try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, document_id, page_number, content,
-                       ts_rank(tsv, plainto_tsquery('simple', %s)) AS score
-                FROM text_chunks
-                WHERE tsv @@ plainto_tsquery('simple', %s)
-                ORDER BY score DESC
-                LIMIT %s
-            """, (query, query, top_k))
-            for row in cur.fetchall():
-                if row[0] not in seen_ids:
-                    seen_ids.add(row[0])
-                    results.append({
-                        "chunk_id": f"tc_{row[0]}",
-                        "doc_id": str(row[1] or ""),
-                        "page_number": row[2] or 1,
-                        "source_db": "pg_fulltext",
-                        "content": row[3] or "",
-                        "score": round(float(row[4] or 0), 4),
-                        "metadata": {},
-                    })
-    except Exception as e:
-        logger.error(f"[text_search] fulltext error: {e}")
+        conn = _get_pg_conn()
 
-    # 2. Vector search if embedding available
-    try:
-        query_embedding = _get_embedding(query.strip())
-        if query_embedding:
+        # 1. Full-text search (to_tsvector)
+        try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT id, document_id, page_number, content,
-                           1 - (embedding <=> %s::vector) AS score
+                    SELECT id, doc_id, page_number, content,
+                           ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
                     FROM text_chunks
-                    WHERE embedding IS NOT NULL
-                      AND 1 - (embedding <=> %s::vector) >= 0.40
-                    ORDER BY embedding <=> %s::vector
+                    WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
+                    ORDER BY score DESC
                     LIMIT %s
-                """, (query_embedding, query_embedding, query_embedding, top_k))
+                """, (query, query, top_k))
                 for row in cur.fetchall():
                     if row[0] not in seen_ids:
                         seen_ids.add(row[0])
@@ -457,21 +492,55 @@ def text_search(query: str, top_k: int = 8) -> str:
                             "chunk_id": f"tc_{row[0]}",
                             "doc_id": str(row[1] or ""),
                             "page_number": row[2] or 1,
-                            "source_db": "pgvector",
+                            "source_db": "pg_fulltext",
                             "content": row[3] or "",
                             "score": round(float(row[4] or 0), 4),
                             "metadata": {},
                         })
+        except Exception as e:
+            logger.error(f"[text_search] fulltext error: {e}")
+
+        # 2. Vector search if embedding available
+        try:
+            query_embedding = _get_embedding(query.strip())
+            if query_embedding:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, doc_id, page_number, content,
+                               1 - (embedding <=> %s::vector) AS score
+                        FROM text_chunks
+                        WHERE embedding IS NOT NULL
+                          AND 1 - (embedding <=> %s::vector) >= 0.40
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_embedding, query_embedding, query_embedding, top_k))
+                    for row in cur.fetchall():
+                        if row[0] not in seen_ids:
+                            seen_ids.add(row[0])
+                            results.append({
+                                "chunk_id": f"tc_{row[0]}",
+                                "doc_id": str(row[1] or ""),
+                                "page_number": row[2] or 1,
+                                "source_db": "pgvector",
+                                "content": row[3] or "",
+                                "score": round(float(row[4] or 0), 4),
+                                "metadata": {},
+                            })
+        except Exception as e:
+            logger.error(f"[text_search] vector error: {e}")
+
+        # 3. fee_rates and other structured tables — score 0.9, always passes filter
+        for chunk in _query_structured_tables(query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
+
     except Exception as e:
-        logger.error(f"[text_search] vector error: {e}")
+        logger.error(f"[text_search] error: {e}")
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
-    # 3. fee_rates and other structured tables lookup — score 0.9, always passes filter
-    for chunk in _query_structured_tables(query, top_k):
-        if chunk["chunk_id"] not in seen_ids:
-            seen_ids.add(chunk["chunk_id"])
-            results.append(chunk)
-
-    conn.close()
     results.sort(key=lambda x: x["score"], reverse=True)
     return json.dumps(results[:top_k], ensure_ascii=False)
 
@@ -485,6 +554,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
     year_month 支持多种格式：'2025-12'、'202512'、'2025年12月'。
     若指定期间无数据，自动回退到最近有数据的期间。
     """
+    conn = None
     try:
         # ── 日期格式标准化 ──────────────────────────────────────────────────
         normalized_period = ""
@@ -511,7 +581,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                 params: list = []
                 if material_name:
                     where_clauses.append(
-                        "(material_name ILIKE %s OR spec ILIKE %s OR to_tsvector('simple', material_name) @@ plainto_tsquery('simple', %s))"
+                        "(material_name ILIKE %s OR specification ILIKE %s OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))"
                     )
                     params.extend([f"%{material_name}%", f"%{material_name}%", material_name])
                 if specification:
@@ -520,25 +590,25 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     # 提取截面部分（如 "5×120" 从 "0.6/1KV YJV 5×120"）作为更宽松的模糊键
                     _xs_m = re.search(r'(\d+)\s*[×xX*]\s*(\d+)', specification)
                     _xs_key = f"%{_xs_m.group(1)}%{_xs_m.group(2)}%" if _xs_m else f"%{spec_normalized}%"
-                    where_clauses.append("(spec ILIKE %s OR spec ILIKE %s OR spec ILIKE %s)")
+                    where_clauses.append("(specification ILIKE %s OR specification ILIKE %s OR specification ILIKE %s)")
                     params.extend([f"%{specification}%", f"%{spec_normalized}%", _xs_key])
                 if period_filter:
-                    where_clauses.append("period = %s")
+                    where_clauses.append("year_month = %s")
                     params.append(period_filter)
 
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
-                    SELECT id, document_id, page_number,
-                           material_name || ' ' || COALESCE(spec, '') ||
+                    SELECT id, doc_id, page_number,
+                           material_name || ' ' || COALESCE(specification, '') ||
                            ' 单位:' || COALESCE(unit, '') ||
-                           ' 价格:' || COALESCE(price::text, 'N/A') || '元' ||
-                           ' 期间:' || COALESCE(period, '') ||
+                           ' 价格:' || COALESCE(price_tax_included::text, 'N/A') || '元' ||
+                           ' 期间:' || COALESCE(year_month, '') ||
                            ' 类别:' || COALESCE(category, '') AS content,
-                           source_row AS metadata,
+                           metadata AS metadata,
                            0.0 AS dist
                     FROM price_records
                     {where_sql}
-                    ORDER BY period DESC, id
+                    ORDER BY year_month DESC, id
                     LIMIT %s
                 """
                 params.append(top_k * 3)
@@ -560,7 +630,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
             fallback_note = ""
             if normalized_period and not rows:
                 cur.execute(
-                    "SELECT DISTINCT period FROM price_records ORDER BY period DESC LIMIT 30"
+                    "SELECT DISTINCT year_month FROM price_records ORDER BY year_month DESC LIMIT 30"
                 )
                 available = [r[0] for r in cur.fetchall()]
                 # 优先找 ≤ 目标期间的最近期间
@@ -574,30 +644,30 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     where_clauses2: list = []
                     params2: list = []
                     if material_name:
-                        where_clauses2.append("(material_name ILIKE %s OR to_tsvector('simple', material_name) @@ plainto_tsquery('simple', %s))")
+                        where_clauses2.append("(material_name ILIKE %s OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))")
                         params2.extend([f"%{material_name}%", material_name])
                     if specification:
                         spec_norm2 = re.sub(r'[×xX*]', '%', specification)
                         _xs_m2 = re.search(r'(\d+)\s*[×xX*]\s*(\d+)', specification)
                         _xs_key2 = f"%{_xs_m2.group(1)}%{_xs_m2.group(2)}%" if _xs_m2 else f"%{spec_norm2}%"
-                        where_clauses2.append("(spec ILIKE %s OR spec ILIKE %s OR spec ILIKE %s)")
+                        where_clauses2.append("(specification ILIKE %s OR specification ILIKE %s OR specification ILIKE %s)")
                         params2.extend([f"%{specification}%", f"%{spec_norm2}%", _xs_key2])
                     if normalized_period:
-                        where_clauses2.append("period > %s")
+                        where_clauses2.append("year_month > %s")
                         params2.append(normalized_period)
                     where_sql2 = ("WHERE " + " AND ".join(where_clauses2)) if where_clauses2 else ""
                     sql2 = f"""
-                        SELECT id, document_id, page_number,
-                               material_name || ' ' || COALESCE(spec, '') ||
+                        SELECT id, doc_id, page_number,
+                               material_name || ' ' || COALESCE(specification, '') ||
                                ' 单位:' || COALESCE(unit, '') ||
-                               ' 价格:' || COALESCE(price::text, 'N/A') || '元' ||
-                               ' 期间:' || COALESCE(period, '') ||
+                               ' 价格:' || COALESCE(price_tax_included::text, 'N/A') || '元' ||
+                               ' 期间:' || COALESCE(year_month, '') ||
                                ' 类别:' || COALESCE(category, '') AS content,
-                               source_row AS metadata,
+                               metadata AS metadata,
                                0.0 AS dist
                         FROM price_records
                         {where_sql2}
-                        ORDER BY period ASC, id
+                        ORDER BY year_month ASC, id
                         LIMIT %s
                     """
                     params2.append(top_k * 3)
@@ -630,6 +700,121 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
     except Exception as e:
         logger.error(f"[price_query] error: {e}")
         return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+# ── price_trend（时序价格走势）──────────────────────────────────────────────
+
+
+@tool
+def price_trend(material_name: str, start_month: str = "", end_month: str = "") -> str:
+    """时序价格走势查询：返回某材料在指定时间范围内的月度均价列表，适合分析价格趋势和同比/环比变化。
+    start_month / end_month 格式为 'YYYY-MM'（如 '2025-01'）。
+    返回按 year_month 升序排列的 JSON 列表，每条包含 year_month、avg_price、unit、specification。
+    """
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        where_parts: list[str] = []
+        params: list = [f"%{material_name}%", f"%{material_name}%", material_name]
+        where_parts.append(
+            "(material_name ILIKE %s OR specification ILIKE %s "
+            "OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))"
+        )
+        if start_month:
+            where_parts.append("year_month >= %s")
+            params.append(start_month)
+        if end_month:
+            where_parts.append("year_month <= %s")
+            params.append(end_month)
+        where_sql = "WHERE " + " AND ".join(where_parts)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT year_month,
+                       AVG(price_tax_included)::numeric(10,2) AS avg_price,
+                       MAX(unit)          AS unit,
+                       MAX(specification) AS specification
+                FROM price_records
+                {where_sql}
+                GROUP BY year_month
+                ORDER BY year_month ASC
+                LIMIT 48
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+
+        # Fallback: compound Chinese names (e.g. "装配式混凝土预制构件") won't match
+        # individual items like "预制混凝土楼板" via substring or AND-based FTS.
+        # Extract non-overlapping 2-char bigrams and retry with OR ILIKE.
+        if not rows and len(material_name) >= 4:
+            bigrams = list({material_name[i:i+2] for i in range(0, len(material_name) - 1, 2)
+                           if len(material_name[i:i+2]) == 2})
+            if bigrams:
+                or_sql = " OR ".join(["material_name ILIKE %s"] * len(bigrams))
+                fb_params: list = [f"%{b}%" for b in bigrams]
+                fb_where_parts = [f"({or_sql})"]
+                if start_month:
+                    fb_where_parts.append("year_month >= %s")
+                    fb_params.append(start_month)
+                if end_month:
+                    fb_where_parts.append("year_month <= %s")
+                    fb_params.append(end_month)
+                fb_where_parts.append("price_tax_included IS NOT NULL")
+                fb_where = "WHERE " + " AND ".join(fb_where_parts)
+                with conn.cursor() as cur2:
+                    cur2.execute(
+                        f"""
+                        SELECT year_month,
+                               AVG(price_tax_included)::numeric(10,2) AS avg_price,
+                               MAX(unit) AS unit,
+                               MAX(material_name) AS material_name
+                        FROM price_records
+                        {fb_where}
+                        GROUP BY year_month
+                        ORDER BY year_month ASC
+                        LIMIT 48
+                        """,
+                        fb_params,
+                    )
+                    rows = cur2.fetchall()
+                logger.info(f"[price_trend] bigram fallback bigrams={bigrams} hits={len(rows)}")
+
+        # 返回 chunk 格式，以便 _collect_chunks 可以处理并传递给 synthesizer
+        chunks = []
+        for r in rows:
+            avg = float(r[1] or 0)
+            unit = r[2] or ""
+            spec = r[3] or ""
+            content = (
+                f"{material_name} 价格走势 "
+                f"期间:{r[0]} "
+                f"均价:{avg:.2f}元/{unit} "
+                + (f"规格:{spec} " if spec else "")
+            )
+            chunks.append({
+                "chunk_id": f"price_trend_{material_name}_{r[0]}",
+                "doc_id": "price_trend",
+                "page_number": 1,
+                "source_db": "price_records",
+                "content": content,
+                "score": 0.85,
+                "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit},
+            })
+        logger.info(
+            f"[price_trend] material='{material_name}' "
+            f"range=[{start_month},{end_month}] points={len(chunks)}"
+        )
+        return json.dumps(chunks, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[price_trend] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── calculator（精度强化版）─────────────────────────────────────────────────

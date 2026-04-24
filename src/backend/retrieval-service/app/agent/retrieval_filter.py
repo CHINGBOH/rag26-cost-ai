@@ -23,7 +23,7 @@ SCORE_THRESHOLDS: dict[str, float] = {
 # 保留旧名称，供外部调用方向后兼容（用 default 值）
 SCORE_THRESHOLD = SCORE_THRESHOLDS["default"]
 MAX_CONTEXT_TOKENS = 6000
-MAX_CHUNKS = 12
+MAX_CHUNKS = 8
 
 
 def _passes_threshold(chunk: dict) -> bool:

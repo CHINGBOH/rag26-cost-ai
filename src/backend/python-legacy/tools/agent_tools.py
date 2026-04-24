@@ -23,7 +23,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "rag_db",
     "user": "rag_user",
-    "password": "rag_password"  # 直接设置密码
+    "password": os.environ.get("POSTGRES_PASSWORD", "rag_password")  # 直接设置密码
 }
 
 # Qdrant 配置（用于会话上下文）
@@ -34,7 +34,7 @@ QDRANT_COLLECTION = "session_context"
 def get_db_connection():
     """获取数据库连接"""
     # 使用连接字符串而不是字典
-    conn_string = "host=localhost port=5432 dbname=rag_db user=rag_user password=rag_password"
+    conn_string = f"host=localhost port=5432 dbname=rag_db user=rag_user password={os.environ.get('POSTGRES_PASSWORD', 'rag_password')}"
     return psycopg2.connect(conn_string)
 
 def price_query(query: str, period: Optional[str] = None, category: Optional[str] = None,

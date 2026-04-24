@@ -1,0 +1,280 @@
+env/bin/activate 2>/dev/null; python3 /tmp/check_status.py 2>&1# Agent 
+Behavioral Standards (Project-Level)
+ echo "TERMINAL_TEST_$$"
+ tail -15 /tmp/retrieval2.log
+ PGPASSWORD=your_password_here psql -h localhost -U rag_user -d rag_db -c "
+SELECT id, name, rate, category FROM fee_rates WHERE name ILIKE '%总包%' OR name ILIKE '%管理服务%' LIMIT 10;
+"
+ PGPASSWORD=your_password_here psql -h localhost -U rag_user -d rag_db -t -A -c "SELECT id, name, rate, category FROM fee_rates WHERE name ILIKE '%总包%' OR name ILIKE '%管理服务%' LIMIT 10;" 2>&1
+ psql postgresql://rag_user:your_password_here@localhost/rag_db -t -A -c "SELECT id,name,rate,category FROM fee_rates WHERE name ILIKE '%总包%' LIMIT 10" 2>&1 || echo "DONE"
+ python3 -c "
+import subprocess, sys
+result = subprocess.run(
+    ['psql', 'postgresql://rag_user:your_password_here@localhost/rag_db',
+     '-t', '-A', '-c', 'SELECT id,name,rate,category FROM fee_rates WHERE name ILIKE \'%总包%\' LIMIT 10'],
+    capture_output=True, text=True)
+print(result.stdout or '(empty)')
+print(result.stderr or '')
+"
+ python3 << 'EOF'
+import psycopg2
+conn = psycopg2.connect(host='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
+cur = conn.cursor()
+cur.execute("SELECT id,name,rate,category FROM fee_rates WHERE name ILIKE '%总包%' LIMIT 10")
+rows = cur.fetchall()
+print("fee_rates rows:", rows)
+cur.execute("SELECT COUNT(*) FROM fee_rates")
+print("total fee_rates:", cur.fetchone())
+conn.close()
+EOF
+ true
+q
+
+ curl -s --max-time 3 http://localhost:8002/health && echo "UP" || echo "DOWN"
+ grep -c "after_executor" /tmp/retrieval2.log && grep "after_executor" /tmp/retrieval2.log | tail -5
+ grep -c "after_executor" /tmp/retrieval2.log 2>&1 | cat
+ grep after_executor /tmp/retrieval2.log | tail -5 2>&1
+ grep after_executor /tmp/retrieval2.log | tail -5
+ wc -l /tmp/retrieval2.log
+ wc -l /tmp/retrieval2.log && echo "---"
+ tail -8 /tmp/retrieval2.log
+ wc -l /tmp/retrieval2.log && tail -10 /tmp/retrieval2.log
+ wc -l /tmp/retrieval2.log && grep "\[after_executor\] DEBUG" /tmp/retrieval2.log | head -5
+ grep "after_executor.*DEBUG" /tmp/retrieval2.log | tail -10
+ grep "after_executor.*DEBUG" /tmp/retrieval2.log 2>/dev/null | tail -10; echo "==="; wc -l /tmp/retrieval2.log
+ grep -c "after_executor" /tmp/retrieval2.log; echo "done"
+ python3 -c "
+with open('/tmp/retrieval2.log', 'r') as f:
+    lines = f.readlines()
+print(f'total lines: {len(lines)}')
+debug_lines = [l.strip() for l in lines if 'after_executor' in l and 'DEBUG' in l]
+print(f'debug lines: {len(debug_lines)}')
+for l in debug_lines[:5]:
+    print(l)
+"
+ python3 -c "
+with open('/tmp/retrieval2.log', 'r') as f:
+    lines = f.readlines()
+# Find recent WatchFiles and startup entries
+for i, l in enumerate(lines):
+    if 'WatchFiles' in l or 'startup complete' in l.lower() or 'has_tool_calls' in l:
+        print(f'{i+1}: {l.rstrip()}')
+" 2>&1 | tail -20
+ python3 << 'PYEOF'
+with open('/tmp/retrieval2.log', 'r') as f:
+    lines = f.readlines()
+print(f'total: {len(lines)} lines')
+# Find reload events and new features
+for i, l in enumerate(lines[-100:], start=len(lines)-100):
+    stripped = l.strip()
+    if any(kw in stripped for kw in ['WatchFiles', 'startup complete', 'has_tool_calls', 'stripped.*dangling']):
+        print(f'{i+1}: {stripped[:100]}')
+PYEOF
+ python3 -c "lines=open('/tmp/retrieval2.log').readlines(); print(len(lines)); [print(i+1,':',l.strip()[:100]) for i,l in enumerate(lines) if any(kw in l for kw in ['WatchFiles','startup complete','has_tool_calls'])]" 2>&1 | tail -20; echo "---END---"
+ echo "---START---"; wc -l /tmp/retrieval2.log; echo "---END---"
+
+This file aggregates mandatory behavioral requirements for AI Agents in this project. When rules conflict, deeper-directory `AGENTS.md` takes precedence.
+
+---
+
+## Quick Navigation
+
+| Instruction File | Agent | Scope | Core Requirements |
+|-----------------|-------|-------|-------------------|
+| `.github/copilot-instructions.md` | **VS Code Copilot** | All tasks | Four principles + quality red lines + observability + Mermaid |
+| `00-核心指南/CLAUDE.md` | **Claude Code** | All tasks | Four principles: Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution |
+| `00-核心指南/karpathy-guidelines.mdc` | **Cursor** | All tasks | Same, with `alwaysApply: true` frontmatter |
+
+---
+
+## Layer 1: Karpathy Core Behavioral Guidelines (Highest Priority)
+
+Derived from Andrej Karpathy's observations on LLM coding pitfalls. These four principles apply to any coding task and must be checked first.
+
+### 1. Think Before Coding
+> Don't assume. Don't hide confusion. Surface tradeoffs.
+
+- **State assumptions explicitly** — If uncertain, ask rather than guess.
+- **Present multiple interpretations** — Don't pick silently when ambiguity exists.
+- **Push back when warranted** — If a simpler approach exists, say so.
+- **Stop when confused** — Name what's unclear and ask for clarification.
+
+### 2. Simplicity First
+> Minimum code that solves the problem. Nothing speculative.
+
+- No features beyond what was asked.
+- No abstractions for single-use code (Strategy pattern, Factory pattern, etc.).
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- **If you write 200 lines and it could be 50, rewrite it.**
+
+### 3. Surgical Changes
+> Touch only what you must. Clean up only your own mess.
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- **Match existing style**, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+### 4. Goal-Driven Execution
+> Define success criteria. Loop until verified.
+
+- Transform imperative tasks into verifiable goals.
+- "Add validation" → "Write tests for invalid inputs, then make them pass."
+- "Fix the bug" → "Write a test that reproduces it, then make it pass."
+- For multi-step tasks, state a brief plan with verification points:
+  ```
+  1. [Step] → verify: [check]
+  2. [Step] → verify: [check]
+  3. [Step] → verify: [check]
+  ```
+
+> **Good code is code that solves today's problem simply, not tomorrow's problem prematurely.**
+
+---
+
+## Layer 2: Architecture and Quality Red Lines (from Code Auxiliary Tool List v2)
+
+### 2.1 Zero-Tolerance Items
+- **Cross-layer calls**: Business logic penetrating directly to data driver layer. Must be decoupled through intermediate layers.
+- **Circular dependencies**: A calls B, B calls A. Must be broken by extracting common modules or dependency inversion.
+- **Complexity explosion**: Single function cyclomatic complexity > 10 must be split; > 15 forces rewrite.
+
+### 2.2 Pre-Commit Toolchain Checks
+
+**Python projects**:
+```bash
+ruff check . && ruff format . && bandit -r src/ && radon cc src/ -a && vulture src/ && pip-audit
+```
+
+**Go projects**:
+```bash
+golangci-lint run && staticcheck ./... && govulncheck ./...
+```
+
+**TypeScript / Node.js projects**:
+```bash
+prettier --write src/ && spectral lint openapi.yaml && npm-check
+```
+
+**Generic security**:
+```bash
+trivy fs .
+```
+
+### 2.3 Security Detection Points (Confirm each item)
+- [ ] No hardcoded keys, tokens, or passwords (must use environment variables).
+- [ ] No SQL injection (parameterized queries or ORM).
+- [ ] No known CVEs (dependencies scanned).
+- [ ] No dead code (unused code introduced by this change has been cleaned up).
+
+---
+
+## Layer 3: LLM Agent Observability (from Observability Toolchain)
+
+### 3.1 Instrumentation Mandatory Requirements
+- Each step in Agent loop (Planning → Tool Calling → Generation → Evaluation) must be an independent Span.
+- Must record: input parameters, model version, token usage, latency, output summary, error stack.
+
+### 3.2 Tool Selection
+- **General tracing + self-hosted**: LangFuse (Docker deployment, localhost:3000).
+- **RAG / vector diagnosis**: Arize Phoenix (localhost:6006).
+- **Full-stack tracing**: Jaeger + OpenTelemetry (localhost:16686).
+
+### 3.3 RAG Evaluation Baseline
+- Any RAG change must pass Ragas three-dimension evaluation:
+  1. Context Relevance
+  2. Faithfulness
+  3. Answer Correctness
+- Score must not be lower than the previous version.
+
+### 3.4 Prompt Regression Testing
+- Any Prompt modification must pass `promptfoo eval -c promptfooconfig.yaml`.
+- Test cases must cover: this change scenario + historical core scenarios.
+
+---
+
+## Layer 4: Logic Visualization (from Mermaid Flowchart Quick Reference)
+
+### 4.1 Mandatory Triggers
+- 3+ levels of nested loops/conditions.
+- Agent Runtime has feedback loops (Re-planning).
+- Multi-module async collaboration.
+- Execution flow cannot be verbally described clearly within five seconds.
+- "Spiderweb" cross-lines appear in flowcharts.
+
+### 4.2 Mermaid Environment (Headless Linux)
+```bash
+cat > ~/.mermaid-puppeteer.json << 'JSON'
+{"args": ["--no-sandbox", "--disable-setuid-sandbox"]}
+JSON
+alias mermaid='mmdc -p ~/.mermaid-puppeteer.json'
+```
+
+### 4.3 Quality Red Lines
+- Node count <= 10; exceeding requires split.
+- Line crossings <= 3; exceeding requires code refactoring.
+- `.mmd` source files must be under version control.
+
+---
+
+## Review Pass Criteria (All items must be ticked for PR approval)
+
+### Karpathy Principles Check
+- [ ] Assumptions clarified before coding, no hidden guesses
+- [ ] Code is simple, no over-abstraction or speculative features
+- [ ] Only modified code directly related to the request, no drive-by refactoring
+- [ ] Verifiable success criteria defined
+
+### Generic Code PR
+- [ ] No cross-layer calls (Dependency Cruiser / Manual)
+- [ ] No circular dependencies (Madge / Manual)
+- [ ] Cyclomatic complexity <= 10 (radon / golangci-lint)
+- [ ] No dead code (vulture / staticcheck / ruff)
+- [ ] No security vulnerabilities (bandit / trivy / govulncheck)
+- [ ] Formatting passes (ruff / prettier / golangci-lint)
+
+### Agent-Related PR
+- [ ] Every Agent step traceable (LangFuse / Phoenix / Jaeger)
+- [ ] RAG changes accompanied by Ragas evaluation report
+- [ ] Prompt modifications passed promptfoo regression testing
+- [ ] Errors explicitly annotated in traces (no silent failures)
+
+### Complex Logic PR
+- [ ] Mermaid flowchart drawn
+- [ ] Node count <= 10, line crossings <= 3
+- [ ] `.mmd` source files committed
+
+---
+
+## Tool Version Quick Reference
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Dependency Cruiser | 17.3.10 | Dependency graph / cross-layer detection |
+| Madge | 8.0.0 | Circular dependency detection |
+| Mermaid CLI | 11.12.0 | Flowchart generation |
+| SonarScanner | 4.3.6 | Cyclomatic complexity / code smells |
+| Qlty | 0.622.0 | Multi-language quality scanning |
+| Prettier | 3.8.3 | JS/TS/JSON/Markdown formatting |
+| Spectral CLI | 6.15.1 | OpenAPI lint |
+| Ruff | 0.15.11 | Python lint + format |
+| Bandit | 1.9.4 | Python security scanning |
+| Radon | 6.0.1 | Python complexity analysis |
+| Vulture | 2.16 | Python dead code detection |
+| pip-audit | 2.10.0 | Python dependency vulnerabilities |
+| golangci-lint | 2.1.0 | Go all-in-one lint |
+| staticcheck | 2026.1 | Go deep static analysis |
+| govulncheck | v1.2.0 | Go official vulnerability scanning |
+| Trivy | 0.70.0 | Generic vulnerability scanning |
+| LangFuse | docker-compose | Agent tracing + cost |
+| Arize Phoenix | 14.8.0 | RAG diagnosis + vector analysis |
+| Jaeger | v1.60.0 | OpenTelemetry tracing visualization |
+| Ragas | - | RAG three-dimension evaluation |
+| Promptfoo | 0.121.5 | Prompt regression testing |
+
+---
+
+**Update Log**: When core principles, code auxiliary tool list, observability toolchain, or Mermaid usage changes, this file and corresponding `.mdc` / `SKILL.md` files under `.kimi/rules/` and `.kimi/skills/` must be updated in sync.

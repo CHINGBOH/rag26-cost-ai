@@ -144,7 +144,7 @@ structured_store:
   type: postgresql
   host: localhost
   port: 5432
-  database: rag_structured
+  database: rag_db
   
   # 表格存储格式
   table_formats:

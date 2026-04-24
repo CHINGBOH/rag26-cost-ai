@@ -19,7 +19,7 @@ def clean_price(val: Any) -> Optional[float]:
     # 处理"34230.00"格式
     try:
         return float(s)
-    except:
+    except Exception:
         return None
 
 

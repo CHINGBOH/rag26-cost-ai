@@ -4,7 +4,27 @@ Retrieval Service - FastAPI 入口
 """
 
 import logging
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
+
+# Load .env from repo root (3 levels up from this file)
+def _load_env():
+    env_path = Path(__file__).parent.parent.parent.parent / '.env'
+    if not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, _, v = line.partition('=')
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            if k and k not in os.environ:
+                os.environ[k] = v
+
+_load_env()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

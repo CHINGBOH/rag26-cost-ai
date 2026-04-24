@@ -55,7 +55,7 @@ def get_processed_files():
                     'size': os.path.getsize(file_path),
                     'size_kb': os.path.getsize(file_path) / 1024
                 })
-            except:
+            except Exception:
                 pass
     
     return processed_files
@@ -238,7 +238,7 @@ def generate_markdown_report(stats, categories, unprocessed, processed_files):
     report.append("## 输出文件")
     report.append(f"所有OCR结果保存在: `{OUTPUT_DIR}`")
     report.append("文件格式:")
-    report.append"- `{文件名}_ocr.json`: 完整OCR结果")
+    report.append("- `{文件名}_ocr.json`: 完整OCR结果")
     report.append("- `{文件名}_text.txt`: 提取的纯文本")
     report.append("- `{文件名}_merged_ocr.json`: 合并后的结果 (分块处理文件)")
     report.append("")

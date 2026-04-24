@@ -89,14 +89,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // 处理模型变更
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newModel = e.target.value;
-    console.log('[ChatInput] 模型变更:', newModel, '当前:', currentModel);
     onModelChange?.(newModel);
   };
 
   // 处理温度变更
   const handleTempChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTemp = parseFloat(e.target.value);
-    console.log('[ChatInput] 温度变更:', newTemp, '当前:', currentTemp);
     onTemperatureChange?.(newTemp);
   };
 

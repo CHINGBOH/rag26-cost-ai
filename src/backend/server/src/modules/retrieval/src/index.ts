@@ -203,10 +203,16 @@ export function keywordSearch(config?: Partial<RetrievalConfig> & { topK?: numbe
   }
 }
 
+export function graphSearch(_config?: Partial<RetrievalConfig> & { topK?: number }) {
+  return async function searchGraph(_query: string): Promise<RetrievedChunk[]> {
+    // Neo4j has been removed; graph search is no longer available
+    return []
+  }
+}
+
 export function textSearch(config?: Partial<RetrievalConfig> & { topK?: number }) {
-  return async function searchText(query: string): Promise<RetrievedChunk[]> {
+  return async function searchText(_query: string): Promise<RetrievedChunk[]> {
     // PG 全文检索由 Python 后端执行，Node 层直接代理
-    console.log('[Retrieval] textSearch delegated to Python backend')
     return []
   }
 }
@@ -252,7 +258,8 @@ export function rerank(config?: { apiKey?: string; topK?: number; model?: string
 export const FusionWeightsSchema = z.object({
   rerank: z.number().default(0.5),
   vector: z.number().default(0.6),
-  text: z.number().default(0.4)
+  text: z.number().default(0.4),
+  graph: z.number().default(0.0)
 })
 
 export type FusionWeights = z.infer<typeof FusionWeightsSchema>
@@ -380,6 +387,7 @@ export function createRetrievalPipeline(config?: Partial<RetrievalConfig> & Part
     decompose: decompose(),
     vectorSearch: vectorSearch(config),
     keywordSearch: keywordSearch(config),
+    graphSearch: graphSearch(config),
     textSearch: textSearch(config),
     retrieve: retrieve(config),
     rerank: rerank(config),

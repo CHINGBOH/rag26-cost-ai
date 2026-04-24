@@ -7,6 +7,7 @@ Bug: When OCR produces a 6-col padded table but only col0/1/2 have data,
 the standard parser looks for price in col3/4/5 → finds nothing → drops the row.
 Fix: Detect "all-empty right-cols" and fall back to 3-col layout.
 """
+import os
 import json, re, sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import psycopg2
 
 # ── DB config ─────────────────────────────────────────────────────────────────
 DB = dict(host='localhost', port=5432, database='rag_db',
-          user='rag_user', password='rag_password')
+          user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
 
 # ── Files to re-process ───────────────────────────────────────────────────────
 BASE = Path('/home/l/rag-dashboard/data/ocr_outputs')

@@ -462,7 +462,7 @@ def _clean_price(val: str) -> Optional[float]:
     s = re.sub(r'[元\s￥$]+$', '', s)
     try:
         return float(s)
-    except:
+    except Exception:
         return None
 
 

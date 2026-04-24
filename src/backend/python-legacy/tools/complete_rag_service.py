@@ -103,7 +103,7 @@ class CompleteRAGService:
                 port=5432,
                 database="rag_db",
                 user="rag_user",
-                password="rag_password"
+                password=os.environ.get("POSTGRES_PASSWORD", "rag_password")
             )
             
             try:

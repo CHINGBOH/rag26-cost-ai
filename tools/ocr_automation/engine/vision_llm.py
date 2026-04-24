@@ -124,7 +124,7 @@ Rules:
             data = json.loads(text)
             if isinstance(data, list):
                 return data
-        except:
+        except Exception:
             pass
         
         logger.warning(f"Failed to parse LLM response as JSON: {text[:200]}")

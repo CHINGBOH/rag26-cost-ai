@@ -56,7 +56,7 @@ def get_pdf_page_count(pdf_path):
             for line in result.stdout.split('\n'):
                 if line.startswith('Pages:'):
                     return int(line.split(':')[1].strip())
-    except:
+    except Exception:
         pass
     
     # 如果pdfinfo不可用，使用估算
@@ -280,7 +280,7 @@ def main():
         subprocess.run(['pdfinfo', '--version'], check=True, capture_output=True)
         subprocess.run(['pdfseparate', '--version'], check=True, capture_output=True)
         subprocess.run(['pdfunite', '--version'], check=True, capture_output=True)
-    except:
+    except Exception:
         print("错误: 需要安装 poppler-utils 工具")
         print("  sudo apt-get install poppler-utils")
         return
