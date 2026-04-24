@@ -9,6 +9,7 @@ import json
 import re
 import threading as _threading
 from typing import List
+from pathlib import Path
 
 from langchain_core.tools import tool
 
@@ -59,6 +60,8 @@ def _put_pg_conn(conn: psycopg2.extensions.connection, error: bool = False) -> N
 # ── 模块级 embedding 单例（GPU 优先，启动时加载一次）────────────────────────
 _embedding_svc = None
 _embedding_lock = _threading.Lock()
+_ocr_path_cache_lock = _threading.Lock()
+_ocr_month_file_cache: dict[str, str | None] = {}
 
 
 def _get_embedding_svc():
@@ -282,6 +285,142 @@ def _normalize_year_month(year_month: str) -> str:
     if re.match(r"^\d{4}-\d{2}$", ym):
         return ym
     return ym
+
+
+def _iter_months(start_month: str, end_month: str) -> list[str]:
+    start = _normalize_year_month(start_month)
+    end = _normalize_year_month(end_month) if end_month else start
+    if not start:
+        return []
+    if not end:
+        return [start]
+
+    sy, sm = [int(x) for x in start.split("-", 1)]
+    ey, em = [int(x) for x in end.split("-", 1)]
+    months: list[str] = []
+    year, month = sy, sm
+    while (year, month) <= (ey, em):
+        months.append(f"{year:04d}-{month:02d}")
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+    return months
+
+
+def _get_month_ocr_json_path(year_month: str) -> str | None:
+    normalized = _normalize_year_month(year_month)
+    if not normalized:
+        return None
+
+    if normalized in _ocr_month_file_cache:
+        return _ocr_month_file_cache[normalized]
+
+    repo_root = Path(__file__).resolve().parents[5]
+    search_roots = [
+        repo_root / "data/knowledge_base/documents",
+        repo_root / "archive/reference",
+    ]
+
+    with _ocr_path_cache_lock:
+        if normalized in _ocr_month_file_cache:
+            return _ocr_month_file_cache[normalized]
+
+        found: str | None = None
+        pattern = f"**/{normalized}_ocr.json"
+        for root in search_roots:
+            if not root.exists():
+                continue
+            matches = sorted(
+                root.glob(pattern),
+                key=lambda path: path.stat().st_size if path.exists() else -1,
+                reverse=True,
+            )
+            if matches:
+                found = str(matches[0])
+                break
+
+        _ocr_month_file_cache[normalized] = found
+        return found
+
+
+def _normalize_material_unit(material_name: str, unit: str) -> str:
+    normalized = (unit or "").strip().replace("㎡", "m²").replace("?", "")
+    if normalized in {"m", "m²"} and material_name in {"中砂", "碎石", "石粉渣"}:
+        return "m³"
+    if not normalized and material_name == "中砂":
+        return "m³"
+    return normalized
+
+
+def _extract_material_price_from_ocr_page(raw_text: str, material_name: str) -> tuple[str, str] | None:
+    if not raw_text or material_name not in raw_text:
+        return None
+
+    match = re.search(
+        rf"{re.escape(material_name)}\s*\n(?P<unit>[A-Za-z0-9㎡mM\?³²/\"]{{1,8}})\s*\n(?P<price>\d+\.\d{{2}})",
+        raw_text,
+    )
+    if match:
+        unit = _normalize_material_unit(material_name, match.group("unit"))
+        return unit, match.group("price")
+    return None
+
+
+def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[dict]:
+    normalized = _normalize_year_month(year_month)
+    if not normalized or not material_name.strip():
+        return []
+
+    primary_path = _get_month_ocr_json_path(normalized)
+    candidate_paths = [primary_path] if primary_path else []
+    if primary_path:
+        repo_root = Path(__file__).resolve().parents[5]
+        extra_candidates = sorted(
+            (repo_root / "data/knowledge_base/documents").glob(f"**/{normalized}_ocr.json"),
+            key=lambda path: path.stat().st_size if path.exists() else -1,
+            reverse=True,
+        )
+        for candidate in extra_candidates:
+            candidate_str = str(candidate)
+            if candidate_str not in candidate_paths:
+                candidate_paths.append(candidate_str)
+
+    results: list[dict] = []
+    for ocr_path in candidate_paths:
+        try:
+            data = json.loads(Path(ocr_path).read_text())
+        except Exception as e:
+            logger.warning(f"[ocr_fallback] failed to read {ocr_path}: {e}")
+            continue
+
+        doc_id = data.get("document_id", "")
+        file_name = data.get("file_name", f"{normalized}.pdf")
+        for page in data.get("pages", []):
+            parsed = _extract_material_price_from_ocr_page(page.get("raw_text", "") or "", material_name)
+            if not parsed:
+                continue
+            unit, price = parsed
+            results.append(
+                {
+                    "chunk_id": f"ocr_price_{doc_id}_{page.get('page_number', 1)}_{material_name}",
+                    "doc_id": doc_id,
+                    "page_number": page.get("page_number", 1),
+                    "source_db": "ocr_price_fallback",
+                    "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{normalized}",
+                    "score": 0.83,
+                    "metadata": {
+                        "year_month": normalized,
+                        "unit": unit,
+                        "price": price,
+                        "file_name": file_name,
+                    },
+                }
+            )
+            return results
+
+    return results
 
 
 def _build_price_period_label(year_month: str) -> str:
@@ -1028,6 +1167,14 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                         f"for spec='{specification}' period='{normalized_period}'"
                     )
                     return json.dumps(text_fallback_results[:top_k], ensure_ascii=False)
+            if not rows and normalized_period and material_name and not specification:
+                ocr_fallback_results = _query_material_ocr_fallback(material_name, normalized_period)
+                if ocr_fallback_results:
+                    logger.info(
+                        f"[price_query] ocr fallback recovered {len(ocr_fallback_results)} rows "
+                        f"for material='{material_name}' period='{normalized_period}'"
+                    )
+                    return json.dumps(ocr_fallback_results[:top_k], ensure_ascii=False)
 
             # 若指定了期间但无结果，查询最近有数据的期间并附注
             fallback_note = ""
@@ -1186,6 +1333,25 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                     rows = cur2.fetchall()
                 logger.info(f"[price_trend] bigram fallback bigrams={bigrams} hits={len(rows)}")
 
+        existing_months = {str(r[0]) for r in rows}
+        ocr_rows: list[tuple[str, float, str, str, int, str]] = []
+        months_to_fill = [month for month in _iter_months(start_month, end_month) if month not in existing_months]
+        for month in months_to_fill:
+            fallback_rows = _query_material_ocr_fallback(material_name, month)
+            if not fallback_rows:
+                continue
+            for row in fallback_rows:
+                ocr_rows.append(
+                    (
+                        row["metadata"]["year_month"],
+                        float(row["metadata"]["price"]),
+                        row["metadata"]["unit"],
+                        material_name,
+                        row["page_number"],
+                        row["doc_id"],
+                    )
+                )
+
         # 返回 chunk 格式，以便 _collect_chunks 可以处理并传递给 synthesizer
         chunks = []
         for r in rows:
@@ -1207,6 +1373,23 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 "score": 0.85,
                 "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit},
             })
+        for year_month, avg_price, unit, spec, page_number, doc_id in sorted(ocr_rows, key=lambda x: x[0]):
+            content = (
+                f"{material_name} 价格走势 "
+                f"期间:{year_month} "
+                f"均价:{avg_price:.2f}元/{unit} "
+                + (f"规格:{spec} " if spec else "")
+            )
+            chunks.append({
+                "chunk_id": f"price_trend_ocr_{material_name}_{year_month}",
+                "doc_id": doc_id or "",
+                "page_number": page_number or 1,
+                "source_db": "ocr_price_fallback",
+                "content": content,
+                "score": 0.82,
+                "metadata": {"year_month": year_month, "avg_price": avg_price, "unit": unit},
+            })
+        chunks.sort(key=lambda chunk: chunk["metadata"].get("year_month", ""))
         logger.info(
             f"[price_trend] material='{material_name}' "
             f"range=[{start_month},{end_month}] points={len(chunks)}"
