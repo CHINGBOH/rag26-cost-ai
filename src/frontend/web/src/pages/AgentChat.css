@@ -663,6 +663,37 @@
   border: 1px solid rgba(59, 130, 246, 0.14);
 }
 
+.conversation-answer-card {
+  padding: 4px 0 2px;
+  margin-bottom: 14px;
+}
+
+.conversation-answer-context {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.conversation-answer-text {
+  font-size: 15px;
+  line-height: 1.9;
+  color: var(--text-primary);
+}
+
+.presentation-support-block {
+  padding-top: 12px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.28);
+}
+
+.presentation-support-kicker {
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
 .answer-summary-label,
 .answer-section-label,
 .answer-highlight-label {

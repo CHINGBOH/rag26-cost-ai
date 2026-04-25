@@ -111,25 +111,6 @@ function getTrendDirectionClass(delta?: number | null): string {
   return delta > 0 ? 'up' : 'down';
 }
 
-function getAnswerPresentationTitle(queryType?: string, fallbackTitle?: string): string {
-  const titleMap: Record<string, string> = {
-    standard_ref: '规则解读',
-    price: '价格回答',
-    comparison: '对比结论',
-    trend_chart: '趋势结论',
-    calculation: '计算结论',
-  };
-
-  return (queryType && titleMap[queryType]) || fallbackTitle || '回答摘要';
-}
-
-function getAnswerSummaryLabel(queryType?: string): string {
-  if (queryType === 'standard_ref') return '直接规则';
-  if (queryType === 'comparison') return '直接结论';
-  if (queryType === 'trend_chart') return '趋势结论';
-  return '直接答案';
-}
-
 function getHighlightBaseLabel(kind?: string, queryType?: string): string {
   const kindMap: Record<string, string> = {
     scope: '适用范围',
@@ -313,8 +294,6 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
   }, [presentation.type, presentation.points?.length]);
 
   if (presentation.type === 'answer_sections') {
-    const answerTitle = getAnswerPresentationTitle(presentation.query_type, presentation.title);
-    const answerSummaryLabel = getAnswerSummaryLabel(presentation.query_type);
     const highlightLabels = buildDisplayLabels(
       presentation.highlights ?? [],
       (kind) => getHighlightBaseLabel(kind, presentation.query_type),
@@ -326,61 +305,68 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
 
     return (
       <div className="presentation-card answer-sections">
-        <div className="presentation-header">
-          <div>
-            <div className="presentation-title">{answerTitle}</div>
-            {presentation.note && <div className="presentation-note">{presentation.note}</div>}
-          </div>
-        </div>
-
         {presentation.summary && (
-          <div className="answer-summary-card">
-            <span className="answer-summary-label">{answerSummaryLabel}</span>
+          <div className="conversation-answer-card">
+            {presentation.note && <div className="conversation-answer-context">{presentation.note}</div>}
             <div
-              className="answer-summary-text"
+              className="conversation-answer-text"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
             />
           </div>
         )}
 
-        {presentation.highlights && presentation.highlights.length > 0 && (
-          <div className="answer-highlight-grid">
-            {presentation.highlights.map((item, index) => (
-              <div key={`${item.kind ?? item.label ?? 'highlight'}-${index}`} className="answer-highlight-item">
-                <span className="answer-highlight-label">{highlightLabels[index]}</span>
-                <div
-                  className="answer-highlight-value"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        {(presentation.highlights && presentation.highlights.length > 0) ||
+        (presentation.sections && presentation.sections.length > 0) ||
+        (presentation.sources && presentation.sources.length > 0) ? (
+          <div className="presentation-support-block">
+            <div className="presentation-support-kicker">补充说明</div>
 
-        {presentation.sections && presentation.sections.length > 0 && (
-          <div className="answer-sections-list">
-            {presentation.sections.map((section, index) => (
-              <div key={`${section.kind ?? section.label ?? 'section'}-${index}`} className="answer-section-item">
-                <div className="answer-section-label">{sectionLabels[index]}</div>
-                <div
-                  className="answer-section-body"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
-                />
+            {presentation.highlights && presentation.highlights.length > 0 && (
+              <div className="answer-highlight-grid">
+                {presentation.highlights.map((item, index) => (
+                  <div
+                    key={`${item.kind ?? item.label ?? 'highlight'}-${index}`}
+                    className="answer-highlight-item"
+                  >
+                    <span className="answer-highlight-label">{highlightLabels[index]}</span>
+                    <div
+                      className="answer-highlight-value"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
+            )}
 
-        {presentation.sources && presentation.sources.length > 0 && (
-          <div className="presentation-footnotes">
-            {presentation.sources.map((source) => (
-              <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
-                <span className="presentation-footnote-label">来源 {source.index}</span>
-                <span>{source.title} P{source.page}</span>
+            {presentation.sections && presentation.sections.length > 0 && (
+              <div className="answer-sections-list">
+                {presentation.sections.map((section, index) => (
+                  <div
+                    key={`${section.kind ?? section.label ?? 'section'}-${index}`}
+                    className="answer-section-item"
+                  >
+                    <div className="answer-section-label">{sectionLabels[index]}</div>
+                    <div
+                      className="answer-section-body"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+
+            {presentation.sources && presentation.sources.length > 0 && (
+              <div className="presentation-footnotes">
+                {presentation.sources.map((source) => (
+                  <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
+                    <span className="presentation-footnote-label">来源 {source.index}</span>
+                    <span>{source.title} P{source.page}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -388,55 +374,58 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
   if (presentation.type === 'calculation_steps') {
     return (
       <div className="presentation-card calculation-steps">
-        <div className="presentation-header">
-          <div>
-            <div className="presentation-title">{presentation.title}</div>
-            {presentation.note && <div className="presentation-note">{presentation.note}</div>}
-          </div>
-        </div>
-
         {presentation.summary && (
-          <div className="answer-summary-card calculation-summary">
-            <span className="answer-summary-label">直接结论</span>
+          <div className="conversation-answer-card calculation-summary">
+            {presentation.note && <div className="conversation-answer-context">{presentation.note}</div>}
             <div
-              className="answer-summary-text"
+              className="conversation-answer-text"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
             />
           </div>
         )}
 
-        {presentation.highlights && presentation.highlights.length > 0 && (
-          <div className="answer-highlight-grid">
-            {presentation.highlights.map((item, index) => (
-              <div key={`${item.label}-${index}`} className="answer-highlight-item">
-                <span className="answer-highlight-label">{item.label}</span>
-                <div
-                  className="answer-highlight-value"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
-                />
-              </div>
-            ))}
-          </div>
-        )}
+        {(presentation.highlights && presentation.highlights.length > 0) ||
+        (presentation.steps && presentation.steps.length > 0) ||
+        (presentation.sources && presentation.sources.length > 0) ? (
+          <div className="presentation-support-block">
+            <div className="presentation-support-kicker">计算说明</div>
 
-        {presentation.steps && presentation.steps.length > 0 && (
-          <div className="calc-steps-list">
-            {presentation.steps.map((step) => (
-              <CalculationStepCard key={`${step.order}-${step.title}`} step={step} />
-            ))}
-          </div>
-        )}
-
-        {presentation.sources && presentation.sources.length > 0 && (
-          <div className="presentation-footnotes">
-            {presentation.sources.map((source) => (
-              <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
-                <span className="presentation-footnote-label">来源 {source.index}</span>
-                <span>{source.title} P{source.page}</span>
+            {presentation.highlights && presentation.highlights.length > 0 && (
+              <div className="answer-highlight-grid">
+                {presentation.highlights.map((item, index) => (
+                  <div key={`${item.kind ?? item.label ?? 'highlight'}-${index}`} className="answer-highlight-item">
+                    <span className="answer-highlight-label">
+                      {item.label || getHighlightBaseLabel(item.kind, presentation.query_type)}
+                    </span>
+                    <div
+                      className="answer-highlight-value"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                    />
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+
+            {presentation.steps && presentation.steps.length > 0 && (
+              <div className="calc-steps-list">
+                {presentation.steps.map((step) => (
+                  <CalculationStepCard key={`${step.order}-${step.title}`} step={step} />
+                ))}
+              </div>
+            )}
+
+            {presentation.sources && presentation.sources.length > 0 && (
+              <div className="presentation-footnotes">
+                {presentation.sources.map((source) => (
+                  <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
+                    <span className="presentation-footnote-label">来源 {source.index}</span>
+                    <span>{source.title} P{source.page}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        ) : null}
       </div>
     );
   }
