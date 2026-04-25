@@ -72,6 +72,91 @@ def infer_category(fee_name: str) -> str:
     return "其他项目费"
 
 
+_FEE_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "企业管理费": ("企业管理费", "程，企业管理费"),
+    "利润": ("利润率", "利润"),
+    "安全文明施工费": ("安全文明施工费", "文明施工费"),
+    "夜间施工增加费": ("夜间施工增加费",),
+    "赶工措施费": ("赶工措施费",),
+    "总承包服务费": ("总包管理服务费", "总承包服务费"),
+    "发包人供应材料（设备）保管费": ("发包人供应材料（设备）保管费", "材料（设备）保管费"),
+    "履约担保手续费": ("履约担保手续费", "担保手续费"),
+    "暂列金额": ("暂列金额",),
+    "优质优价奖励费": ("优质优价奖励费",),
+    "计日工": ("计日工",),
+}
+
+
+def _normalize_fee_text(text: str) -> str:
+    cleaned = text.replace("＋", "+").replace("十", "+").replace("X", "×")
+    cleaned = re.sub(r"HJ53-[A-Za-z0-9\-]+", " ", cleaned)
+    cleaned = re.sub(r"仅供内部查阅|仅供内部|供内部查|禁止外传|禁止外", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\d+\s*\n", "\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    return cleaned.strip()
+
+
+def _normalize_fee_name(fee_name: str, source_text: str = "") -> str:
+    for canonical, aliases in _FEE_NAME_ALIASES.items():
+        if any(alias in fee_name for alias in aliases):
+            return canonical
+    combined = f"{fee_name} {source_text}".strip()
+    for canonical, aliases in _FEE_NAME_ALIASES.items():
+        if any(alias in combined for alias in aliases):
+            return canonical
+    return fee_name.strip()
+
+
+def _extract_source_excerpt(text: str, anchor: str, window: int = 260) -> str:
+    idx = text.find(anchor)
+    if idx < 0:
+        return text[:window].strip()
+    start = max(0, idx - 40)
+    end = min(len(text), idx + window)
+    return text[start:end].strip()
+
+
+def _extract_named_fee_records(text: str, standard_year: str) -> list[dict]:
+    cleaned = _normalize_fee_text(text)
+    compact = re.sub(r"\s+", "", cleaned)
+    records: list[dict] = []
+    specs = [
+        {
+            "name": "企业管理费",
+            "category": "企业管理费",
+            "anchor": "企业管理费",
+            "range_pattern": r"企业管理费费率参考范围[为：:]?(\d+\.?\d*)[%％][～~](\d+\.?\d*)[%％]，?推荐费率[为：:]?(\d+\.?\d*)[%％]",
+            "formula_pattern": r"(企业管理费[:：A-Za-z=＝]*（?人工费.*?企业管理费费率)",
+        },
+        {
+            "name": "利润",
+            "category": "利润",
+            "anchor": "利润",
+            "range_pattern": r"利润率参考范围[为：:]?(\d+\.?\d*)[%％][～~](\d+\.?\d*)[%％]，?推荐费率[为：:]?(\d+\.?\d*)[%％]",
+            "formula_pattern": r"(利润[:：A-Za-z=＝Ff]*（?人工费.*?利润率)",
+        },
+    ]
+
+    for spec in specs:
+        range_match = re.search(spec["range_pattern"], compact)
+        if not range_match:
+            continue
+        formula_match = re.search(spec["formula_pattern"], compact)
+        records.append({
+            "fee_name": spec["name"],
+            "fee_category": spec["category"],
+            "rate_min": float(range_match.group(1)),
+            "rate_max": float(range_match.group(2)),
+            "rate_recommended": float(range_match.group(3)),
+            "standard_year": standard_year,
+            "source_text": _extract_source_excerpt(cleaned, spec["anchor"]),
+            "base_formula": formula_match.group(1) if formula_match else None,
+        })
+
+    return records
+
+
 def parse_fee_text(text: str, standard_year: str) -> list[dict]:
     """
     PDF 费率提取 — 支持两种格式：
@@ -81,23 +166,38 @@ def parse_fee_text(text: str, standard_year: str) -> list[dict]:
             建筑工程\n1.92～5.75\n3.68
          需要结合当前 section 标题推断 fee_category。
     """
+    text = _normalize_fee_text(text)
     records = []
     seen: set = set()
 
-    def add(name, cat, rmin, rmax, rrec, src):
-        key = (name, rmin, rmax, str(rrec), standard_year)
+    def add(name, cat, rmin, rmax, rrec, src, formula=None):
+        canonical_name = _normalize_fee_name(name, src)
+        canonical_category = cat or infer_category(canonical_name)
+        key = (canonical_name, rmin, rmax, str(rrec), standard_year)
         if key in seen:
             return
         seen.add(key)
         records.append({
-            "fee_name": name,
-            "fee_category": cat or infer_category(name),
+            "fee_name": canonical_name,
+            "fee_category": canonical_category,
             "rate_min": rmin,
             "rate_max": rmax,
             "rate_recommended": rrec,
             "standard_year": standard_year,
             "source_text": src[:300],
+            "base_formula": formula,
         })
+
+    for record in _extract_named_fee_records(text, standard_year):
+        add(
+            record["fee_name"],
+            record["fee_category"],
+            record["rate_min"],
+            record["rate_max"],
+            record["rate_recommended"],
+            record["source_text"],
+            record.get("base_formula"),
+        )
 
     # ── A1: "...参考范围[为：:]X%～Y%，推荐费率Z%" ─────────────────
     p_inline_pct = re.compile(
@@ -226,6 +326,10 @@ def import_one(pdf_path: Path, standard_year: str, embed_model, conn) -> tuple[i
     fee_records = []
 
     try:
+        cur.execute("DELETE FROM text_chunks WHERE doc_id = %s", (doc_id,))
+        cur.execute("DELETE FROM fee_rates WHERE doc_id = %s", (doc_id,))
+        conn.commit()
+
         for page_num in range(1, len(doc) + 1):
             text = doc[page_num - 1].get_text()
 
@@ -263,14 +367,14 @@ def import_one(pdf_path: Path, standard_year: str, embed_model, conn) -> tuple[i
             cur.execute(
                 """INSERT INTO fee_rates
                    (doc_id, doc_code, document_id, standard_year,
-                    fee_name, fee_category,
+                    fee_name, fee_category, base_formula,
                     rate_min, rate_max, rate_recommended,
                     source_text, page_number, embedding)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
                    ON CONFLICT DO NOTHING""",
                 (
                     doc_id, doc_id, None,
-                    r["standard_year"], r["fee_name"], r["fee_category"],
+                    r["standard_year"], r["fee_name"], r["fee_category"], r.get("base_formula"),
                     r["rate_min"], r["rate_max"], r["rate_recommended"],
                     r.get("source_text", ""), r.get("page_number", 1),
                     embedding,

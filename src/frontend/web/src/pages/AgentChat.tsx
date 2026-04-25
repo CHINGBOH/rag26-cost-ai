@@ -5,7 +5,12 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useAgent, ChatMessage, AgentConfig } from '../hooks/useAgent';
-import { useRunStore, PresentationPayload, PresentationPoint } from '../stores/useRunStore';
+import {
+  useRunStore,
+  PresentationPayload,
+  PresentationPoint,
+  PresentationCalculationStep,
+} from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
 import {
   RadarChart,
@@ -53,6 +58,72 @@ function formatPointRange(point: PresentationPoint, unit?: string): string {
   return formatPresentationValue(point.value, unit);
 }
 
+function formatSandboxNumber(value: number): string {
+  if (!Number.isFinite(value)) return '计算错误';
+  const rounded = Math.round(value * 1000000) / 1000000;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toString();
+}
+
+const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ step }) => {
+  const [copied, setCopied] = useState(false);
+  const [verified, setVerified] = useState<string | null>(null);
+
+  const copyExpression = async () => {
+    await navigator.clipboard.writeText(step.copy_expression);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+
+  const verifyExpression = () => {
+    try {
+      const result = new Function(`return (${step.copy_expression})`)();
+      setVerified(formatSandboxNumber(Number(result)));
+    } catch {
+      setVerified('计算错误');
+    }
+  };
+
+  return (
+    <div className="calc-step-card">
+      <div className="calc-step-header">
+        <div className="calc-step-order">Step {step.order}</div>
+        <div className="calc-step-title">{step.title}</div>
+      </div>
+
+      <div className="calc-step-grid">
+        <div className="calc-step-block">
+          <span className="calc-step-label">公式</span>
+          <code className="calc-step-code">{step.formula}</code>
+        </div>
+        <div className="calc-step-block">
+          <span className="calc-step-label">代入</span>
+          <code className="calc-step-code">{step.substituted}</code>
+        </div>
+        <div className="calc-step-block result">
+          <span className="calc-step-label">结果</span>
+          <strong className="calc-step-result">{step.result_text}</strong>
+        </div>
+      </div>
+
+      <div className="calc-sandbox">
+        <div className="calc-sandbox-header">
+          <span className="calc-sandbox-title">校验表达式</span>
+          <div className="calc-sandbox-actions">
+            <button className="calc-action-btn" onClick={verifyExpression} type="button">
+              🧮 本地校验
+            </button>
+            <button className="calc-action-btn primary" onClick={copyExpression} type="button">
+              {copied ? '已复制' : '📋 复制表达式'}
+            </button>
+          </div>
+        </div>
+        <code className="calc-sandbox-expression">{step.copy_expression}</code>
+        {verified && <div className="calc-sandbox-result">本地结果：{verified}</div>}
+      </div>
+    </div>
+  );
+};
+
 const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation }) => {
   if (presentation.type === 'answer_sections') {
     return (
@@ -98,6 +169,62 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
                 />
               </div>
+            ))}
+          </div>
+        )}
+
+        {presentation.sources && presentation.sources.length > 0 && (
+          <div className="presentation-footnotes">
+            {presentation.sources.map((source) => (
+              <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
+                <span className="presentation-footnote-label">来源 {source.index}</span>
+                <span>{source.title} P{source.page}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (presentation.type === 'calculation_steps') {
+    return (
+      <div className="presentation-card calculation-steps">
+        <div className="presentation-header">
+          <div>
+            <div className="presentation-title">{presentation.title}</div>
+            {presentation.note && <div className="presentation-note">{presentation.note}</div>}
+          </div>
+        </div>
+
+        {presentation.summary && (
+          <div className="answer-summary-card calculation-summary">
+            <span className="answer-summary-label">直接结论</span>
+            <div
+              className="answer-summary-text"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
+            />
+          </div>
+        )}
+
+        {presentation.highlights && presentation.highlights.length > 0 && (
+          <div className="answer-highlight-grid">
+            {presentation.highlights.map((item, index) => (
+              <div key={`${item.label}-${index}`} className="answer-highlight-item">
+                <span className="answer-highlight-label">{item.label}</span>
+                <div
+                  className="answer-highlight-value"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {presentation.steps && presentation.steps.length > 0 && (
+          <div className="calc-steps-list">
+            {presentation.steps.map((step) => (
+              <CalculationStepCard key={`${step.order}-${step.title}`} step={step} />
             ))}
           </div>
         )}
@@ -554,7 +681,7 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
           {message.role === 'assistant' && message.presentation && (
             <PresentationCard presentation={message.presentation} />
           )}
-        {(!message.presentation || message.presentation.type !== 'answer_sections') && (
+        {(!message.presentation || !['answer_sections', 'calculation_steps'].includes(message.presentation.type)) && (
           <div
             className={`message-content ${message.presentation ? 'with-presentation' : ''}`}
             dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
@@ -663,7 +790,7 @@ const StreamingBubble: React.FC = () => {
     <div className="message-row assistant">
       <div className="message-bubble assistant streaming">
         {presentation && <PresentationCard presentation={presentation} />}
-        {(!presentation || presentation.type !== 'answer_sections') && (
+        {(!presentation || !['answer_sections', 'calculation_steps'].includes(presentation.type)) && (
           <div className={`message-content ${presentation ? 'with-presentation' : ''}`}>
             {streamingAnswer
               ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />

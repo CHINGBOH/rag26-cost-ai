@@ -36,6 +36,18 @@ def test_fee_formula_queries_are_classified_as_standard_refs() -> None:
     assert analysis["intent"] == "standard_ref"
 
 
+def test_fee_standard_comparison_queries_use_comparison_intent() -> None:
+    query = "2023版与2025版费率标准中，利润率的参考范围是否一致？"
+    analysis = query_analyzer.QueryAnalyzer().analyze(query)
+
+    assert analysis["intent"] == "comparison"
+    assert query_analyzer.is_fee_standard_comparison_query(query)
+    assert query_analyzer.extract_fee_standard_comparison_queries(query) == [
+        "2023 利润率 参考范围",
+        "2025 利润率 参考范围",
+    ]
+
+
 def test_annual_material_price_queries_keep_compound_material_and_year() -> None:
     analysis = query_analyzer.QueryAnalyzer().analyze("2025 年深圳信息价中钛合金门窗的价格是多少")
 
@@ -72,6 +84,13 @@ def test_extract_fee_formula_search_term_keeps_year_and_fee_item() -> None:
 def test_structured_table_query_extracts_requested_standard_year() -> None:
     assert tools._extract_requested_standard_year("2025版费率标准中，利润的计算方法是什么？") == "2025"
     assert tools._extract_requested_standard_year("企业管理费的计算公式是什么？") == ""
+
+
+def test_structured_table_query_extracts_all_requested_standard_years() -> None:
+    assert tools._extract_requested_standard_years("2023版与2025版费率标准中，利润率的参考范围是否一致？") == [
+        "2023",
+        "2025",
+    ]
 
 
 def test_fee_formula_query_detection_matches_formula_questions() -> None:
@@ -212,3 +231,41 @@ def test_query_appendix_standard_text_chunks_returns_exact_clause() -> None:
     assert len(result) == 1
     assert result[0]["source_db"] == "appendix_standard_text"
     assert "预制箱体应用比例大于50%" in result[0]["content"]
+
+
+def test_query_fee_comparison_text_chunks_returns_both_years() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params) -> None:
+            self.calls += 1
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            if self.calls == 1:
+                return [(11, "fee_rate_2023", 2, "利润率参考范围为3%～7%，推荐费率为5%。")]
+            if self.calls == 2:
+                return [(12, "fee_rate_2025", 1, "利润率参考范围为3%～7%，推荐费率为5%。")]
+            return []
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    result = tools._query_fee_comparison_text_chunks(
+        FakeConn(),
+        "2023版与2025版费率标准中，利润率的参考范围是否一致？",
+        top_k=4,
+    )
+
+    assert len(result) == 2
+    assert {chunk["metadata"]["year"] for chunk in result} == {"2023", "2025"}
+    assert all("3%～7%" in chunk["content"] for chunk in result)

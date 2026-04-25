@@ -14,8 +14,10 @@ from pathlib import Path
 from app.agent.query_analyzer import (
     extract_appendix_standard_terms,
     extract_appendix_standard_title,
+    extract_fee_standard_comparison_queries,
     extract_fill_requirement_search_term,
     is_appendix_standard_query,
+    is_fee_standard_comparison_query,
     is_fill_requirement_query,
 )
 
@@ -147,6 +149,14 @@ def _extract_requested_standard_year(query: str) -> str:
     return match.group(1) if match else ""
 
 
+def _extract_requested_standard_years(query: str) -> list[str]:
+    years: list[str] = []
+    for year in re.findall(r"(20\d{2})\s*版?", query or ""):
+        if year not in years:
+            years.append(year)
+    return years
+
+
 def _is_fee_formula_query(query: str) -> bool:
     normalized = (query or "").strip()
     return bool(_should_include_structured_tables(normalized) and _FEE_FORMULA_HINT_RE.search(normalized))
@@ -247,6 +257,68 @@ def _query_fee_formula_text_chunks(conn, query: str, top_k: int = 10) -> list[di
                     }
                 )
 
+    return results[:top_k]
+
+
+def _query_fee_comparison_text_chunks(conn, query: str, top_k: int = 10) -> list[dict]:
+    if not is_fee_standard_comparison_query(query):
+        return []
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+    search_queries = extract_fee_standard_comparison_queries(query)
+
+    with conn.cursor() as cur:
+        for search_query in search_queries:
+            parts = search_query.split(" ", 2)
+            if len(parts) < 3:
+                continue
+            year, item, target = parts
+            cur.execute(
+                """
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE file_name ILIKE %s
+                      AND content ILIKE %s
+                      AND content ILIKE %s
+                    ORDER BY
+                      CASE WHEN content ILIKE %s THEN 0 ELSE 1 END,
+                      page_number ASC
+                    LIMIT %s
+                """,
+                (f"%费率标准（{year}）%", f"%{item}%", f"%{target}%", "%参考范围%", top_k),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                cur.execute(
+                    """
+                        SELECT id, doc_id, page_number, content
+                        FROM text_chunks
+                        WHERE file_name ILIKE %s
+                          AND content ILIKE %s
+                        ORDER BY page_number ASC
+                        LIMIT %s
+                    """,
+                    (f"%费率标准（{year}）%", f"%{item}%", top_k),
+                )
+                rows = cur.fetchall()
+
+            for row in rows:
+                cid = f"fee_compare_{row[0]}"
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                results.append(
+                    {
+                        "chunk_id": cid,
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[2] or 1,
+                        "source_db": "fee_compare_text",
+                        "content": row[3] or "",
+                        "score": 0.97,
+                        "metadata": {"year": year, "item": item, "target": target},
+                    }
+                )
     return results[:top_k]
 
 
@@ -803,7 +875,7 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
     if not query.strip() or not _should_include_structured_tables(query):
         return results
     q = query.strip()
-    requested_year = _extract_requested_standard_year(q)
+    requested_years = _extract_requested_standard_years(q)
 
     # 提取候选匹配词：全串 + 滑动窗口（避免贪婪匹配漏掉关键词）
     import re as _re
@@ -828,20 +900,24 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                 if len(results) >= top_k:
                     break
                 try:
-                    if requested_year:
-                        cur.execute("""
-                            SELECT id, doc_id, fee_name, fee_category,
-                                   rate_min, rate_max, rate_recommended,
-                                   applicable_scope, base_formula, source_text, standard_year,
-                                   calc_base
-                            FROM fee_rates
-                            WHERE standard_year = %s
-                              AND (
-                                   fee_name ILIKE %s OR fee_category ILIKE %s
-                                   OR source_text ILIKE %s
-                              )
-                            LIMIT %s
-                        """, (requested_year, f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k))
+                    if requested_years:
+                        placeholders = ",".join(["%s"] * len(requested_years))
+                        cur.execute(
+                            f"""
+                                SELECT id, doc_id, fee_name, fee_category,
+                                       rate_min, rate_max, rate_recommended,
+                                       applicable_scope, base_formula, source_text, standard_year,
+                                       calc_base
+                                FROM fee_rates
+                                WHERE standard_year IN ({placeholders})
+                                  AND (
+                                       fee_name ILIKE %s OR fee_category ILIKE %s
+                                       OR source_text ILIKE %s
+                                  )
+                                LIMIT %s
+                            """,
+                            [*requested_years, f"%{frag}%", f"%{frag}%", f"%{frag}%", top_k],
+                        )
                     else:
                         cur.execute("""
                             SELECT id, doc_id, fee_name, fee_category,
@@ -980,6 +1056,9 @@ def keyword_search(query: str, top_k: int = 10) -> str:
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
                 results.append(chunk)
+        for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
+                results.append(chunk)
         for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
                 results.append(chunk)
@@ -1071,6 +1150,15 @@ def category_search(query: str, top_k: int = 5) -> str:
                 "doc_id": chunk["doc_id"],
                 "page_number": chunk["page_number"],
                 "section": "",
+                "content": chunk["content"][:300],
+                "score": chunk["score"],
+            })
+        for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+            results.append({
+                "chunk_id": chunk["chunk_id"],
+                "doc_id": chunk["doc_id"],
+                "page_number": chunk["page_number"],
+                "section": chunk.get("metadata", {}).get("item", ""),
                 "content": chunk["content"][:300],
                 "score": chunk["score"],
             })
@@ -1197,6 +1285,10 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
+        for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
         for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
@@ -1301,6 +1393,10 @@ def text_search(query: str, top_k: int = 8) -> str:
 
         # 3. fee_rates and other structured tables — score 0.9, always passes filter
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
+        for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)

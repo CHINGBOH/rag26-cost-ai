@@ -80,6 +80,17 @@ export interface PresentationSection {
   body: string;
 }
 
+export interface PresentationCalculationStep {
+  order: number;
+  title: string;
+  formula: string;
+  substituted: string;
+  result: string;
+  result_text: string;
+  unit?: string;
+  copy_expression: string;
+}
+
 export interface PresentationSource {
   index: number;
   title: string;
@@ -87,7 +98,7 @@ export interface PresentationSource {
 }
 
 export interface PresentationPayload {
-  type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections';
+  type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps';
   title: string;
   unit?: string;
   points?: PresentationPoint[];
@@ -97,6 +108,7 @@ export interface PresentationPayload {
   summary?: string;
   highlights?: PresentationHighlight[];
   sections?: PresentationSection[];
+  steps?: PresentationCalculationStep[];
   sources?: PresentationSource[];
 }
 

@@ -128,6 +128,39 @@ def test_finalize_presentation_builds_answer_sections_for_rule_query():
     assert presentation["sources"][0]["page"] == "314"
 
 
+def test_finalize_presentation_builds_calculation_steps_with_copy_expression():
+    chunks = [
+        {"doc_filename": "深圳市建设工程计价费率标准（2025）.pdf", "page_number": 1, "content": "利润率参考范围为3%～7%，推荐费率为5%。"},
+    ]
+    final_answer = (
+        "根据《深圳市建设工程计价费率标准（2025）》，利润为18.5731万元。"
+        "\n\n简要分析：\n"
+        "首先计算企业管理费：企业管理费 = (100 + 50 × 0.1) × 20.44% = (100 + 5) × 0.2044 = 105 × 0.2044 = 21.462万元。"
+        "然后计算利润：利润 = (100 + 200 + 50 + 21.462) × 5% = 371.462 × 0.05 = 18.5731万元。"
+        "\n\n参考索引：\n"
+        "[1] 《深圳市建设工程计价费率标准（2025）》第 1 页"
+    )
+    citations_text = "参考索引：\n[1] 《深圳市建设工程计价费率标准（2025）》第 1 页"
+
+    presentation = finalize_presentation_payload(
+        query="某工程人工费100万、材料费200万、机械费50万、企业管理费按推荐费率计算，按2025版推荐利润率计算，利润为多少？",
+        query_type="calculation",
+        final_answer=final_answer,
+        chunks=chunks,
+        citations_text=citations_text,
+        existing_presentation=None,
+    )
+
+    assert presentation is not None
+    assert presentation["type"] == "calculation_steps"
+    assert len(presentation["steps"]) == 2
+    assert presentation["steps"][0]["title"] == "企业管理费"
+    assert presentation["steps"][0]["copy_expression"] == "(100 + 50 * 0.1) * 0.2044"
+    assert presentation["steps"][1]["title"] == "利润"
+    assert presentation["steps"][1]["copy_expression"] == "(100 + 200 + 50 + 21.462) * 0.05"
+    assert presentation["sources"][0]["page"] == "1"
+
+
 def test_prune_chunks_for_annual_price_query_drops_irrelevant_evidence():
     chunks = [
         {

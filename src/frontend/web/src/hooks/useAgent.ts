@@ -96,6 +96,10 @@ function buildPresentationFallbackText(presentation: PresentationPayload | null 
     return presentation.summary || '';
   }
 
+  if (presentation.type === 'calculation_steps') {
+    return presentation.summary || presentation.title || '';
+  }
+
   const points = presentation.points ?? [];
   if (presentation.type === 'price_comparison' && points.length >= 2) {
     const from = points[0];

@@ -115,6 +115,7 @@ _QUOTA_LOCATION_PATTERN = re.compile(
 )
 _FEE_STANDARD_HINT_PATTERN = re.compile(r"费率标准|推荐费率|企业管理费|利润|安全文明施工费|履约担保手续费|夜间施工增加费|总包管理服务费|暂列金额|优质优价奖励费")
 _FORMULA_EXPLAIN_PATTERN = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
+_FEE_COMPARISON_HINT_PATTERN = re.compile(r"参考范围|推荐费率|是否一致|一致吗|是否相同|相同吗|一样吗|有无差异|差异|区别|不同")
 _FEE_ITEM_PATTERN = re.compile(
     r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
@@ -148,6 +149,8 @@ def _classify_intent(query: str) -> str:
     # trend_chart: 走势分析（含时间序列）
     if any(re.search(kw, q) is not None if '.' in kw else kw in q for kw in TREND_KEYWORDS):
         return "trend_chart"
+    if is_fee_standard_comparison_query(query):
+        return "comparison"
     # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
     if _FEE_STANDARD_HINT_PATTERN.search(query) and _FORMULA_EXPLAIN_PATTERN.search(query):
         return "standard_ref"
@@ -274,6 +277,16 @@ def is_fee_formula_query(query: str) -> bool:
     return bool(_FEE_STANDARD_HINT_PATTERN.search(normalized) and _FORMULA_EXPLAIN_PATTERN.search(normalized))
 
 
+def is_fee_standard_comparison_query(query: str) -> bool:
+    normalized = (query or "").strip()
+    years = re.findall(r"(20\d{2})\s*版?", normalized)
+    return bool(
+        len(set(years)) >= 2
+        and _FEE_STANDARD_HINT_PATTERN.search(normalized)
+        and _FEE_COMPARISON_HINT_PATTERN.search(normalized)
+    )
+
+
 def extract_fee_formula_search_term(query: str) -> str:
     normalized = (query or "").strip()
     year_match = re.search(r"(20\d{2})\s*版?", normalized)
@@ -288,6 +301,22 @@ def extract_fee_formula_search_term(query: str) -> str:
     if item:
         return f"{item} 计算公式"
     return normalized
+
+
+def extract_fee_standard_comparison_queries(query: str) -> list[str]:
+    normalized = (query or "").strip()
+    years: list[str] = []
+    for year in re.findall(r"(20\d{2})\s*版?", normalized):
+        if year not in years:
+            years.append(year)
+
+    item_match = _FEE_ITEM_PATTERN.search(normalized)
+    item = item_match.group(0) if item_match else "费率"
+    if item == "利润":
+        item = "利润率"
+
+    target = "推荐费率" if "推荐费率" in normalized and "参考范围" not in normalized else "参考范围"
+    return [f"{year} {item} {target}" for year in years]
 
 
 def is_fill_requirement_query(query: str) -> bool:

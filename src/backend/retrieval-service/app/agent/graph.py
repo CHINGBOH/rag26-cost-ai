@@ -37,10 +37,12 @@ from app.agent.query_analyzer import (
     QueryAnalyzer,
     extract_appendix_standard_terms,
     extract_appendix_standard_title,
+    extract_fee_standard_comparison_queries,
     extract_fill_requirement_search_term,
     extract_fee_formula_search_term,
     extract_quota_search_term,
     is_appendix_standard_query,
+    is_fee_standard_comparison_query,
     is_fill_requirement_query,
     is_fee_formula_query,
 )
@@ -461,6 +463,130 @@ def _build_answer_sections_presentation(
     }
 
 
+def _normalize_math_text(text: str) -> str:
+    return (
+        (text or "")
+        .replace("（", "(")
+        .replace("）", ")")
+        .replace("＋", "+")
+        .replace("－", "-")
+        .replace("×", "*")
+        .replace("÷", "/")
+        .replace("％", "%")
+        .replace("—", "-")
+        .replace("–", "-")
+    )
+
+
+def _sanitize_copy_expression(expression: str) -> str:
+    sanitized = _normalize_math_text(expression)
+    sanitized = re.sub(
+        r"([0-9]+(?:\.[0-9]+)?)\s*%",
+        lambda m: format(float(m.group(1)) / 100, ".12g"),
+        sanitized,
+    )
+    sanitized = re.sub(r"(万元|万|元|人民币)", "", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    sanitized = re.sub(r"[^0-9\.\+\-\*\/\(\) ]", "", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    return sanitized
+
+
+def _extract_calc_title(prefix: str, first_segment: str, fallback_order: int) -> str:
+    cleaned_prefix = re.sub(r"^(首先|然后|接着|再|最后|第一步|第1步|第二步|第2步|第三步|第3步|计算|求|得出)+", "", prefix or "").strip(" ：:")
+    if cleaned_prefix:
+        return cleaned_prefix
+    candidate = first_segment.strip()
+    if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z（）()]+", candidate):
+        return candidate
+    return f"步骤{fallback_order}"
+
+
+def _build_calculation_steps_presentation(
+    query: str,
+    final_answer: str,
+    chunks: list[dict],
+    citations_text: str,
+) -> dict | None:
+    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
+    if not answer_without_refs:
+        return None
+
+    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
+    candidate_sentences: list[str] = []
+    for part in [direct_answer, analysis_text]:
+        candidate_sentences.extend([s.strip() for s in re.split(r"[。；;]\s*", part) if s.strip()])
+
+    steps: list[dict] = []
+    seen_signatures: set[tuple[str, str]] = set()
+    for sentence in candidate_sentences:
+        if "=" not in sentence or not re.search(r"\d", sentence):
+            continue
+
+        prefix = ""
+        expr_text = sentence
+        if "：" in sentence:
+            maybe_prefix, maybe_expr = sentence.split("：", 1)
+            if "=" in maybe_expr:
+                prefix = maybe_prefix.strip()
+                expr_text = maybe_expr.strip()
+
+        segments = [seg.strip(" ，,") for seg in re.split(r"\s*=\s*", _normalize_math_text(expr_text)) if seg.strip(" ，,")]
+        if len(segments) < 3:
+            continue
+
+        title = _extract_calc_title(prefix, segments[0], len(steps) + 1)
+        expression_segments = segments[1:] if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z（）()]+", segments[0]) else segments
+        if len(expression_segments) < 2:
+            continue
+
+        result_text = expression_segments[-1]
+        calc_chain = expression_segments[:-1]
+        if not calc_chain:
+            continue
+
+        formula = calc_chain[0]
+        substituted = " = ".join(calc_chain)
+        copy_expression = _sanitize_copy_expression(formula)
+        if not copy_expression or not re.search(r"[\+\-\*/]", copy_expression):
+            continue
+
+        result_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(万元|万|元|%)?", result_text)
+        unit = result_match.group(2) if result_match else ""
+        result_value = result_match.group(1) if result_match else result_text
+
+        signature = (title, result_value)
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+
+        steps.append(
+            {
+                "order": len(steps) + 1,
+                "title": title,
+                "formula": formula,
+                "substituted": substituted,
+                "result": result_value,
+                "result_text": result_text,
+                "unit": unit,
+                "copy_expression": copy_expression,
+            }
+        )
+
+    if not steps:
+        return None
+
+    return {
+        "type": "calculation_steps",
+        "title": "计算沙箱",
+        "note": query if len(query) <= 40 else None,
+        "summary": _build_summary_text("calculation", direct_answer),
+        "highlights": _build_highlights("calculation", direct_answer, analysis_text),
+        "steps": steps,
+        "sources": _parse_citation_items(citations_text)[:4],
+    }
+
+
 def _parse_price_point(chunk: dict) -> dict | None:
     metadata = chunk.get("metadata") or {}
     content = chunk.get("content", "") or ""
@@ -656,6 +782,15 @@ def finalize_presentation_payload(
 ) -> dict | None:
     if existing_presentation:
         return existing_presentation
+    if query_type == "calculation":
+        calc_presentation = _build_calculation_steps_presentation(
+            query=query,
+            final_answer=final_answer,
+            chunks=chunks,
+            citations_text=citations_text,
+        )
+        if calc_presentation:
+            return calc_presentation
     return _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
 
 
@@ -965,6 +1100,11 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
         ]
         logger.info(f"[planner] fee formula query override, core='{core_term}'")
+
+    if is_fee_standard_comparison_query(query):
+        comparison_queries = extract_fee_standard_comparison_queries(query)
+        steps = [f"使用 text_search 检索『{term}』费率标准原文" for term in comparison_queries]
+        logger.info(f"[planner] fee comparison override, queries={comparison_queries}")
 
     if is_fill_requirement_query(query):
         fill_field = extract_fill_requirement_search_term(query)

@@ -74,9 +74,95 @@ def infer_category(fee_name: str) -> str:
     return '其他项目费'
 
 
+_FEE_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "企业管理费": ("企业管理费", "程，企业管理费"),
+    "利润": ("利润率", "利润"),
+    "安全文明施工费": ("安全文明施工费", "文明施工费"),
+    "夜间施工增加费": ("夜间施工增加费",),
+    "赶工措施费": ("赶工措施费",),
+    "总承包服务费": ("总包管理服务费", "总承包服务费"),
+    "发包人供应材料（设备）保管费": ("发包人供应材料（设备）保管费", "材料（设备）保管费"),
+    "履约担保手续费": ("履约担保手续费", "担保手续费"),
+}
+
+
+def _normalize_fee_text(text: str) -> str:
+    cleaned = text.replace("＋", "+").replace("十", "+").replace("X", "×")
+    cleaned = re.sub(r"HJ53-[A-Za-z0-9\-]+", " ", cleaned)
+    cleaned = re.sub(r"仅供内部查阅|仅供内部|供内部查|禁止外传|禁止外", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\d+\s*\n", "\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    return cleaned.strip()
+
+
+def _normalize_fee_name(fee_name: str, source_text: str = "") -> str:
+    for canonical, aliases in _FEE_NAME_ALIASES.items():
+        if any(alias in fee_name for alias in aliases):
+            return canonical
+    combined = f"{fee_name} {source_text}".strip()
+    for canonical, aliases in _FEE_NAME_ALIASES.items():
+        if any(alias in combined for alias in aliases):
+            return canonical
+    return fee_name.strip()
+
+
+def _extract_source_excerpt(text: str, anchor: str, window: int = 260) -> str:
+    idx = text.find(anchor)
+    if idx < 0:
+        return text[:window].strip()
+    start = max(0, idx - 40)
+    end = min(len(text), idx + window)
+    return text[start:end].strip()
+
+
+def _extract_named_fee_records(text: str, standard_year: str) -> list[dict]:
+    cleaned = _normalize_fee_text(text)
+    compact = re.sub(r"\s+", "", cleaned)
+    records: list[dict] = []
+    specs = [
+        {
+            "name": "企业管理费",
+            "category": "企业管理费",
+            "anchor": "企业管理费",
+            "range_pattern": r"企业管理费费率参考范围[为：:]?(\d+\.?\d*)[%％][～~](\d+\.?\d*)[%％]，?推荐费率[为：:]?(\d+\.?\d*)[%％]",
+            "formula_pattern": r"(企业管理费[:：A-Za-z=＝]*（?人工费.*?企业管理费费率)",
+        },
+        {
+            "name": "利润",
+            "category": "利润",
+            "anchor": "利润",
+            "range_pattern": r"利润率参考范围[为：:]?(\d+\.?\d*)[%％][～~](\d+\.?\d*)[%％]，?推荐费率[为：:]?(\d+\.?\d*)[%％]",
+            "formula_pattern": r"(利润[:：A-Za-z=＝Ff]*（?人工费.*?利润率)",
+        },
+    ]
+
+    for spec in specs:
+        range_match = re.search(spec["range_pattern"], compact)
+        if not range_match:
+            continue
+        formula_match = re.search(spec["formula_pattern"], compact)
+        records.append({
+            'fee_name': spec["name"],
+            'fee_category': spec["category"],
+            'rate_min': float(range_match.group(1)),
+            'rate_max': float(range_match.group(2)),
+            'rate_recommended': float(range_match.group(3)),
+            'standard_year': standard_year,
+            'source_text': _extract_source_excerpt(cleaned, spec["anchor"]),
+            'base_formula': formula_match.group(1) if formula_match else None,
+        })
+
+    return records
+
+
 def parse_fee_text(text: str, standard_year: str) -> list[dict]:
     """从费率标准文本中提取结构化费率数据"""
+    text = _normalize_fee_text(text)
     records = []
+
+    for record in _extract_named_fee_records(text, standard_year):
+        records.append(record)
 
     # 模式1: "参考范围为X%～Y%，推荐费率为Z%"
     pattern1 = re.compile(
@@ -84,13 +170,14 @@ def parse_fee_text(text: str, standard_year: str) -> list[dict]:
     )
     for m in pattern1.finditer(text):
         records.append({
-            'fee_name': m.group(1).strip(),
-            'fee_category': infer_category(m.group(1)),
+            'fee_name': _normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-50):m.end()+50]),
+            'fee_category': infer_category(_normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-50):m.end()+50])),
             'rate_min': float(m.group(2)),
             'rate_max': float(m.group(3)),
             'rate_recommended': float(m.group(4)),
             'standard_year': standard_year,
             'source_text': text[max(0, m.start()-50):m.end()+50],
+            'base_formula': None,
         })
 
     # 模式2: "费率参考范围：X‰～Y‰，推荐费率Z‰"
@@ -99,13 +186,14 @@ def parse_fee_text(text: str, standard_year: str) -> list[dict]:
     )
     for m in pattern2.finditer(text):
         records.append({
-            'fee_name': m.group(1).strip(),
-            'fee_category': infer_category(m.group(1)),
+            'fee_name': _normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-50):m.end()+50]),
+            'fee_category': infer_category(_normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-50):m.end()+50])),
             'rate_min': float(m.group(2)) / 10,
             'rate_max': float(m.group(3)) / 10,
             'rate_recommended': float(m.group(4)) / 10,
             'standard_year': standard_year,
             'source_text': text[max(0, m.start()-50):m.end()+50],
+            'base_formula': None,
         })
 
     # 模式3: 表格行 "专业名称  X.XX～X.XX  X.XX"
@@ -114,18 +202,19 @@ def parse_fee_text(text: str, standard_year: str) -> list[dict]:
     )
     for m in pattern3.finditer(text):
         records.append({
-            'fee_name': m.group(1).strip(),
-            'fee_category': '安全文明施工费',
+            'fee_name': _normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-30):m.end()+30]),
+            'fee_category': infer_category(_normalize_fee_name(m.group(1).strip(), text[max(0, m.start()-30):m.end()+30])),
             'rate_min': float(m.group(2)),
             'rate_max': float(m.group(3)),
             'rate_recommended': float(m.group(4)),
             'standard_year': standard_year,
             'source_text': text[max(0, m.start()-30):m.end()+30],
+            'base_formula': None,
         })
 
     # 模式4: 利润/企业管理费等单独提到的推荐费率
     pattern4 = re.compile(
-        r'(企业管理费|利润率)[^。]*?推荐费率[为：:]\s*(\d+\.?\d*)[%％]'
+        r'(企业管理费|利润率|利润)[^。]*?推荐费率[为：:]\s*(\d+\.?\d*)[%％]'
     )
     for m in pattern4.finditer(text):
         # 需要从上下文找参考范围
@@ -133,13 +222,14 @@ def parse_fee_text(text: str, standard_year: str) -> list[dict]:
         range_match = re.search(r'(\d+\.?\d*)[%％]\s*[～~]\s*(\d+\.?\d*)[%％]', ctx)
         if range_match:
             records.append({
-                'fee_name': m.group(1).strip(),
-                'fee_category': infer_category(m.group(1)),
+                'fee_name': _normalize_fee_name(m.group(1).strip(), ctx),
+                'fee_category': infer_category(_normalize_fee_name(m.group(1).strip(), ctx)),
                 'rate_min': float(range_match.group(1)),
                 'rate_max': float(range_match.group(2)),
                 'rate_recommended': float(m.group(2)),
                 'standard_year': standard_year,
                 'source_text': ctx,
+                'base_formula': None,
             })
 
     # 去重
