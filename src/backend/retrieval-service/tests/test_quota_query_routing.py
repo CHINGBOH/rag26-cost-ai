@@ -52,6 +52,17 @@ def test_fill_requirement_queries_are_detected_and_keep_field_name() -> None:
     assert query_analyzer.extract_fill_requirement_search_term("工程项目中施工地点要按照什么要求填写") == "施工地点"
 
 
+def test_appendix_standard_queries_extract_title_and_clause_terms() -> None:
+    query = "模块化建筑工程施工工期定额适用于单体预制箱体应用比例大于多少的 ±0.00 以上工程？"
+    analysis = query_analyzer.QueryAnalyzer().analyze(query)
+
+    assert analysis["intent"] == "standard_ref"
+    assert query_analyzer.is_appendix_standard_query(query)
+    assert query_analyzer.extract_appendix_standard_title(query) == "模块化建筑工程施工工期定额"
+    terms = query_analyzer.extract_appendix_standard_terms(query)
+    assert "预制箱体应用比例" in terms
+
+
 def test_extract_fee_formula_search_term_keeps_year_and_fee_item() -> None:
     term = query_analyzer.extract_fee_formula_search_term("2025版费率标准中，企业管理费的计算方法是什么？")
 
@@ -158,3 +169,46 @@ def test_query_fill_requirement_text_chunks_returns_exact_clause() -> None:
     assert len(result) == 1
     assert result[0]["source_db"] == "fill_requirement_text"
     assert "施工地点应按招标文件或合同约定工程地点填写" in result[0]["content"]
+
+
+def test_query_appendix_standard_text_chunks_returns_exact_clause() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params) -> None:
+            self.calls += 1
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            if self.calls == 1:
+                return [("doc_appendix",)]
+            return [
+                (
+                    73,
+                    "doc_appendix",
+                    12,
+                    "3.0.1本定额工期适用于单体（栋）预制箱体应用比例大于50%的土0.00以上模块化建筑工程。",
+                )
+            ]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    result = tools._query_appendix_standard_text_chunks(
+        FakeConn(),
+        "模块化建筑工程施工工期定额适用于单体预制箱体应用比例大于多少的 ±0.00 以上工程？",
+        top_k=3,
+    )
+
+    assert len(result) == 1
+    assert result[0]["source_db"] == "appendix_standard_text"
+    assert "预制箱体应用比例大于50%" in result[0]["content"]

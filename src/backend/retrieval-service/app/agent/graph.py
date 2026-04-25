@@ -35,9 +35,12 @@ from app.agent.prompts import (
 from app.agent.retrieval_filter import filter_chunks
 from app.agent.query_analyzer import (
     QueryAnalyzer,
+    extract_appendix_standard_terms,
+    extract_appendix_standard_title,
     extract_fill_requirement_search_term,
     extract_fee_formula_search_term,
     extract_quota_search_term,
+    is_appendix_standard_query,
     is_fill_requirement_query,
     is_fee_formula_query,
 )
@@ -161,7 +164,22 @@ def _prune_chunks_for_query(
     chunks: list[dict],
     entities: dict | None = None,
 ) -> list[dict]:
-    if query_type not in {"price", "comparison", "trend_chart"} or not chunks:
+    if not chunks:
+        return chunks
+
+    if query_type == "standard_ref" and is_appendix_standard_query(query):
+        title = extract_appendix_standard_title(query)
+        terms = extract_appendix_standard_terms(query)
+        appendix_matched = [
+            chunk for chunk in chunks
+            if title in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
+            or any(term in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or "")) for term in terms)
+        ]
+        if appendix_matched:
+            return appendix_matched
+        return []
+
+    if query_type not in {"price", "comparison", "trend_chart"}:
         return chunks
 
     analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
@@ -955,6 +973,18 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充上下文，再使用 keyword_search 检索『{fill_field} 填写』相关条文",
         ]
         logger.info(f"[planner] fill requirement override, field='{fill_field}'")
+
+    if is_appendix_standard_query(query):
+        standard_title = extract_appendix_standard_title(query)
+        clause_terms = extract_appendix_standard_terms(query)
+        clause_query = " ".join([standard_title, *clause_terms]).strip()
+        steps = [
+            f"使用 text_search 检索『{clause_query}』附件标准原文",
+            f"如需补充上下文，再使用 keyword_search 检索『{clause_query}』相关条文",
+        ]
+        logger.info(
+            f"[planner] appendix standard override, title='{standard_title}' terms={clause_terms}"
+        )
 
     if state.get("query_type") == "price" and _looks_like_annual_price_query(query, entities):
         annual_period = str(entities.get("year_month") or "")

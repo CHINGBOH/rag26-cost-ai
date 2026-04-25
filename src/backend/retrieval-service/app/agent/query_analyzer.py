@@ -128,6 +128,9 @@ _FILL_FIELD_PATTERN = re.compile(
     r"施工合同形式|结构类型|开竣工日期|工程造价文件类型|编制日期|执行清单|执行定额|费率标准|"
     r"价格信息采用期次|甲供材料设备|净下浮率|其他情况说明"
 )
+_APPENDIX_STANDARD_TITLE_PATTERN = re.compile(
+    r"(深圳市)?[\u4e00-\u9fa5A-Za-z（）()《》·\-]{4,}?(?:标准|定额|办法|规定|通知)(?:（试行）|（暂行）|（试用）)?"
+)
 _MATERIAL_QUERY_NOISE_RE = re.compile(
     r"深圳市?|信息价|工程建设|建设工程|材料价格|价格|多少钱|多少|是什么|是多少|请问|根据|查询|检索|"
     r"最新|当前|本月|当月|今年|中|的|及其|是多少元"
@@ -302,6 +305,54 @@ def extract_fill_requirement_search_term(query: str) -> str:
     cleaned = _FILL_REQUIREMENT_SUFFIX_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"[，,。；;：:“”\"'‘’（）()【】\[\]\s]", "", cleaned)
     return cleaned
+
+
+def extract_appendix_standard_title(query: str) -> str:
+    normalized = (query or "").strip()
+    match = _APPENDIX_STANDARD_TITLE_PATTERN.search(normalized)
+    if not match:
+        return ""
+    return match.group(0).strip("《》")
+
+
+def extract_appendix_standard_terms(query: str) -> list[str]:
+    normalized = (query or "").strip()
+    title = extract_appendix_standard_title(normalized)
+    remainder = normalized.replace(title, "", 1) if title else normalized
+    candidates: list[str] = []
+
+    explicit_patterns = [
+        r"预制箱体应用比例",
+        r"装饰集成率",
+        r"综合评分",
+        r"适用范围",
+        r"适用于",
+        r"±?\s*0\.00\s*以上",
+        r"土\s*0\.00\s*以上",
+    ]
+    for pattern in explicit_patterns:
+        for match in re.finditer(pattern, remainder):
+            value = re.sub(r"\s+", "", match.group(0))
+            if value and value not in candidates:
+                candidates.append(value)
+
+    cleaned = re.sub(
+        r"[？?，,。；;：:“”\"'‘’（）()\[\]【】]|适用于|适用|大于多少|多少|什么|是否|如何|怎么|请问|"
+        r"模块化建筑|工程|定额|标准|通知|规定|办法|以上|以下|部分|单体|栋|建筑",
+        " ",
+        remainder,
+    )
+    for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9\.±]{3,}", cleaned):
+        token = token.strip()
+        if token and token not in candidates:
+            candidates.append(token)
+
+    return candidates[:4]
+
+
+def is_appendix_standard_query(query: str) -> bool:
+    title = extract_appendix_standard_title(query)
+    return bool(title and any(hint in (query or "") for hint in ("适用", "比例", "范围", "定义", "工期", "计算", "规则")))
 
 
 def _decompose(query: str, intent: str) -> list[str]:

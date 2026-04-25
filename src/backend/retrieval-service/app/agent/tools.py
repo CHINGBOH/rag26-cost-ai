@@ -12,7 +12,10 @@ from typing import List
 from pathlib import Path
 
 from app.agent.query_analyzer import (
+    extract_appendix_standard_terms,
+    extract_appendix_standard_title,
     extract_fill_requirement_search_term,
+    is_appendix_standard_query,
     is_fill_requirement_query,
 )
 
@@ -363,6 +366,111 @@ def _query_fill_requirement_text_chunks(conn, query: str, top_k: int = 10) -> li
                         "content": row[3] or "",
                         "score": 0.9,
                         "metadata": {"field_name": field},
+                    }
+                )
+
+    return results[:top_k]
+
+
+def _query_appendix_standard_text_chunks(conn, query: str, top_k: int = 10) -> list[dict]:
+    if not is_appendix_standard_query(query):
+        return []
+
+    title = extract_appendix_standard_title(query)
+    terms = extract_appendix_standard_terms(query)
+    if not title:
+        return []
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT DISTINCT doc_id
+                FROM text_chunks
+                WHERE content ILIKE %s OR file_name ILIKE %s
+                LIMIT 5
+            """,
+            (f"%{title}%", f"%{title}%"),
+        )
+        doc_ids = [row[0] for row in cur.fetchall() if row[0]]
+        if not doc_ids:
+            return []
+
+        placeholders = ",".join(["%s"] * len(doc_ids))
+        term_filters = []
+        term_params: list[str] = []
+        for term in terms:
+            term_filters.append("content ILIKE %s")
+            term_params.append(f"%{term}%")
+        content_filter_sql = f"({' OR '.join(term_filters)})" if term_filters else "TRUE"
+        order_title = f"%{title}%"
+        order_term = f"%{terms[0]}%" if terms else "%适用%"
+        cur.execute(
+            f"""
+                SELECT id, doc_id, page_number, content
+                FROM text_chunks
+                WHERE doc_id IN ({placeholders})
+                  AND {content_filter_sql}
+                ORDER BY
+                  CASE
+                    WHEN content ~ '(^|\\n)\\s*[0-9]+\\.[0-9]+\\.[0-9]+' THEN 0
+                    WHEN content ILIKE '%%本定额%%' OR content ILIKE '%%本标准%%' OR content ILIKE '%%本办法%%' OR content ILIKE '%%本规定%%' THEN 1
+                    WHEN content ILIKE %s THEN 2
+                    WHEN content ILIKE %s THEN 3
+                    ELSE 4
+                  END,
+                  page_number ASC,
+                  length(content) ASC
+                LIMIT %s
+            """,
+            [*doc_ids, *term_params, order_title, order_term, top_k],
+        )
+        for row in cur.fetchall():
+            cid = f"appendix_standard_{row[0]}"
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            results.append(
+                {
+                    "chunk_id": cid,
+                    "doc_id": str(row[1] or ""),
+                    "page_number": row[2] or 1,
+                    "source_db": "appendix_standard_text",
+                    "content": row[3] or "",
+                    "score": 0.98,
+                    "metadata": {"standard_title": title, "query_terms": terms},
+                }
+            )
+
+        if not results:
+            cur.execute(
+                f"""
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE doc_id IN ({placeholders})
+                    ORDER BY page_number ASC, length(content) ASC
+                    LIMIT %s
+                """,
+                [*doc_ids, top_k],
+            )
+            for row in cur.fetchall():
+                content = row[3] or ""
+                if title not in content and not any(term in content for term in terms):
+                    continue
+                cid = f"appendix_standard_{row[0]}"
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                results.append(
+                    {
+                        "chunk_id": cid,
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[2] or 1,
+                        "source_db": "appendix_standard_text",
+                        "content": content,
+                        "score": 0.94,
+                        "metadata": {"standard_title": title, "query_terms": terms},
                     }
                 )
 
@@ -872,6 +980,9 @@ def keyword_search(query: str, top_k: int = 10) -> str:
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
                 results.append(chunk)
+        for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
+                results.append(chunk)
         for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
                 results.append(chunk)
@@ -960,6 +1071,15 @@ def category_search(query: str, top_k: int = 5) -> str:
                 "doc_id": chunk["doc_id"],
                 "page_number": chunk["page_number"],
                 "section": "",
+                "content": chunk["content"][:300],
+                "score": chunk["score"],
+            })
+        for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+            results.append({
+                "chunk_id": chunk["chunk_id"],
+                "doc_id": chunk["doc_id"],
+                "page_number": chunk["page_number"],
+                "section": chunk.get("metadata", {}).get("standard_title", ""),
                 "content": chunk["content"][:300],
                 "score": chunk["score"],
             })
@@ -1077,6 +1197,10 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
+        for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
         for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
@@ -1177,6 +1301,10 @@ def text_search(query: str, top_k: int = 8) -> str:
 
         # 3. fee_rates and other structured tables — score 0.9, always passes filter
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
+        for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
