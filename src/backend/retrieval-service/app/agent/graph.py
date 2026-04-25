@@ -35,8 +35,10 @@ from app.agent.prompts import (
 from app.agent.retrieval_filter import filter_chunks
 from app.agent.query_analyzer import (
     QueryAnalyzer,
+    extract_fill_requirement_search_term,
     extract_fee_formula_search_term,
     extract_quota_search_term,
+    is_fill_requirement_query,
     is_fee_formula_query,
 )
 from app.agent.tools import (
@@ -945,6 +947,14 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
         ]
         logger.info(f"[planner] fee formula query override, core='{core_term}'")
+
+    if is_fill_requirement_query(query):
+        fill_field = extract_fill_requirement_search_term(query)
+        steps = [
+            f"使用 text_search 检索『{fill_field} 应填写』原文要求",
+            f"如需补充上下文，再使用 keyword_search 检索『{fill_field} 填写』相关条文",
+        ]
+        logger.info(f"[planner] fill requirement override, field='{fill_field}'")
 
     if state.get("query_type") == "price" and _looks_like_annual_price_query(query, entities):
         annual_period = str(entities.get("year_month") or "")

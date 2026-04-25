@@ -120,6 +120,14 @@ _FEE_ITEM_PATTERN = re.compile(
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
     r"暂列金额|优质优价奖励费|利润"
 )
+_FILL_REQUIREMENT_HINT_PATTERN = re.compile(r"填写|怎么填|填报|按什么要求|应按什么")
+_FILL_REQUIREMENT_PREFIX_PATTERN = re.compile(r"^(?:工程项目中|项目中|工程概况表中|工程概况中|表中|其中)?")
+_FILL_REQUIREMENT_SUFFIX_PATTERN = re.compile(r"(?:要)?(?:按照什么要求填写|按什么要求填写|应按什么要求填写|应如何填写|如何填写|怎么填写|填写要求)[？?]?$")
+_FILL_FIELD_PATTERN = re.compile(
+    r"施工地点|项目地点|项目编号|施工许可工程编号|投资来源|项目名称|标段名称|项目类别|项目发包方式|"
+    r"施工合同形式|结构类型|开竣工日期|工程造价文件类型|编制日期|执行清单|执行定额|费率标准|"
+    r"价格信息采用期次|甲供材料设备|净下浮率|其他情况说明"
+)
 _MATERIAL_QUERY_NOISE_RE = re.compile(
     r"深圳市?|信息价|工程建设|建设工程|材料价格|价格|多少钱|多少|是什么|是多少|请问|根据|查询|检索|"
     r"最新|当前|本月|当月|今年|中|的|及其|是多少元"
@@ -277,6 +285,23 @@ def extract_fee_formula_search_term(query: str) -> str:
     if item:
         return f"{item} 计算公式"
     return normalized
+
+
+def is_fill_requirement_query(query: str) -> bool:
+    normalized = (query or "").strip()
+    return bool(_FILL_REQUIREMENT_HINT_PATTERN.search(normalized))
+
+
+def extract_fill_requirement_search_term(query: str) -> str:
+    normalized = (query or "").strip()
+    field_match = _FILL_FIELD_PATTERN.search(normalized)
+    if field_match:
+        return field_match.group(0)
+
+    cleaned = _FILL_REQUIREMENT_PREFIX_PATTERN.sub("", normalized)
+    cleaned = _FILL_REQUIREMENT_SUFFIX_PATTERN.sub("", cleaned)
+    cleaned = re.sub(r"[，,。；;：:“”\"'‘’（）()【】\[\]\s]", "", cleaned)
+    return cleaned
 
 
 def _decompose(query: str, intent: str) -> list[str]:

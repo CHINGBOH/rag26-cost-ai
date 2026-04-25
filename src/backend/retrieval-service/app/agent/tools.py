@@ -11,6 +11,11 @@ import threading as _threading
 from typing import List
 from pathlib import Path
 
+from app.agent.query_analyzer import (
+    extract_fill_requirement_search_term,
+    is_fill_requirement_query,
+)
+
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
@@ -271,6 +276,97 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def _query_fill_requirement_text_chunks(conn, query: str, top_k: int = 10) -> list[dict]:
+    if not is_fill_requirement_query(query):
+        return []
+
+    field = extract_fill_requirement_search_term(query)
+    if not field:
+        return []
+
+    results: list[dict] = []
+    seen_ids: set[str] = set()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT id, doc_id, page_number, content
+                FROM text_chunks
+                WHERE content ILIKE %s
+                  AND (
+                        content ILIKE %s
+                     OR content ILIKE %s
+                     OR content ILIKE %s
+                     OR content ILIKE %s
+                  )
+                ORDER BY
+                  CASE
+                    WHEN content ILIKE %s THEN 0
+                    WHEN content ILIKE %s THEN 1
+                    ELSE 2
+                  END,
+                  page_number ASC,
+                  length(content) ASC
+                LIMIT %s
+            """,
+            (
+                f"%{field}%",
+                "%应填写%",
+                "%应按%",
+                "%填写%",
+                "%填写要求%",
+                f"%{field}应%",
+                f"%{field}%填写%",
+                top_k,
+            ),
+        )
+        for row in cur.fetchall():
+            cid = f"fill_requirement_{row[0]}"
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            results.append(
+                {
+                    "chunk_id": cid,
+                    "doc_id": str(row[1] or ""),
+                    "page_number": row[2] or 1,
+                    "source_db": "fill_requirement_text",
+                    "content": row[3] or "",
+                    "score": 0.96,
+                    "metadata": {"field_name": field},
+                }
+            )
+
+        if not results:
+            cur.execute(
+                """
+                    SELECT id, doc_id, page_number, content
+                    FROM text_chunks
+                    WHERE content ILIKE %s
+                    ORDER BY page_number ASC, length(content) ASC
+                    LIMIT %s
+                """,
+                (f"%{field}%", top_k),
+            )
+            for row in cur.fetchall():
+                cid = f"fill_requirement_{row[0]}"
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                results.append(
+                    {
+                        "chunk_id": cid,
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[2] or 1,
+                        "source_db": "fill_requirement_text",
+                        "content": row[3] or "",
+                        "score": 0.9,
+                        "metadata": {"field_name": field},
+                    }
+                )
+
+    return results[:top_k]
 
 
 def _normalize_year_month(year_month: str) -> str:
@@ -776,6 +872,9 @@ def keyword_search(query: str, top_k: int = 10) -> str:
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
                 results.append(chunk)
+        for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in {r.get("chunk_id") for r in results}:
+                results.append(chunk)
         if _should_include_structured_tables(query):
             results.extend(_query_structured_tables(query, top_k))
         for chunk in _query_text_chunks_literal(conn, query, top_k):
@@ -861,6 +960,15 @@ def category_search(query: str, top_k: int = 5) -> str:
                 "doc_id": chunk["doc_id"],
                 "page_number": chunk["page_number"],
                 "section": "",
+                "content": chunk["content"][:300],
+                "score": chunk["score"],
+            })
+        for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+            results.append({
+                "chunk_id": chunk["chunk_id"],
+                "doc_id": chunk["doc_id"],
+                "page_number": chunk["page_number"],
+                "section": chunk.get("metadata", {}).get("field_name", ""),
                 "content": chunk["content"][:300],
                 "score": chunk["score"],
             })
@@ -969,6 +1077,10 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
+        for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
         if _should_include_structured_tables(query):
             for chunk in _query_structured_tables(query, top_k):
                 if chunk["chunk_id"] not in seen_ids:
@@ -1065,6 +1177,10 @@ def text_search(query: str, top_k: int = 8) -> str:
 
         # 3. fee_rates and other structured tables — score 0.9, always passes filter
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                results.append(chunk)
+        for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)

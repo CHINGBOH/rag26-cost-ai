@@ -44,6 +44,14 @@ def test_annual_material_price_queries_keep_compound_material_and_year() -> None
     assert analysis["entities"]["material_name"] == "钛合金门窗"
 
 
+def test_fill_requirement_queries_are_detected_and_keep_field_name() -> None:
+    analysis = query_analyzer.QueryAnalyzer().analyze("工程项目中施工地点要按照什么要求填写")
+
+    assert analysis["intent"] == "standard_ref"
+    assert query_analyzer.is_fill_requirement_query("工程项目中施工地点要按照什么要求填写")
+    assert query_analyzer.extract_fill_requirement_search_term("工程项目中施工地点要按照什么要求填写") == "施工地点"
+
+
 def test_extract_fee_formula_search_term_keeps_year_and_fee_item() -> None:
     term = query_analyzer.extract_fee_formula_search_term("2025版费率标准中，企业管理费的计算方法是什么？")
 
@@ -113,3 +121,40 @@ def test_text_search_rolls_back_after_vector_error(monkeypatch) -> None:
 
     assert fake_conn.rollback_called is True
     assert result[0]["chunk_id"] == "tc_literal"
+
+
+def test_query_fill_requirement_text_chunks_returns_exact_clause() -> None:
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params) -> None:
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            return [
+                (
+                    42,
+                    "doc_fill",
+                    5,
+                    "4.2.5施工地点应按招标文件或合同约定工程地点填写。",
+                )
+            ]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    result = tools._query_fill_requirement_text_chunks(
+        FakeConn(),
+        "工程项目中施工地点要按照什么要求填写",
+        top_k=3,
+    )
+
+    assert len(result) == 1
+    assert result[0]["source_db"] == "fill_requirement_text"
+    assert "施工地点应按招标文件或合同约定工程地点填写" in result[0]["content"]
