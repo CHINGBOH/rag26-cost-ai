@@ -39,6 +39,7 @@ PG_CONFIG = {
 
 # Embedding (reuse local model)
 EMBEDDING_MODEL = None
+UNIT_TOKEN_RE = re.compile(r"^(m³|m²|㎡|m|t|kg|个|套|组|台|块|片|工日|支|根|卷|桶|箱|件)$")
 
 
 def _get_embedding_model():
@@ -203,6 +204,60 @@ def clean_price(val: str) -> Optional[float]:
         return None
 
 
+def normalize_material_unit(material_name: str, unit: str) -> str:
+    normalized = (unit or "").strip().replace("㎡", "m²").replace("?", "")
+    if normalized in {"m", "m²"} and material_name in {"中砂", "碎石", "碎石5~25", "碎石5～25", "石粉渣"}:
+        return "m³"
+    return normalized
+
+
+def split_collapsed_unit_price(text: str, material_name: str) -> tuple[str, Optional[float], str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return "", None, ""
+
+    match = re.match(
+        r"^(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片|工日|支|根|卷|桶|箱|件)\s*(?P<price>\d+(?:\.\d+)?)$",
+        normalized,
+    )
+    if match:
+        unit = normalize_material_unit(material_name, match.group("unit"))
+        return unit, clean_price(match.group("price")), ""
+
+    price = clean_price(normalized)
+    if price is not None:
+        return "", price, ""
+
+    return "", None, normalized
+
+
+def normalize_price_row(row: Dict[str, str]) -> Dict[str, str]:
+    normalized = dict(row)
+    material = (normalized.get("material") or "").strip()
+    spec = (normalized.get("spec") or "").strip()
+    unit = (normalized.get("unit") or "").strip()
+    price_tax = normalized.get("price_tax", "")
+    price = normalized.get("price", "")
+
+    if not unit and not price_tax and spec:
+        split_unit, split_price, split_spec = split_collapsed_unit_price(spec, material)
+        if split_unit or split_price is not None:
+            normalized["unit"] = split_unit
+            normalized["price_tax"] = "" if split_price is None else str(split_price)
+            normalized["spec"] = split_spec
+
+    if unit and not price_tax and not price and spec and not UNIT_TOKEN_RE.match(unit):
+        merged = f"{unit} {spec}".strip()
+        split_unit, split_price, split_spec = split_collapsed_unit_price(merged, material)
+        if split_unit or split_price is not None:
+            normalized["unit"] = split_unit
+            normalized["price_tax"] = "" if split_price is None else str(split_price)
+            normalized["spec"] = split_spec
+
+    normalized["unit"] = normalize_material_unit(material, normalized.get("unit", ""))
+    return normalized
+
+
 def infer_category(material_name: str) -> str:
     """从材料名推断品类"""
     name = material_name.lower()
@@ -275,6 +330,7 @@ def import_ocr_file(path: Path, conn) -> int:
                     rows = _parse_html_table_simple(html)
 
             for row in rows:
+                row = normalize_price_row(row)
                 material = row.get("material", "").strip()
                 if not material or len(material) < 2:
                     continue

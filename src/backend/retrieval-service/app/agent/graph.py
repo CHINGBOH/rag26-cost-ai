@@ -373,26 +373,26 @@ def _build_summary_text(query_type: str, direct_answer: str) -> str:
     return " ".join(part for part in picked if part).strip()
 
 
-def _highlight_label(sentence: str, query_type: str) -> str:
+def _highlight_kind(sentence: str, query_type: str) -> str:
     if any(token in sentence for token in ("适用", "适用于", "范围")):
-        return "适用范围"
+        return "scope"
     if any(token in sentence for token in ("不单独计算", "不另计", "已包括", "不单列")):
-        return "排除项"
+        return "exclusion"
     if any(token in sentence for token in ("按“", "按\"", "按", "计量单位", "为单位计算")) and "计算" in sentence:
-        return "计量/计算"
+        return "method"
     if "人工费" in sentence:
-        return "人工费"
+        return "labor"
     if "材料费" in sentence:
-        return "材料费"
+        return "material"
     if "机械费" in sentence:
-        return "机械费"
+        return "machine"
     if any(token in sentence for token in ("价格", "单价", "均价", "差值", "涨幅", "跌幅")):
-        return "关键数值"
+        return "metric"
     if any(token in sentence for token in ("建议", "注意", "无法", "未单独列出", "缺失")):
-        return "提示"
+        return "hint"
     if query_type == "standard_ref":
-        return "规则要点"
-    return "关键信息"
+        return "rule"
+    return "detail"
 
 
 def _build_highlights(query_type: str, direct_answer: str, analysis_text: str) -> list[dict]:
@@ -405,7 +405,7 @@ def _build_highlights(query_type: str, direct_answer: str, analysis_text: str) -
         seen_values.add(normalized)
         highlights.append(
             {
-                "label": _highlight_label(normalized, query_type),
+                "kind": _highlight_kind(normalized, query_type),
                 "value": normalized,
             }
         )
@@ -444,7 +444,7 @@ def _build_answer_sections_presentation(
     highlights = _build_highlights(query_type, direct_answer, analysis_text)
     analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
     sections = [
-        {"label": "关键说明" if idx == 0 else "补充说明", "body": paragraph}
+        {"kind": "analysis" if idx == 0 else "detail", "body": paragraph}
         for idx, paragraph in enumerate(analysis_paragraphs[:2])
     ]
     sources = _parse_citation_items(citations_text)[:4]
@@ -455,6 +455,7 @@ def _build_answer_sections_presentation(
 
     return {
         "type": "answer_sections",
+        "query_type": query_type,
         "title": _build_answer_title(query_type),
         "note": note,
         "summary": _build_summary_text(query_type, direct_answer),

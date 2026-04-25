@@ -71,12 +71,14 @@ export interface PresentationPoint {
 }
 
 export interface PresentationHighlight {
-  label: string;
+  label?: string;
+  kind?: string;
   value: string;
 }
 
 export interface PresentationSection {
-  label: string;
+  label?: string;
+  kind?: string;
   body: string;
 }
 
@@ -99,6 +101,7 @@ export interface PresentationSource {
 
 export interface PresentationPayload {
   type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps';
+  query_type?: string;
   title: string;
   unit?: string;
   points?: PresentationPoint[];

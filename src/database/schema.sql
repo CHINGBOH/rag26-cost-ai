@@ -89,6 +89,52 @@ CREATE INDEX IF NOT EXISTS idx_pr_name_trgm ON price_records USING gin (material
 CREATE INDEX IF NOT EXISTS idx_pr_embedding ON price_records USING hnsw (embedding vector_cosine_ops)
     WHERE embedding IS NOT NULL;
 
+-- ── trend_points / trend_relations ──────────────────────────────────
+-- 用于存储走势图恢复后的时序点与相邻月关系，PostgreSQL 作为主存。
+CREATE TABLE IF NOT EXISTS trend_points (
+    id                    SERIAL PRIMARY KEY,
+    series_key            TEXT NOT NULL,
+    material_name         VARCHAR(200) NOT NULL,
+    normalized_material   VARCHAR(200) NOT NULL,
+    year_month            VARCHAR(7) NOT NULL,
+    unit                  VARCHAR(20),
+    value                 NUMERIC(12,4) NOT NULL,
+    source_doc_id         TEXT,
+    source_file_name      TEXT,
+    source_chart_page     INTEGER,
+    source_table_page     INTEGER,
+    source_price_record_id INTEGER,
+    source_method         VARCHAR(50) DEFAULT 'derived_from_price_records',
+    metadata              JSONB DEFAULT '{}',
+    created_at            TIMESTAMP DEFAULT NOW(),
+    UNIQUE (series_key, year_month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tp_series     ON trend_points(series_key, year_month);
+CREATE INDEX IF NOT EXISTS idx_tp_material   ON trend_points(normalized_material, year_month);
+CREATE INDEX IF NOT EXISTS idx_tp_doc        ON trend_points(source_doc_id);
+
+CREATE TABLE IF NOT EXISTS trend_relations (
+    id                    SERIAL PRIMARY KEY,
+    series_key            TEXT NOT NULL,
+    from_point_id         INTEGER NOT NULL REFERENCES trend_points(id) ON DELETE CASCADE,
+    to_point_id           INTEGER NOT NULL REFERENCES trend_points(id) ON DELETE CASCADE,
+    from_year_month       VARCHAR(7) NOT NULL,
+    to_year_month         VARCHAR(7) NOT NULL,
+    unit                  VARCHAR(20),
+    delta_value           NUMERIC(12,4) NOT NULL,
+    delta_percent         NUMERIC(12,4),
+    trend_direction       VARCHAR(10) NOT NULL,
+    months_apart          INTEGER NOT NULL DEFAULT 1,
+    metadata              JSONB DEFAULT '{}',
+    created_at            TIMESTAMP DEFAULT NOW(),
+    UNIQUE (from_point_id, to_point_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tr_series     ON trend_relations(series_key, from_year_month, to_year_month);
+CREATE INDEX IF NOT EXISTS idx_tr_from_point ON trend_relations(from_point_id);
+CREATE INDEX IF NOT EXISTS idx_tr_to_point   ON trend_relations(to_point_id);
+
 -- ── fee_rates ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS fee_rates (
     id               SERIAL PRIMARY KEY,

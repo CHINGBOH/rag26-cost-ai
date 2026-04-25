@@ -638,14 +638,82 @@ def _extract_material_price_from_ocr_page(raw_text: str, material_name: str) -> 
     if not raw_text or material_name not in raw_text:
         return None
 
-    match = re.search(
+    patterns = [
         rf"{re.escape(material_name)}\s*\n(?P<unit>[A-Za-z0-9㎡mM\?³²/\"]{{1,8}})\s*\n(?P<price>\d+\.\d{{2}})",
-        raw_text,
-    )
-    if match:
-        unit = _normalize_material_unit(material_name, match.group("unit"))
-        return unit, match.group("price")
+        rf"{re.escape(material_name)}\s+(?P<unit>[A-Za-z0-9㎡mM\?³²/\"]{{1,8}})\s+(?P<price>\d+\.\d{{2}})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw_text)
+        if match:
+            unit = _normalize_material_unit(material_name, match.group("unit"))
+            return unit, match.group("price")
     return None
+
+
+def _query_material_text_fallback(
+    conn,
+    material_name: str,
+    year_month: str,
+    top_k: int = 5,
+) -> list[dict]:
+    period_label = _build_price_period_label(year_month)
+    year_month_norm = _normalize_year_month(year_month)
+    if not period_label or not material_name.strip() or not year_month_norm:
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT DISTINCT doc_id, page_number
+                FROM text_chunks
+                WHERE content ILIKE %s
+                  AND content ILIKE %s
+                ORDER BY page_number
+                LIMIT %s
+            """,
+            (f"%{period_label}%", f"%{material_name}%", max(top_k * 6, 18)),
+        )
+        anchor_pages = cur.fetchall()
+
+    results: list[dict] = []
+    for doc_id, page_number in anchor_pages:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT id, content
+                    FROM text_chunks
+                    WHERE doc_id = %s AND page_number = %s
+                    ORDER BY id
+                """,
+                (doc_id, page_number),
+            )
+            page_rows = cur.fetchall()
+
+        combined_content = "\n".join((row[1] or "") for row in page_rows)
+        parsed = _extract_material_price_from_ocr_page(combined_content, material_name)
+        if not parsed:
+            continue
+
+        unit, price = parsed
+        results.append(
+            {
+                "chunk_id": f"text_material_{doc_id}_{page_number}_{material_name}",
+                "doc_id": doc_id or "",
+                "page_number": page_number or 1,
+                "source_db": "text_material_fallback",
+                "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{year_month_norm}",
+                "score": 0.85,
+                "metadata": {
+                    "year_month": year_month_norm,
+                    "unit": unit,
+                    "price": price,
+                },
+            }
+        )
+        if len(results) >= top_k:
+            break
+
+    return results
 
 
 def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[dict]:
@@ -967,6 +1035,53 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
         if conn is not None:
             _put_pg_conn(conn)
     return results
+
+
+def _query_trend_points(
+    conn,
+    material_name: str,
+    start_month: str = "",
+    end_month: str = "",
+) -> list[tuple]:
+    normalized_material = re.sub(r"\s+", "", (material_name or "")).replace("～", "~")
+    if not normalized_material:
+        return []
+
+    where_parts = [
+        "(normalized_material = %s OR material_name ILIKE %s)",
+    ]
+    params: list = [normalized_material, f"%{material_name}%"]
+    if start_month:
+        where_parts.append("year_month >= %s")
+        params.append(start_month)
+    if end_month:
+        where_parts.append("year_month <= %s")
+        params.append(end_month)
+
+    where_sql = "WHERE " + " AND ".join(where_parts)
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                f"""
+                SELECT tp.id, tp.year_month, tp.value, tp.unit,
+                       COALESCE(tp.source_table_page, tp.source_chart_page, 1) AS page_number,
+                       COALESCE(tp.source_doc_id, 'trend_points') AS doc_id,
+                       tp.material_name,
+                       tr.delta_value,
+                       tr.delta_percent,
+                       tr.trend_direction
+                FROM trend_points tp
+                LEFT JOIN trend_relations tr
+                  ON tr.to_point_id = tp.id
+                {where_sql}
+                ORDER BY tp.year_month ASC
+                LIMIT 48
+                """,
+                params,
+            )
+        except Exception:
+            return []
+        return cur.fetchall()
 
 
 # ── 新工具：pg_vector_search（PG pgvector）──────────────────────────────────
@@ -1469,6 +1584,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     else:
                         where_clauses.append("year_month = %s")
                         params.append(period_filter)
+                where_clauses.append("price_tax_included IS NOT NULL")
 
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
@@ -1515,6 +1631,26 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                         f"for spec='{specification}' period='{normalized_period}'"
                     )
                     return json.dumps(text_fallback_results[:top_k], ensure_ascii=False)
+            if (
+                not rows
+                and normalized_period
+                and material_name
+                and not specification
+                and not _is_year_only_period(normalized_period)
+            ):
+                text_fallback_results = _query_material_text_fallback(
+                    conn=conn,
+                    material_name=material_name,
+                    year_month=normalized_period,
+                    top_k=top_k,
+                )
+                if text_fallback_results:
+                    logger.info(
+                        f"[price_query] text material fallback recovered {len(text_fallback_results)} rows "
+                        f"for material='{material_name}' period='{normalized_period}'"
+                    )
+                    return json.dumps(text_fallback_results[:top_k], ensure_ascii=False)
+
             if (
                 not rows
                 and normalized_period
@@ -1621,6 +1757,40 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
     conn = None
     try:
         conn = _get_pg_conn()
+        trend_point_rows = _query_trend_points(conn, material_name, start_month, end_month)
+        if trend_point_rows:
+            chunks = []
+            for point_id, year_month, avg_price, unit, page_number, doc_id, display_name, delta_value, delta_percent, trend_direction in trend_point_rows:
+                avg = float(avg_price or 0)
+                content = (
+                    f"{display_name or material_name} 价格走势 "
+                    f"期间:{year_month} "
+                    f"均价:{avg:.2f}元/{unit} "
+                )
+                if delta_value is not None:
+                    content += (
+                        f"环比变化:{float(delta_value):+.2f} "
+                        f"环比幅度:{float(delta_percent):+.2f}% "
+                        f"趋势:{trend_direction} "
+                    )
+                chunks.append({
+                    "chunk_id": f"trend_point_{point_id}",
+                    "doc_id": doc_id or "trend_points",
+                    "page_number": page_number or 1,
+                    "source_db": "trend_points",
+                    "content": content,
+                    "score": 0.88,
+                    "metadata": {
+                        "year_month": year_month,
+                        "avg_price": avg,
+                        "unit": unit,
+                        "delta": float(delta_value) if delta_value is not None else None,
+                        "delta_percent": float(delta_percent) if delta_percent is not None else None,
+                        "trend_direction": trend_direction,
+                    },
+                })
+            return json.dumps(chunks, ensure_ascii=False)
+
         where_parts: list[str] = []
         params: list = [f"%{material_name}%", f"%{material_name}%", material_name]
         where_parts.append(
@@ -1691,7 +1861,9 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
         ocr_rows: list[tuple[str, float, str, str, int, str]] = []
         months_to_fill = [month for month in _iter_months(start_month, end_month) if month not in existing_months]
         for month in months_to_fill:
-            fallback_rows = _query_material_ocr_fallback(material_name, month)
+            fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=1)
+            if not fallback_rows:
+                fallback_rows = _query_material_ocr_fallback(material_name, month)
             if not fallback_rows:
                 continue
             for row in fallback_rows:

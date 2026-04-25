@@ -122,8 +122,12 @@ def test_finalize_presentation_builds_answer_sections_for_rule_query():
 
     assert presentation is not None
     assert presentation["type"] == "answer_sections"
+    assert presentation["query_type"] == "standard_ref"
     assert presentation["title"] == "规则说明"
     assert presentation["summary"].startswith("送配电装置系统调试适用于10kV以下")
+    assert presentation["highlights"][0]["kind"] in {"scope", "rule", "detail"}
+    assert "label" not in presentation["highlights"][0]
+    assert presentation["sections"][0]["kind"] == "analysis"
     assert len(presentation["highlights"]) >= 2
     assert presentation["sources"][0]["page"] == "314"
 

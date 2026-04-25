@@ -64,6 +64,134 @@ function formatSandboxNumber(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toString();
 }
 
+function getTrendAxisConfig(points: PresentationPoint[]): {
+  domain?: [number, number];
+  ticks?: number[];
+} {
+  const values = points.map((point) => point.value).filter((value) => Number.isFinite(value));
+  if (values.length === 0) return {};
+
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const valueSpan = maxValue - minValue;
+  const padding = valueSpan < 0.001 ? Math.max(Math.abs(maxValue) * 0.02, 0.02) : Math.max(valueSpan * 0.6, 0.02);
+  const lowerBound = Number((minValue - padding).toFixed(4));
+  const upperBound = Number((maxValue + padding).toFixed(4));
+
+  if (!Number.isFinite(lowerBound) || !Number.isFinite(upperBound) || lowerBound >= upperBound) {
+    return {};
+  }
+
+  const tickCount = 4;
+  const step = (upperBound - lowerBound) / (tickCount - 1);
+  const ticks = Array.from({ length: tickCount }, (_, index) =>
+    Number((lowerBound + step * index).toFixed(4)),
+  );
+
+  return {
+    domain: [lowerBound, upperBound],
+    ticks,
+  };
+}
+
+function getDeltaSummary(delta?: number | null, deltaPercent?: number | null, unit?: string): string {
+  if (delta == null || Number.isNaN(delta)) return '暂无变化数据';
+  const amount = `${delta > 0 ? '+' : ''}${delta.toFixed(2)}${unit ? ` 元/${unit}` : ''}`;
+  if (deltaPercent == null || Number.isNaN(deltaPercent)) return amount;
+  return `${amount}（${deltaPercent > 0 ? '+' : ''}${deltaPercent.toFixed(2)}%）`;
+}
+
+function getTrendDirectionText(delta?: number | null): string {
+  if (delta == null || Number.isNaN(delta) || Math.abs(delta) < 0.001) return '持平';
+  return delta > 0 ? '上涨' : '下跌';
+}
+
+function getTrendDirectionClass(delta?: number | null): string {
+  if (delta == null || Number.isNaN(delta) || Math.abs(delta) < 0.001) return 'flat';
+  return delta > 0 ? 'up' : 'down';
+}
+
+function getAnswerPresentationTitle(queryType?: string, fallbackTitle?: string): string {
+  const titleMap: Record<string, string> = {
+    standard_ref: '规则解读',
+    price: '价格回答',
+    comparison: '对比结论',
+    trend_chart: '趋势结论',
+    calculation: '计算结论',
+  };
+
+  return (queryType && titleMap[queryType]) || fallbackTitle || '回答摘要';
+}
+
+function getAnswerSummaryLabel(queryType?: string): string {
+  if (queryType === 'standard_ref') return '直接规则';
+  if (queryType === 'comparison') return '直接结论';
+  if (queryType === 'trend_chart') return '趋势结论';
+  return '直接答案';
+}
+
+function getHighlightBaseLabel(kind?: string, queryType?: string): string {
+  const kindMap: Record<string, string> = {
+    scope: '适用范围',
+    exclusion: '不计范围',
+    method: '计量方式',
+    labor: '人工费',
+    material: '材料费',
+    machine: '机械费',
+    metric: '关键数值',
+    hint: '提示',
+    rule: queryType === 'standard_ref' ? '规则要点' : '关键信息',
+    detail: '关键信息',
+  };
+
+  return (kind && kindMap[kind]) || '关键信息';
+}
+
+function getSectionBaseLabel(kind?: string, queryType?: string): string {
+  if (kind === 'analysis') {
+    return queryType === 'standard_ref' ? '依据说明' : '核心说明';
+  }
+  return '补充说明';
+}
+
+function buildDisplayLabels(
+  items: Array<{ label?: string; kind?: string }>,
+  resolver: (kind?: string) => string,
+): string[] {
+  const totalByLabel = new Map<string, number>();
+  const nextIndexByLabel = new Map<string, number>();
+
+  const baseLabels = items.map((item) => item.label?.trim() || resolver(item.kind));
+  for (const baseLabel of baseLabels) {
+    totalByLabel.set(baseLabel, (totalByLabel.get(baseLabel) ?? 0) + 1);
+  }
+
+  return baseLabels.map((baseLabel) => {
+    const total = totalByLabel.get(baseLabel) ?? 0;
+    if (total <= 1) return baseLabel;
+
+    const nextIndex = (nextIndexByLabel.get(baseLabel) ?? 0) + 1;
+    nextIndexByLabel.set(baseLabel, nextIndex);
+    return `${baseLabel} ${String(nextIndex).padStart(2, '0')}`;
+  });
+}
+
+const TrendTooltipContent: React.FC<{
+  active?: boolean;
+  payload?: Array<{ value?: number; payload?: { label?: string } }>;
+  label?: string;
+  unit?: string;
+}> = ({ active, payload, label, unit }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const value = Number(payload[0]?.value);
+  return (
+    <div className="trend-tooltip-card">
+      <div className="trend-tooltip-label">{label}</div>
+      <div className="trend-tooltip-value">{formatPresentationValue(value, unit)}</div>
+    </div>
+  );
+};
+
 function normalizeSandboxExpression(expression: string): string {
   return expression
     .replace(/（/g, '(')
@@ -175,19 +303,39 @@ const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ 
 };
 
 const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation }) => {
+  const [activeTrendIndex, setActiveTrendIndex] = useState(0);
+
+  useEffect(() => {
+    if (presentation.type === 'price_trend') {
+      const pointCount = presentation.points?.length ?? 0;
+      setActiveTrendIndex(pointCount > 1 ? pointCount - 1 : 0);
+    }
+  }, [presentation.type, presentation.points?.length]);
+
   if (presentation.type === 'answer_sections') {
+    const answerTitle = getAnswerPresentationTitle(presentation.query_type, presentation.title);
+    const answerSummaryLabel = getAnswerSummaryLabel(presentation.query_type);
+    const highlightLabels = buildDisplayLabels(
+      presentation.highlights ?? [],
+      (kind) => getHighlightBaseLabel(kind, presentation.query_type),
+    );
+    const sectionLabels = buildDisplayLabels(
+      presentation.sections ?? [],
+      (kind) => getSectionBaseLabel(kind, presentation.query_type),
+    );
+
     return (
       <div className="presentation-card answer-sections">
         <div className="presentation-header">
           <div>
-            <div className="presentation-title">{presentation.title}</div>
+            <div className="presentation-title">{answerTitle}</div>
             {presentation.note && <div className="presentation-note">{presentation.note}</div>}
           </div>
         </div>
 
         {presentation.summary && (
           <div className="answer-summary-card">
-            <span className="answer-summary-label">直接结论</span>
+            <span className="answer-summary-label">{answerSummaryLabel}</span>
             <div
               className="answer-summary-text"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
@@ -198,8 +346,8 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         {presentation.highlights && presentation.highlights.length > 0 && (
           <div className="answer-highlight-grid">
             {presentation.highlights.map((item, index) => (
-              <div key={`${item.label}-${index}`} className="answer-highlight-item">
-                <span className="answer-highlight-label">{item.label}</span>
+              <div key={`${item.kind ?? item.label ?? 'highlight'}-${index}`} className="answer-highlight-item">
+                <span className="answer-highlight-label">{highlightLabels[index]}</span>
                 <div
                   className="answer-highlight-value"
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
@@ -212,8 +360,8 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         {presentation.sections && presentation.sections.length > 0 && (
           <div className="answer-sections-list">
             {presentation.sections.map((section, index) => (
-              <div key={`${section.label}-${index}`} className="answer-section-item">
-                <div className="answer-section-label">{section.label}</div>
+              <div key={`${section.kind ?? section.label ?? 'section'}-${index}`} className="answer-section-item">
+                <div className="answer-section-label">{sectionLabels[index]}</div>
                 <div
                   className="answer-section-body"
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
@@ -297,9 +445,21 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
     label: point.label,
     value: point.value,
   }));
+  const isTrendPresentation = presentation.type === 'price_trend';
+  const trendPoints = presentation.type === 'price_trend' ? presentation.points ?? [] : [];
+  const trendAxisConfig = getTrendAxisConfig(trendPoints);
+  const activePointIndex = Math.min(activeTrendIndex, Math.max(trendPoints.length - 1, 0));
+  const activePoint = trendPoints[activePointIndex] ?? null;
+  const previousPoint = activePointIndex > 0 ? trendPoints[activePointIndex - 1] : null;
+  const activePointDelta =
+    activePoint && previousPoint ? activePoint.value - previousPoint.value : presentation.delta ?? null;
+  const activePointDeltaPercent =
+    activePoint && previousPoint && Math.abs(previousPoint.value) > 0.001
+      ? (activePointDelta! / previousPoint.value) * 100
+      : presentation.delta_percent ?? null;
 
   return (
-    <div className="presentation-card">
+    <div className={`presentation-card ${isTrendPresentation ? 'presentation-card-trend' : ''}`}>
       <div className="presentation-header">
         <div>
           <div className="presentation-title">{presentation.title}</div>
@@ -308,8 +468,8 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         {presentation.unit && <span className="presentation-unit">单位：元/{presentation.unit}</span>}
       </div>
 
-        {presentation.type === 'price_comparison' && (
-          <div className="presentation-metrics">
+      {presentation.type === 'price_comparison' && (
+        <div className="presentation-metrics">
           {(presentation.points ?? []).map((point) => (
             <div key={point.label} className="presentation-metric">
               <span className="presentation-metric-label">{point.label}</span>
@@ -334,48 +494,210 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         </div>
       )}
 
-      <div className="presentation-chart">
-        <ResponsiveContainer width="100%" height={220}>
-          {presentation.type === 'price_trend' ? (
-            <LineChart data={chartData} margin={{ top: 18, right: 16, left: 4, bottom: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.55} />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} />
-              <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={72} />
-              <Tooltip formatter={(value: number) => formatPresentationValue(value, presentation.unit)} />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="var(--color-primary)"
-                strokeWidth={2.5}
-                dot={{ r: 3.5, strokeWidth: 2, fill: '#fff' }}
-                activeDot={{ r: 5 }}
-              />
-            </LineChart>
-          ) : (
-            <BarChart data={chartData} margin={{ top: 22, right: 16, left: 4, bottom: 8 }} barCategoryGap="42%">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.55} />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} />
-              <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={72} />
-              <Tooltip formatter={(value: number) => formatPresentationValue(value, presentation.unit)} />
-              <Bar
-                dataKey="value"
-                fill="var(--color-primary)"
-                radius={[8, 8, 0, 0]}
-                barSize={26}
-                maxBarSize={30}
-              >
-                <LabelList
-                  dataKey="value"
-                  position="top"
-                  offset={8}
-                  formatter={(value: number) => value.toFixed(2)}
-                  style={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
-                />
-              </Bar>
-            </BarChart>
+      {presentation.type === 'price_trend' && trendPoints.length >= 2 && (
+        <>
+          <div className="presentation-metrics trend-metrics">
+            <div className="presentation-metric">
+              <span className="presentation-metric-label">起点</span>
+              <strong>{formatPresentationValue(trendPoints[0].value, presentation.unit)}</strong>
+              <span className="presentation-metric-sub">{trendPoints[0].label}</span>
+            </div>
+            <div className="presentation-metric">
+              <span className="presentation-metric-label">终点</span>
+              <strong>
+                {formatPresentationValue(trendPoints[trendPoints.length - 1].value, presentation.unit)}
+              </strong>
+              <span className="presentation-metric-sub">
+                {trendPoints[trendPoints.length - 1].label}
+              </span>
+            </div>
+            <div
+              className={`presentation-metric trend-emphasis ${getTrendDirectionClass(
+                presentation.delta,
+              )}`}
+            >
+              <span className="presentation-metric-label">趋势结论</span>
+              <strong>{getTrendDirectionText(presentation.delta)}</strong>
+              <span className="presentation-metric-sub">
+                {getDeltaSummary(presentation.delta, presentation.delta_percent, presentation.unit)}
+              </span>
+            </div>
+          </div>
+
+          {activePoint && (
+            <div className="trend-active-panel">
+              <div className="trend-active-header">
+                <div>
+                  <div className="trend-active-label">当前查看</div>
+                  <div className="trend-active-title">{activePoint.label}</div>
+                </div>
+                <div
+                  className={`trend-active-badge ${getTrendDirectionClass(activePointDelta)}`}
+                >
+                  {getTrendDirectionText(activePointDelta)}
+                </div>
+              </div>
+
+              <div className="trend-active-grid">
+                <div className="trend-active-item">
+                  <span className="trend-active-item-label">价格</span>
+                  <strong>{formatPresentationValue(activePoint.value, presentation.unit)}</strong>
+                </div>
+                <div className="trend-active-item">
+                  <span className="trend-active-item-label">相邻变化</span>
+                  <strong>
+                    {getDeltaSummary(
+                      activePointDelta,
+                      activePointDeltaPercent,
+                      presentation.unit,
+                    )}
+                  </strong>
+                </div>
+                <div className="trend-active-item">
+                  <span className="trend-active-item-label">来源</span>
+                  <strong>
+                    {activePoint.sources?.length ? activePoint.sources.join(' / ') : '知识库记录'}
+                    {activePoint.pages?.length ? ` · P${activePoint.pages.join(', P')}` : ''}
+                  </strong>
+                </div>
+              </div>
+            </div>
           )}
-        </ResponsiveContainer>
+        </>
+      )}
+
+      <div className="presentation-chart-shell">
+        {presentation.type === 'price_trend' && trendPoints.length > 0 && (
+          <div className="presentation-chart-head">
+            <div>
+              <div className="presentation-chart-kicker">TREND VIEW</div>
+              <div className="presentation-chart-caption">
+                {trendPoints[0].label}
+                {trendPoints.length > 1 ? ` - ${trendPoints[trendPoints.length - 1].label}` : ''}
+              </div>
+            </div>
+            <div className="presentation-chart-legend">
+              <span className="presentation-chart-legend-dot" />
+              <span className="presentation-chart-legend-text">Market price line</span>
+            </div>
+          </div>
+        )}
+
+        <div className="presentation-chart">
+          <ResponsiveContainer width="100%" height={220}>
+            {presentation.type === 'price_trend' ? (
+              <LineChart
+                data={chartData}
+                margin={{ top: 18, right: 16, left: 4, bottom: 8 }}
+                onMouseMove={(state) => {
+                  if (typeof state?.activeTooltipIndex === 'number') {
+                    setActiveTrendIndex(state.activeTooltipIndex);
+                  }
+                }}
+              >
+                <defs>
+                  <linearGradient id="trendLineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#38bdf8" />
+                    <stop offset="55%" stopColor="#3b82f6" />
+                    <stop offset="100%" stopColor="#8b5cf6" />
+                  </linearGradient>
+                  <filter id="trendLineGlow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow
+                      dx="0"
+                      dy="8"
+                      stdDeviation="8"
+                      floodColor="#3b82f6"
+                      floodOpacity="0.18"
+                    />
+                  </filter>
+                </defs>
+                <CartesianGrid
+                  vertical={false}
+                  strokeDasharray="4 6"
+                  stroke="rgba(148, 163, 184, 0.28)"
+                />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: 'var(--text-muted)' }}
+                  width={72}
+                  domain={trendAxisConfig.domain}
+                  ticks={trendAxisConfig.ticks}
+                  tickFormatter={(value: number) => value.toFixed(2)}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <Tooltip
+                  cursor={{ stroke: 'rgba(59, 130, 246, 0.75)', strokeDasharray: '4 4', strokeWidth: 1.25 }}
+                  content={<TrendTooltipContent unit={presentation.unit} />}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  stroke="url(#trendLineGradient)"
+                  strokeWidth={3.5}
+                  filter="url(#trendLineGlow)"
+                  dot={{ r: 4.5, strokeWidth: 2.5, fill: '#f8fafc', stroke: '#2563eb' }}
+                  activeDot={{ r: 7, strokeWidth: 3, fill: '#ffffff', stroke: '#1d4ed8' }}
+                />
+              </LineChart>
+            ) : (
+              <BarChart
+                data={chartData}
+                margin={{ top: 22, right: 16, left: 4, bottom: 8 }}
+                barCategoryGap="42%"
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" opacity={0.55} />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickMargin={8} />
+                <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} width={72} />
+                <Tooltip formatter={(value: number) => formatPresentationValue(value, presentation.unit)} />
+                <Bar
+                  dataKey="value"
+                  fill="var(--color-primary)"
+                  radius={[8, 8, 0, 0]}
+                  barSize={26}
+                  maxBarSize={30}
+                >
+                  <LabelList
+                    dataKey="value"
+                    position="top"
+                    offset={8}
+                    formatter={(value: number) => value.toFixed(2)}
+                    style={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
+                  />
+                </Bar>
+              </BarChart>
+            )}
+          </ResponsiveContainer>
+        </div>
       </div>
+
+      {presentation.type === 'price_trend' && trendPoints.length > 0 && (
+        <div className="trend-point-tabs">
+          {trendPoints.map((point, index) => (
+            <button
+              key={point.label}
+              type="button"
+              className={`trend-point-tab ${index === activeTrendIndex ? 'active' : ''}`}
+              onClick={() => setActiveTrendIndex(index)}
+            >
+              <span className="trend-point-tab-label">{point.label}</span>
+              <strong>{formatPresentationValue(point.value, presentation.unit)}</strong>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {presentation.type === 'price_trend' && trendPoints.length >= 2 && (
+        <div className="trend-summary-strip">
+          <span className={`trend-summary-chip ${getTrendDirectionClass(presentation.delta)}`}>
+            {getTrendDirectionText(presentation.delta)}
+          </span>
+          <span>
+            {trendPoints[0].label} → {trendPoints[trendPoints.length - 1].label}
+          </span>
+          <strong>{getDeltaSummary(presentation.delta, presentation.delta_percent, presentation.unit)}</strong>
+        </div>
+      )}
 
       <div className="presentation-footnotes">
         {(presentation.points ?? []).map((point) => (
