@@ -7,11 +7,13 @@ import os
 import logging
 import json
 import re
+import time
 import threading as _threading
 from typing import List
 from pathlib import Path
 
 from app.agent.query_analyzer import (
+    QueryAnalyzer,
     extract_appendix_standard_terms,
     extract_appendix_standard_title,
     extract_fee_standard_comparison_queries,
@@ -24,6 +26,10 @@ from app.agent.query_analyzer import (
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
+
+RETRIEVAL_PATH_DATABASE = "database"
+RETRIEVAL_PATH_OCR_JSON = "ocr_json"
+RETRIEVAL_PATH_PDF_PAGE = "pdf_page"
 
 # ── PG 连接池（模块级单例，防止每次工具调用新建连接）────────────────────────
 import psycopg2
@@ -72,6 +78,167 @@ _embedding_svc = None
 _embedding_lock = _threading.Lock()
 _ocr_path_cache_lock = _threading.Lock()
 _ocr_month_file_cache: dict[str, str | None] = {}
+_OBSERVABILITY_ENABLED = (
+    os.environ.get("RETRIEVAL_OBSERVABILITY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+)
+_TSV_CONFIG_ENV = os.environ.get("PG_TSV_CONFIG", "chinese").strip().lower()
+_TSV_CONFIG_NAME: str | None = None
+_TSV_CONFIG_LOCK = _threading.Lock()
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(f"[config] invalid int for {name}: {raw!r}; fallback={default}")
+        return default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(f"[config] invalid float for {name}: {raw!r}; fallback={default}")
+        return default
+    if value < min_value:
+        return min_value
+    if value > max_value:
+        return max_value
+    return value
+
+
+def _get_hybrid_runtime_config(top_k: int) -> dict:
+    normalized_top_k = max(1, int(top_k))
+    vector_fetch_multiplier = _env_int("HYBRID_VECTOR_FETCH_MULTIPLIER", 1, minimum=1)
+    text_fetch_multiplier = _env_int("HYBRID_TEXT_FETCH_MULTIPLIER", 1, minimum=1)
+    return {
+        "vector_min_score": _env_float("HYBRID_VECTOR_MIN_SCORE", 0.40, min_value=0.0, max_value=1.0),
+        "vector_fetch_k": normalized_top_k * vector_fetch_multiplier,
+        "text_fetch_k": normalized_top_k * text_fetch_multiplier,
+        "rrf_rank_constant": _env_int("HYBRID_RRF_RANK_CONSTANT", 60, minimum=1),
+        "structured_top_k": _env_int("HYBRID_STRUCTURED_TOP_K", normalized_top_k, minimum=1),
+        "literal_top_k": _env_int("HYBRID_LITERAL_TOP_K", normalized_top_k, minimum=1),
+    }
+
+
+def _apply_query_family_routing(query_family: str, cfg: dict, top_k: int) -> dict:
+    normalized_top_k = max(1, int(top_k))
+    routed = dict(cfg)
+    family_overrides = {
+        "standard_ref": {
+            "vector_fetch_k": max(normalized_top_k, normalized_top_k // 2),
+            "text_fetch_k": normalized_top_k * 3,
+            "structured_top_k": normalized_top_k * 2,
+            "literal_top_k": normalized_top_k * 3,
+        },
+        "trend_chart": {
+            "vector_fetch_k": normalized_top_k,
+            "text_fetch_k": normalized_top_k,
+            "structured_top_k": normalized_top_k * 3,
+            "literal_top_k": normalized_top_k,
+        },
+        "comparison": {
+            "vector_fetch_k": normalized_top_k,
+            "text_fetch_k": normalized_top_k * 2,
+            "structured_top_k": normalized_top_k * 3,
+            "literal_top_k": normalized_top_k * 2,
+        },
+        "price": {
+            "vector_fetch_k": normalized_top_k,
+            "text_fetch_k": normalized_top_k * 2,
+            "structured_top_k": normalized_top_k * 3,
+            "literal_top_k": normalized_top_k,
+        },
+    }
+    for key, value in family_overrides.get(query_family, {}).items():
+        routed[key] = int(value)
+    routed["route_policy"] = query_family
+    return routed
+
+
+def _log_retrieval_observability(event: str, payload: dict) -> None:
+    if not _OBSERVABILITY_ENABLED:
+        return
+    logger.info("[retrieval_observability] %s %s", event, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _graph_tables_available(conn) -> bool:
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    to_regclass('public.canonical_concepts') IS NOT NULL
+                AND to_regclass('public.concept_evidence_links') IS NOT NULL
+                AND to_regclass('public.concept_relations') IS NOT NULL
+                """
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _table_available(conn, table_name: str) -> bool:
+    if not table_name:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", (table_name,))
+            row = cur.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _table_has_column(conn, table_name: str, column_name: str) -> bool:
+    """Return True if table has the named column (checks information_schema)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = %s AND column_name = %s LIMIT 1
+                """,
+                (table_name, column_name),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _resolve_text_search_config(conn) -> str:
+    global _TSV_CONFIG_NAME
+    if _TSV_CONFIG_NAME is not None:
+        return _TSV_CONFIG_NAME
+    with _TSV_CONFIG_LOCK:
+        if _TSV_CONFIG_NAME is not None:
+            return _TSV_CONFIG_NAME
+        preferred = _TSV_CONFIG_ENV if re.fullmatch(r"[a-z0-9_]+", _TSV_CONFIG_ENV) else "simple"
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_catalog.pg_ts_config WHERE cfgname = %s LIMIT 1", (preferred,))
+                if cur.fetchone() is not None:
+                    _TSV_CONFIG_NAME = preferred
+                else:
+                    _TSV_CONFIG_NAME = "simple"
+        except Exception as exc:
+            logger.warning(f"[text_search_config] failed to probe ts config '{preferred}': {exc}")
+            _TSV_CONFIG_NAME = "simple"
+        if _TSV_CONFIG_NAME != preferred:
+            logger.warning(
+                "[text_search_config] ts config '%s' unavailable, fallback to '%s'",
+                preferred,
+                _TSV_CONFIG_NAME,
+            )
+    return _TSV_CONFIG_NAME
 
 
 def _get_embedding_svc():
@@ -95,10 +262,28 @@ def _get_embedding_svc():
 
 def _get_embedding(text: str) -> List[float]:
     """向量化单条文本，复用模块级 GPU 单例"""
+    started = time.perf_counter()
     try:
-        return _get_embedding_svc().encode_single(text)
+        svc = _get_embedding_svc()
+        vector = svc.encode_single(text)
+        _log_retrieval_observability(
+            "embedding_encode",
+            {
+                "backend": getattr(svc, "backend", "unknown"),
+                "dimension": int(getattr(svc, "dimension", 0) or 0),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            },
+        )
+        return vector
     except Exception as e:
         logger.warning(f"Embedding failed: {e}")
+        _log_retrieval_observability(
+            "embedding_encode_failed",
+            {
+                "error": str(e),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            },
+        )
         return []
 
 
@@ -113,6 +298,24 @@ def _chunk_from_pg_row(row: tuple, source_db: str, score: float = 0.0) -> dict:
         "score": round(score, 4),
         "metadata": row[4] if isinstance(row[4], dict) else {},
     }
+
+
+def _with_retrieval_path(
+    chunk: dict,
+    retrieval_path: str,
+    *,
+    evidence_kind: str = "",
+    route_stage: str = "",
+) -> dict:
+    metadata = dict(chunk.get("metadata") or {})
+    metadata["retrieval_path"] = retrieval_path
+    if evidence_kind:
+        metadata["evidence_kind"] = evidence_kind
+    if route_stage:
+        metadata["route_stage"] = route_stage
+    chunk["metadata"] = metadata
+    chunk["retrieval_path"] = retrieval_path
+    return chunk
 
 
 _STRUCTURED_TABLE_QUERY_HINTS = (
@@ -135,6 +338,8 @@ _FEE_ITEM_RE = re.compile(
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
     r"暂列金额|优质优价奖励费|利润"
 )
+
+_concept_analyzer = QueryAnalyzer()
 
 
 def _should_include_structured_tables(query: str) -> bool:
@@ -165,6 +370,770 @@ def _is_fee_formula_query(query: str) -> bool:
 def _extract_fee_formula_item(query: str) -> str:
     match = _FEE_ITEM_RE.search(query or "")
     return match.group(0) if match else ""
+
+
+def _build_query_concepts(query: str) -> list[dict]:
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return []
+
+    analysis = _concept_analyzer.analyze(normalized_query)
+    entities = analysis.get("entities", {})
+    concepts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _append(concept_type: str, concept_name: str, terms: list[str], preferred_tool: str) -> None:
+        normalized_name = (concept_name or "").strip()
+        if not normalized_name:
+            return
+        key = (concept_type, normalized_name)
+        if key in seen:
+            return
+        seen.add(key)
+        concepts.append(
+            {
+                "concept_type": concept_type,
+                "concept_name": normalized_name,
+                "terms": [term for term in terms if term],
+                "preferred_tool": preferred_tool,
+            }
+        )
+
+    for material in entities.get("material_names") or []:
+        preferred_tool = "price_trend" if analysis.get("intent") == "trend_chart" else "price_query"
+        _append("material", material, [material], preferred_tool)
+
+    fee_item = _extract_fee_formula_item(normalized_query)
+    if fee_item:
+        preferred_tool = "text_search"
+        if "计算基数" in normalized_query or "计算公式" in normalized_query:
+            preferred_tool = "text_search"
+        _append(
+            "fee_item",
+            fee_item,
+            [fee_item, f"{fee_item} 计算基数", f"{fee_item} 计算公式"],
+            preferred_tool,
+        )
+
+    if is_fill_requirement_query(normalized_query):
+        field_name = extract_fill_requirement_search_term(normalized_query)
+        _append("fill_field", field_name, [field_name, f"{field_name} 填写要求"], "text_search")
+
+    if is_appendix_standard_query(normalized_query):
+        title = extract_appendix_standard_title(normalized_query)
+        terms = [title, *extract_appendix_standard_terms(normalized_query)]
+        _append("standard_title", title, terms, "pdf_page_search")
+
+    if not concepts:
+        _append("query_theme", normalized_query[:48], [normalized_query], "text_search")
+
+    return concepts[:6]
+
+
+def _count_price_record_hits(conn, term: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT COUNT(*)
+                FROM price_records
+                WHERE material_name ILIKE %s OR specification ILIKE %s
+            """,
+            (f"%{term}%", f"%{term}%"),
+        )
+        row = cur.fetchone()
+    count = int(row[0] if row else 0)
+    if count == 0 and len(term) >= 3:
+        # Trigram fallback for synonym/paraphrase misses (requires pg_trgm)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                        SELECT COUNT(*)
+                        FROM price_records
+                        WHERE word_similarity(%s, material_name) > 0.20
+                    """,
+                    (term,),
+                )
+                trgm_row = cur.fetchone()
+                count = int(trgm_row[0] if trgm_row else 0)
+        except Exception:
+            pass  # pg_trgm not available or query failed, ignore
+    return count
+
+
+def _count_fee_rate_hits(conn, term: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT COUNT(*)
+                FROM fee_rates
+                WHERE fee_name ILIKE %s OR source_text ILIKE %s
+            """,
+            (f"%{term}%", f"%{term}%"),
+        )
+        row = cur.fetchone()
+    return int(row[0] if row else 0)
+
+
+def _sample_text_hit(conn, terms: list[str]) -> tuple[int, str, int, str] | None:
+    if not terms:
+        return None
+    clauses = " OR ".join(["content ILIKE %s"] * len(terms))
+    params = [f"%{term}%" for term in terms]
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+                SELECT id, doc_id, page_number, content
+                FROM text_chunks
+                WHERE {clauses}
+                ORDER BY length(content) ASC
+                LIMIT 1
+            """,
+            params,
+        )
+        return cur.fetchone()
+
+
+def _load_concept_hits_from_graph(conn, query: str, top_k: int = 6) -> list[dict]:
+    concept_defs = _build_query_concepts(query)
+    results: list[dict] = []
+
+    for concept in concept_defs:
+        terms = concept["terms"]
+        concept_type = concept["concept_type"]
+        concept_name = concept["concept_name"]
+        preferred_tool = concept["preferred_tool"]
+
+        patterns = [f"%{term}%" for term in ([concept_name, *terms] if terms else [concept_name])]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    c.id,
+                    c.concept_type,
+                    c.concept_name,
+                    COALESCE(c.preferred_route, %s) AS preferred_route,
+                    COUNT(*) FILTER (WHERE l.evidence_kind IN ('structured_row', 'ocr_row')) AS structured_hits,
+                    COUNT(*) FILTER (WHERE l.evidence_kind = 'embedding_chunk') AS embedding_hits,
+                    COUNT(*) FILTER (WHERE l.evidence_kind = 'pdf_page') AS pdf_hits,
+                    MAX(NULLIF(l.doc_id, '')) AS sample_doc_id,
+                    MAX(NULLIF(l.page_number, 0)) AS sample_page_number,
+                    MAX(NULLIF(l.file_name, '')) AS sample_file_name
+                FROM canonical_concepts c
+                LEFT JOIN concept_evidence_links l ON l.concept_id = c.id
+                WHERE c.concept_type = %s
+                  AND (
+                    c.concept_name ILIKE ANY(%s)
+                    OR EXISTS (
+                        SELECT 1
+                        FROM unnest(COALESCE(c.aliases, ARRAY[]::text[])) AS alias
+                        WHERE alias ILIKE ANY(%s)
+                    )
+                  )
+                GROUP BY c.id, c.concept_type, c.concept_name, c.preferred_route
+                ORDER BY structured_hits DESC, embedding_hits DESC, pdf_hits DESC, c.id ASC
+                LIMIT 1
+                """,
+                (preferred_tool, concept_type, patterns, patterns),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            # Embedding-similarity fallback: ILIKE 未命中时用向量相似度找最近概念
+            concept_term = concept_name or (terms[0] if terms else query)
+            term_emb = _get_embedding(concept_term)
+            if term_emb:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            c.id,
+                            c.concept_type,
+                            c.concept_name,
+                            COALESCE(c.preferred_route, %s) AS preferred_route,
+                            COUNT(*) FILTER (WHERE l.evidence_kind IN ('structured_row', 'ocr_row')) AS structured_hits,
+                            COUNT(*) FILTER (WHERE l.evidence_kind = 'embedding_chunk') AS embedding_hits,
+                            COUNT(*) FILTER (WHERE l.evidence_kind = 'pdf_page') AS pdf_hits,
+                            MAX(NULLIF(l.doc_id, '')) AS sample_doc_id,
+                            MAX(NULLIF(l.page_number, 0)) AS sample_page_number,
+                            MAX(NULLIF(l.file_name, '')) AS sample_file_name,
+                            1 - (c.embedding <=> %s::vector) AS emb_sim
+                        FROM canonical_concepts c
+                        LEFT JOIN concept_evidence_links l ON l.concept_id = c.id
+                        WHERE c.embedding IS NOT NULL
+                          AND 1 - (c.embedding <=> %s::vector) >= 0.70
+                        GROUP BY c.id, c.concept_type, c.concept_name, c.preferred_route, c.embedding
+                        ORDER BY c.embedding <=> %s::vector
+                        LIMIT 1
+                        """,
+                        (preferred_tool, term_emb, term_emb, term_emb),
+                    )
+                    row = cur.fetchone()
+            if not row:
+                continue
+
+        (
+            concept_id,
+            resolved_type,
+            resolved_name,
+            resolved_route,
+            structured_hits,
+            embedding_hits,
+            pdf_hits,
+            sample_doc_id,
+            sample_page_number,
+            sample_file_name,
+            *_extra,  # emb_sim may or may not be present depending on code path
+        ) = row
+
+        structured_hits = int(structured_hits or 0)
+        embedding_hits = int(embedding_hits or 0)
+        pdf_hits = int(pdf_hits or 0)
+        if structured_hits == 0 and embedding_hits == 0 and pdf_hits == 0:
+            continue
+
+        retrieval_path = RETRIEVAL_PATH_DATABASE if (structured_hits + embedding_hits) > 0 else RETRIEVAL_PATH_PDF_PAGE
+        total_hits = structured_hits + embedding_hits + pdf_hits
+        results.append(
+            _with_retrieval_path(
+                {
+                    "chunk_id": f"concept_graph_{concept_id}",
+                    "doc_id": str(sample_doc_id or ""),
+                    "page_number": int(sample_page_number or 1),
+                    "source_db": "concept_graph",
+                    "content": (
+                        f"概念:{resolved_name} 类型:{resolved_type} "
+                        f"结构化:{structured_hits} 向量块:{embedding_hits} 页证据:{pdf_hits} "
+                        f"建议下钻:{resolved_route} 来源:{sample_file_name or ''}"
+                    ).strip(),
+                    "score": 0.93 if (structured_hits + embedding_hits) > 0 else 0.81,
+                    "metadata": {
+                        "concept_id": int(concept_id),
+                        "concept_name": resolved_name,
+                        "concept_type": resolved_type,
+                        "structured_hits": structured_hits,
+                        "embedding_hits": embedding_hits,
+                        "pdf_hits": pdf_hits,
+                        "total_hits": total_hits,
+                        "preferred_tool": resolved_route,
+                        "concept_terms": terms or [resolved_name],
+                        "graph_enabled": True,
+                    },
+                },
+                retrieval_path,
+                evidence_kind="concept_hit",
+                route_stage="primary",
+            )
+        )
+
+        if len(results) >= top_k:
+            break
+
+    return results
+
+
+def _load_concept_hits_heuristic(conn, query: str, top_k: int = 6) -> list[dict]:
+    concept_defs = _build_query_concepts(query)
+    results: list[dict] = []
+
+    for index, concept in enumerate(concept_defs, start=1):
+        terms = concept["terms"]
+        concept_type = concept["concept_type"]
+        concept_name = concept["concept_name"]
+        preferred_tool = concept["preferred_tool"]
+
+        structured_hits = 0
+        if concept_type == "material":
+            structured_hits = sum(_count_price_record_hits(conn, term) for term in terms[:2])
+        elif concept_type == "fee_item":
+            structured_hits = sum(_count_fee_rate_hits(conn, term) for term in terms[:2])
+
+        text_hit = _sample_text_hit(conn, terms)
+        text_hits = 1 if text_hit else 0
+        retrieval_path = RETRIEVAL_PATH_DATABASE if structured_hits > 0 else RETRIEVAL_PATH_PDF_PAGE
+        page_number = text_hit[2] if text_hit else 1
+        doc_id = str(text_hit[1] or "") if text_hit else ""
+        preview = (text_hit[3] or "")[:160] if text_hit else ""
+
+        if structured_hits == 0 and text_hits == 0:
+            continue
+
+        results.append(
+            _with_retrieval_path(
+                {
+                    "chunk_id": f"concept_{index}_{concept_type}_{concept_name}",
+                    "doc_id": doc_id,
+                    "page_number": page_number,
+                    "source_db": "concept_search",
+                    "content": (
+                        f"概念:{concept_name} 类型:{concept_type} "
+                        f"结构化命中:{structured_hits} 文本命中:{text_hits} "
+                        f"建议下钻:{preferred_tool} "
+                        + (f"示例证据:{preview}" if preview else "")
+                    ).strip(),
+                    "score": 0.91 if structured_hits > 0 else 0.79,
+                    "metadata": {
+                        "concept_name": concept_name,
+                        "concept_type": concept_type,
+                        "structured_hits": structured_hits,
+                        "text_hits": text_hits,
+                        "preferred_tool": preferred_tool,
+                        "concept_terms": terms,
+                        "graph_enabled": False,
+                    },
+                },
+                retrieval_path,
+                evidence_kind="concept_hit",
+                route_stage="primary",
+            )
+        )
+
+        if len(results) >= top_k:
+            break
+
+    return results
+
+
+def _load_concept_hits(conn, query: str, top_k: int = 6) -> list[dict]:
+    if _graph_tables_available(conn):
+        try:
+            graph_hits = _load_concept_hits_from_graph(conn, query, top_k=top_k)
+            if graph_hits:
+                return graph_hits
+        except Exception as exc:
+            logger.warning(f"[concept_search] graph query failed, fallback to heuristic: {exc}")
+    return _load_concept_hits_heuristic(conn, query, top_k=top_k)
+
+
+def _attach_concept_lineage(chunk: dict, concept_hit: dict) -> dict:
+    metadata = dict(chunk.get("metadata") or {})
+    concept_meta = concept_hit.get("metadata") or {}
+    metadata["parent_concept_id"] = concept_hit.get("chunk_id", "")
+    metadata["parent_concept_graph_id"] = concept_meta.get("concept_id")
+    metadata["parent_concept_name"] = concept_meta.get("concept_name", "")
+    metadata["parent_concept_type"] = concept_meta.get("concept_type", "")
+    metadata["relation_kind"] = "concept_to_evidence"
+    metadata["route_stage"] = metadata.get("route_stage") or "secondary"
+    chunk["metadata"] = metadata
+    return chunk
+
+
+def _query_concept_price_rows(conn, concept_name: str, top_k: int = 2) -> list[dict]:
+    if not concept_name:
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT id, doc_id, page_number,
+                       material_name, specification, unit, price_tax_included, year_month, category
+                FROM price_records
+                WHERE material_name ILIKE %s OR specification ILIKE %s
+                ORDER BY year_month DESC, id
+                LIMIT %s
+            """,
+            (f"%{concept_name}%", f"%{concept_name}%", top_k),
+        )
+        rows = cur.fetchall()
+
+    results: list[dict] = []
+    for row in rows:
+        price = row[6]
+        price_text = f"{float(price):.2f}" if price is not None else "N/A"
+        chunk = _with_retrieval_path(
+            {
+                "chunk_id": f"concept_price_{row[0]}",
+                "doc_id": str(row[1] or ""),
+                "page_number": row[2] or 1,
+                "source_db": "price_records",
+                "content": (
+                    f"{row[3] or concept_name} {row[4] or ''} "
+                    f"单位:{row[5] or ''} 价格:{price_text}元 期间:{row[7] or ''} 类别:{row[8] or ''}"
+                ).strip(),
+                "score": 0.86,
+                "metadata": {
+                    "year_month": row[7] or "",
+                    "unit": row[5] or "",
+                    "price": price_text,
+                },
+            },
+            RETRIEVAL_PATH_DATABASE,
+            evidence_kind="structured_row",
+            route_stage="secondary",
+        )
+        results.append(chunk)
+    return results
+
+
+def _query_concept_trend_points(conn, concept_name: str, top_k: int = 2) -> list[dict]:
+    trend_rows = _query_trend_points(conn, concept_name, "", "")
+    if not trend_rows:
+        return []
+
+    selected_rows = trend_rows[-top_k:]
+    results: list[dict] = []
+    for row in selected_rows:
+        (
+            point_id,
+            year_month,
+            avg_price,
+            unit,
+            page_number,
+            doc_id,
+            display_name,
+            delta_value,
+            delta_percent,
+            trend_direction,
+        ) = row
+        avg = float(avg_price or 0)
+        content = (
+            f"{display_name or concept_name} 价格走势 期间:{year_month} 均价:{avg:.2f}元/{unit or ''}"
+        )
+        if delta_value is not None:
+            content += (
+                f" 环比变化:{float(delta_value):+.2f}"
+                f" 环比幅度:{float(delta_percent):+.2f}% 趋势:{trend_direction or ''}"
+            )
+        chunk = _with_retrieval_path(
+            {
+                "chunk_id": f"concept_trend_{point_id}",
+                "doc_id": doc_id or "trend_points",
+                "page_number": page_number or 1,
+                "source_db": "trend_points",
+                "content": content,
+                "score": 0.84,
+                "metadata": {
+                    "year_month": year_month,
+                    "avg_price": avg,
+                    "unit": unit,
+                    "delta": float(delta_value) if delta_value is not None else None,
+                    "delta_percent": float(delta_percent) if delta_percent is not None else None,
+                    "trend_direction": trend_direction,
+                },
+            },
+            RETRIEVAL_PATH_DATABASE,
+            evidence_kind="trend_point",
+            route_stage="secondary",
+        )
+        results.append(chunk)
+    return results
+
+
+def _materialize_graph_evidence(conn, evidence_row: tuple) -> dict | None:
+    (
+        concept_id,
+        depth,
+        evidence_kind,
+        source_table,
+        source_id,
+        doc_id,
+        file_name,
+        page_number,
+        parent_doc_id,
+        parent_page,
+        chunk_id,
+        link_score,
+        metadata_raw,
+    ) = evidence_row
+
+    evidence_meta: dict = {}
+    if isinstance(metadata_raw, dict):
+        evidence_meta = dict(metadata_raw)
+    elif isinstance(metadata_raw, str) and metadata_raw.strip():
+        try:
+            parsed = json.loads(metadata_raw)
+            if isinstance(parsed, dict):
+                evidence_meta = parsed
+        except Exception:
+            evidence_meta = {}
+
+    resolved_doc = str(doc_id or parent_doc_id or evidence_meta.get("doc_id") or "")
+    resolved_page = int(page_number or parent_page or evidence_meta.get("page_number") or 1)
+    resolved_content = str(evidence_meta.get("content") or "")
+    resolved_source = str(source_table or evidence_meta.get("source_table") or "concept_graph")
+
+    if source_table == "price_records" and source_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT doc_id, page_number, material_name, specification, unit,
+                           price_tax_included, year_month, category
+                    FROM price_records
+                    WHERE id = %s
+                    LIMIT 1
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+        if row:
+            resolved_doc = str(row[0] or resolved_doc)
+            resolved_page = int(row[1] or resolved_page)
+            price = row[5]
+            price_text = f"{float(price):.2f}" if price is not None else "N/A"
+            resolved_content = (
+                f"{row[2] or ''} {row[3] or ''} 单位:{row[4] or ''} "
+                f"价格:{price_text}元 期间:{row[6] or ''} 类别:{row[7] or ''}"
+            ).strip()
+            resolved_source = "price_records"
+    elif source_table == "fee_rates" and source_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT doc_id, page_number, item_name, calculation_formula,
+                           rate_upper_limit, unit
+                    FROM fee_rates
+                    WHERE id = %s
+                    LIMIT 1
+                """,
+                (source_id,),
+            )
+            row = cur.fetchone()
+        if row:
+            resolved_doc = str(row[0] or resolved_doc)
+            resolved_page = int(row[1] or resolved_page)
+            upper = row[4]
+            upper_text = f"{float(upper):.2f}" if upper is not None else "N/A"
+            resolved_content = (
+                f"{row[2] or ''} 计算公式:{row[3] or ''} 费率上限:{upper_text}% 单位:{row[5] or ''}"
+            ).strip()
+            resolved_source = "fee_rates"
+    elif source_table == "text_chunks":
+        lookup_id = source_id if source_id is not None else chunk_id
+        if lookup_id is not None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                        SELECT id, doc_id, page_number, content
+                        FROM text_chunks
+                        WHERE id = %s
+                        LIMIT 1
+                    """,
+                    (lookup_id,),
+                )
+                row = cur.fetchone()
+            if row:
+                chunk_id = row[0]
+                resolved_doc = str(row[1] or resolved_doc)
+                resolved_page = int(row[2] or resolved_page)
+                resolved_content = str(row[3] or resolved_content)
+                resolved_source = "text_chunks"
+
+    if not resolved_content:
+        if evidence_kind == "pdf_page":
+            resolved_content = f"PDF页面证据: {file_name or resolved_doc}"
+        else:
+            return None
+
+    retrieval_path = (
+        RETRIEVAL_PATH_PDF_PAGE
+        if evidence_kind == "pdf_page"
+        else (RETRIEVAL_PATH_OCR_JSON if evidence_kind == "ocr_row" else RETRIEVAL_PATH_DATABASE)
+    )
+
+    fallback_chunk_id = f"graph_{source_table}_{source_id or chunk_id or concept_id}_{depth}"
+    return _with_retrieval_path(
+        {
+            "chunk_id": str(chunk_id or fallback_chunk_id),
+            "doc_id": resolved_doc,
+            "page_number": resolved_page,
+            "source_db": f"graph_{resolved_source}",
+            "content": resolved_content,
+            "score": round(min(0.98, max(0.65, float(link_score or 0.65))), 4),
+            "metadata": {
+                "graph_depth": int(depth or 0),
+                "concept_id": int(concept_id),
+                "file_name": file_name or "",
+                "parent_doc_id": parent_doc_id or "",
+                "parent_page": parent_page,
+                "source_table": source_table or "",
+                "evidence_kind": evidence_kind,
+                "link_score": float(link_score or 0.0),
+                **evidence_meta,
+            },
+        },
+        retrieval_path,
+        evidence_kind=evidence_kind,
+        route_stage="secondary",
+    )
+
+
+def _expand_concept_hits_from_graph(conn, concept_hits: list[dict], top_k: int = 2) -> list[dict]:
+    if not concept_hits:
+        return []
+
+    recursive_depth = max(1, min(4, _env_int("CONCEPT_RECURSIVE_DEPTH", 2, minimum=1)))
+    per_concept_limit = max(2, top_k * 2)
+    expanded: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for concept_hit in concept_hits:
+        concept_meta = concept_hit.get("metadata") or {}
+        concept_id = concept_meta.get("concept_id")
+        if concept_id is None:
+            continue
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH RECURSIVE relation_walk AS (
+                    SELECT %s::bigint AS concept_id, 0 AS depth, ARRAY[%s::bigint] AS path
+                    UNION ALL
+                    SELECT
+                        r.target_concept_id,
+                        relation_walk.depth + 1,
+                        relation_walk.path || r.target_concept_id
+                    FROM relation_walk
+                    JOIN concept_relations r ON r.source_concept_id = relation_walk.concept_id
+                    WHERE relation_walk.depth < %s
+                      AND NOT (r.target_concept_id = ANY(relation_walk.path))
+                ),
+                dedup AS (
+                    SELECT concept_id, MIN(depth) AS depth
+                    FROM relation_walk
+                    GROUP BY concept_id
+                )
+                SELECT
+                    d.concept_id,
+                    d.depth,
+                    l.evidence_kind,
+                    l.source_table,
+                    l.source_id,
+                    l.doc_id,
+                    l.file_name,
+                    l.page_number,
+                    l.parent_doc_id,
+                    l.parent_page_number AS parent_page,
+                    l.chunk_id,
+                    l.link_score,
+                    l.metadata::text
+                FROM dedup d
+                JOIN concept_evidence_links l ON l.concept_id = d.concept_id
+                ORDER BY d.depth ASC, l.link_score DESC, l.id ASC
+                LIMIT %s
+                """,
+                (int(concept_id), int(concept_id), recursive_depth, per_concept_limit),
+            )
+            evidence_rows = cur.fetchall()
+
+        for evidence_row in evidence_rows:
+            chunk = _materialize_graph_evidence(conn, evidence_row)
+            if not chunk:
+                continue
+            cid = str(chunk.get("chunk_id") or "")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            expanded.append(_attach_concept_lineage(chunk, concept_hit))
+
+    return expanded
+
+
+def _expand_concept_hits_heuristic(conn, query: str, concept_hits: list[dict], top_k: int = 2) -> list[dict]:
+    if not concept_hits:
+        return []
+
+    expanded: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for concept_hit in concept_hits:
+        concept_meta = concept_hit.get("metadata") or {}
+        concept_type = str(concept_meta.get("concept_type") or "")
+        concept_name = str(concept_meta.get("concept_name") or "")
+        concept_terms = [str(term) for term in (concept_meta.get("concept_terms") or []) if term]
+        preferred_tool = str(concept_meta.get("preferred_tool") or "")
+
+        local_hits: list[dict] = []
+        try:
+            if concept_type == "material" and preferred_tool == "price_trend":
+                local_hits.extend(_query_concept_trend_points(conn, concept_name, top_k=top_k))
+            elif concept_type == "material":
+                local_hits.extend(_query_concept_price_rows(conn, concept_name, top_k=top_k))
+                if not local_hits:
+                    local_hits.extend(_query_text_chunks_literal(conn, concept_name, top_k=top_k))
+            else:
+                drill_terms = concept_terms[:2] if concept_terms else [concept_name]
+                for term in drill_terms:
+                    local_hits.extend(_query_text_chunks_literal(conn, term, top_k=1))
+                if _should_include_structured_tables(query):
+                    local_hits.extend(_query_structured_tables(query, top_k=1))
+        except Exception as e:
+            logger.warning(f"[concept_expand] failed for concept '{concept_name}': {e}")
+            continue
+
+        for item in local_hits:
+            cid = item.get("chunk_id")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            expanded.append(_attach_concept_lineage(item, concept_hit))
+
+    return expanded
+
+
+def _expand_concept_hits(conn, query: str, concept_hits: list[dict], top_k: int = 2) -> list[dict]:
+    if not concept_hits:
+        return []
+
+    has_graph_concept = any((hit.get("metadata") or {}).get("concept_id") for hit in concept_hits)
+    if has_graph_concept and _graph_tables_available(conn):
+        try:
+            graph_expanded = _expand_concept_hits_from_graph(conn, concept_hits, top_k=top_k)
+            if graph_expanded:
+                return graph_expanded
+        except Exception as exc:
+            logger.warning(f"[concept_expand] graph recursive expansion failed, fallback to heuristic: {exc}")
+
+    return _expand_concept_hits_heuristic(conn, query, concept_hits, top_k=top_k)
+
+
+def _rrf_fuse_chunks(ranked_lists: list[list[dict]], rank_constant: int = 60) -> list[dict]:
+    fused_index: dict[str, dict] = {}
+
+    for ranked in ranked_lists:
+        for rank, chunk in enumerate(ranked, start=1):
+            cid = str(chunk.get("chunk_id") or "")
+            if not cid:
+                continue
+            if cid not in fused_index:
+                fused_index[cid] = {
+                    "chunk": dict(chunk),
+                    "rrf_score": 0.0,
+                    "hit_count": 0,
+                    "best_rank": rank,
+                }
+            entry = fused_index[cid]
+            entry["rrf_score"] += 1.0 / (rank_constant + rank)
+            entry["hit_count"] += 1
+            entry["best_rank"] = min(entry["best_rank"], rank)
+            if float(chunk.get("score", 0.0) or 0.0) > float(entry["chunk"].get("score", 0.0) or 0.0):
+                entry["chunk"] = dict(chunk)
+
+    fused: list[dict] = []
+    for entry in fused_index.values():
+        item = dict(entry["chunk"])
+        metadata = dict(item.get("metadata") or {})
+        rrf_score = float(entry["rrf_score"])
+        hit_count = int(entry["hit_count"])
+        boost = min(0.12, rrf_score * 8.0 + max(0, hit_count - 1) * 0.03)
+        base_score = float(item.get("score", 0.0) or 0.0)
+        item["score"] = round(min(0.99, base_score + boost), 4)
+        metadata["fusion_method"] = "rrf"
+        metadata["rrf_score"] = round(rrf_score, 8)
+        metadata["rrf_hit_count"] = hit_count
+        metadata["rrf_best_rank"] = int(entry["best_rank"])
+        metadata["fusion_boost"] = round(boost, 6)
+        item["metadata"] = metadata
+        fused.append(item)
+
+    fused.sort(
+        key=lambda chunk: (
+            float((chunk.get("metadata") or {}).get("rrf_score", 0.0) or 0.0),
+            int((chunk.get("metadata") or {}).get("rrf_hit_count", 0) or 0),
+            float(chunk.get("score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    return fused
 
 
 def _query_fee_formula_text_chunks(conn, query: str, top_k: int = 10) -> list[dict]:
@@ -340,15 +1309,20 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
         rows = cur.fetchall()
 
     return [
-        {
-            "chunk_id": f"tc_{row[0]}",
-            "doc_id": str(row[1] or ""),
-            "page_number": row[2] or 1,
-            "source_db": "literal_text",
-            "content": row[3] or "",
-            "score": 0.72,
-            "metadata": {},
-        }
+        _with_retrieval_path(
+            {
+                "chunk_id": f"tc_{row[0]}",
+                "doc_id": str(row[1] or ""),
+                "page_number": row[2] or 1,
+                "source_db": "literal_text",
+                "content": row[3] or "",
+                "score": 0.72,
+                "metadata": {},
+            },
+            RETRIEVAL_PATH_PDF_PAGE,
+            evidence_kind="pdf_page_literal",
+            route_stage="fallback",
+        )
         for row in rows
     ]
 
@@ -696,19 +1670,24 @@ def _query_material_text_fallback(
 
         unit, price = parsed
         results.append(
-            {
-                "chunk_id": f"text_material_{doc_id}_{page_number}_{material_name}",
-                "doc_id": doc_id or "",
-                "page_number": page_number or 1,
-                "source_db": "text_material_fallback",
-                "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{year_month_norm}",
-                "score": 0.85,
-                "metadata": {
-                    "year_month": year_month_norm,
-                    "unit": unit,
-                    "price": price,
+            _with_retrieval_path(
+                {
+                    "chunk_id": f"text_material_{doc_id}_{page_number}_{material_name}",
+                    "doc_id": doc_id or "",
+                    "page_number": page_number or 1,
+                    "source_db": "text_material_fallback",
+                    "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{year_month_norm}",
+                    "score": 0.85,
+                    "metadata": {
+                        "year_month": year_month_norm,
+                        "unit": unit,
+                        "price": price,
+                    },
                 },
-            }
+                RETRIEVAL_PATH_PDF_PAGE,
+                evidence_kind="pdf_page_table_row",
+                route_stage="secondary",
+            )
         )
         if len(results) >= top_k:
             break
@@ -751,20 +1730,25 @@ def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[di
                 continue
             unit, price = parsed
             results.append(
-                {
-                    "chunk_id": f"ocr_price_{doc_id}_{page.get('page_number', 1)}_{material_name}",
-                    "doc_id": doc_id,
-                    "page_number": page.get("page_number", 1),
-                    "source_db": "ocr_price_fallback",
-                    "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{normalized}",
-                    "score": 0.83,
-                    "metadata": {
-                        "year_month": normalized,
-                        "unit": unit,
-                        "price": price,
-                        "file_name": file_name,
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"ocr_price_{doc_id}_{page.get('page_number', 1)}_{material_name}",
+                        "doc_id": doc_id,
+                        "page_number": page.get("page_number", 1),
+                        "source_db": "ocr_price_fallback",
+                        "content": f"{material_name} 单位:{unit} 价格:{price}元 期间:{normalized}",
+                        "score": 0.83,
+                        "metadata": {
+                            "year_month": normalized,
+                            "unit": unit,
+                            "price": price,
+                            "file_name": file_name,
+                        },
                     },
-                }
+                    RETRIEVAL_PATH_OCR_JSON,
+                    evidence_kind="ocr_json_row",
+                    route_stage="tertiary",
+                )
             )
             return results
 
@@ -908,22 +1892,27 @@ def _query_price_text_fallback(
             continue
         unit, price = parsed
         results.append(
-            {
-                "chunk_id": f"price_text_{doc_id}_{page_number}",
-                "doc_id": doc_id or "",
-                "page_number": page_number or 1,
-                "source_db": "text_price_fallback",
-                "content": (
-                    f"{material_name or '电力电缆'} {specification} 单位:{unit} "
-                    f"价格:{price}元 期间:{year_month_norm}"
-                ),
-                "score": 0.84,
-                "metadata": {
-                    "year_month": year_month_norm,
-                    "unit": unit,
-                    "price": price,
+            _with_retrieval_path(
+                {
+                    "chunk_id": f"price_text_{doc_id}_{page_number}",
+                    "doc_id": doc_id or "",
+                    "page_number": page_number or 1,
+                    "source_db": "text_price_fallback",
+                    "content": (
+                        f"{material_name or '电力电缆'} {specification} 单位:{unit} "
+                        f"价格:{price}元 期间:{year_month_norm}"
+                    ),
+                    "score": 0.84,
+                    "metadata": {
+                        "year_month": year_month_norm,
+                        "unit": unit,
+                        "price": price,
+                    },
                 },
-            }
+                RETRIEVAL_PATH_PDF_PAGE,
+                evidence_kind="pdf_page_table_row",
+                route_stage="secondary",
+            )
         )
         if len(results) >= top_k:
             break
@@ -1027,7 +2016,13 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                         "source_db": "fee_rates",
                         "content": content_text[:500],
                         "score": 0.90,
-                        "metadata": {},
+                        "metadata": {
+                            "fee_name": fname,
+                            "retrieval_path": RETRIEVAL_PATH_DATABASE,
+                            "evidence_kind": "structured_row",
+                            "route_stage": "primary",
+                        },
+                        "retrieval_path": RETRIEVAL_PATH_DATABASE,
                     })
     except Exception as e:
         logger.error(f"[_query_structured_tables] fee_rates error: {e}")
@@ -1114,18 +2109,63 @@ def vector_search(query: str, top_k: int = 10) -> str:
             rows = cur.fetchall()
             results = []
             for row in rows:
-                results.append({
-                    "chunk_id": f"tc_{row[0]}",
-                    "doc_id": str(row[1] or ""),
-                    "page_number": row[2] or 1,
-                    "source_db": "pgvector",
-                    "content": row[3] or "",
-                    "score": round(float(row[4] or 0), 4),
-                    "metadata": {},
-                })
+                results.append(
+                    _with_retrieval_path(
+                        {
+                            "chunk_id": f"tc_{row[0]}",
+                            "doc_id": str(row[1] or ""),
+                            "page_number": row[2] or 1,
+                            "source_db": "pgvector",
+                            "content": row[3] or "",
+                            "score": round(float(row[4] or 0), 4),
+                            "metadata": {},
+                        },
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="vector_chunk",
+                        route_stage="primary",
+                    )
+                )
             return json.dumps(results, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[vector_search] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def concept_search(query: str, top_k: int = 6, include_evidence: bool = True) -> str:
+    """概念命中并递归下钻证据：返回概念节点，并可扩展结构化/OCR/PDF 页级证据。"""
+    if not query.strip():
+        return json.dumps([])
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        concept_hits = _load_concept_hits(conn, query.strip(), top_k)
+        expanded_hits: list[dict] = []
+        if include_evidence and concept_hits:
+            expanded_hits = _expand_concept_hits(
+                conn,
+                query.strip(),
+                concept_hits,
+                top_k=max(1, min(3, top_k)),
+            )
+
+        combined: list[dict] = []
+        seen_ids: set[str] = set()
+        for item in [*concept_hits, *expanded_hits]:
+            cid = str(item.get("chunk_id") or "")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            combined.append(item)
+
+        max_results = top_k if not include_evidence else max(top_k, min(top_k * 2, len(combined)))
+        return json.dumps(combined[:max_results], ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[concept_search] error: {e}")
         return json.dumps([])
     finally:
         if conn is not None:
@@ -1144,28 +2184,39 @@ def keyword_search(query: str, top_k: int = 10) -> str:
     conn = None
     try:
         conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                f"""
                 SELECT id, doc_id, page_number, content,
-                       ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
+                       ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
                 FROM text_chunks
-                WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
+                WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
                 ORDER BY score DESC
                 LIMIT %s
-            """, (query, query, top_k))
+                """,
+                (query, query, top_k),
+            )
 
             rows = cur.fetchall()
             results = []
             for row in rows:
-                results.append({
-                    "chunk_id": f"tc_{row[0]}",
-                    "doc_id": str(row[1] or ""),
-                    "page_number": row[2] or 1,
-                    "source_db": "pg_fulltext",
-                    "content": row[3] or "",
-                    "score": round(float(row[4] or 0), 4),
-                    "metadata": {},
-                })
+                results.append(
+                    _with_retrieval_path(
+                        {
+                            "chunk_id": f"tc_{row[0]}",
+                            "doc_id": str(row[1] or ""),
+                            "page_number": row[2] or 1,
+                            "source_db": "pg_fulltext",
+                            "content": row[3] or "",
+                            "score": round(float(row[4] or 0), 4),
+                            "metadata": {},
+                        },
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="fulltext_chunk",
+                        route_stage="primary",
+                    )
+                )
 
         # also query fee_rates and other structured tables
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
@@ -1249,14 +2300,21 @@ def category_search(query: str, top_k: int = 5) -> str:
             # 从内容中提取章节编号
             sec_match = sec_re.search(content)
             section_number = sec_match.group(1) if sec_match else ""
-            results.append({
-                "chunk_id": f"cat_{row[0]}",
-                "doc_id": str(row[1] or ""),
-                "page_number": row[2] or 1,
-                "section": section_number,
-                "content": content[:300],
-                "score": 1.0,
-            })
+            results.append(
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"cat_{row[0]}",
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[2] or 1,
+                        "section": section_number,
+                        "content": content[:300],
+                        "score": 1.0,
+                    },
+                    RETRIEVAL_PATH_PDF_PAGE,
+                    evidence_kind="pdf_catalog_chunk",
+                    route_stage="fallback",
+                )
+            )
 
         # 额外查询 fee_rates 等结构化表
         for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
@@ -1331,103 +2389,261 @@ def graph_search(query: str, top_k: int = 10) -> str:
 
 @tool
 def hybrid_search(query: str, top_k: int = 10) -> str:
-    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题"""
+    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。"""
     if not query.strip():
         return json.dumps([])
 
     conn = None
+    started = time.perf_counter()
     try:
+        cfg = _get_hybrid_runtime_config(top_k)
+        query_family = str((_concept_analyzer.analyze(query).get("intent") or "semantic"))
+        cfg = _apply_query_family_routing(query_family, cfg, top_k)
         query_embedding = _get_embedding(query.strip())
         conn = _get_pg_conn()
-        results = []
-        seen_ids = set()
+        has_chunk_vector_views = _table_available(conn, "public.chunk_vector_views")
+        seen_ids: set[str] = set()
+        vector_hits: list[dict] = []
+        multivector_hits: list[dict] = []
+        text_hits: list[dict] = []
+        results: list[dict] = []
+        observability = {
+            "query_family": query_family,
+            "top_k": int(top_k),
+            "vector_fetch_k": int(cfg["vector_fetch_k"]),
+            "text_fetch_k": int(cfg["text_fetch_k"]),
+            "rrf_rank_constant": int(cfg["rrf_rank_constant"]),
+            "vector_min_score": float(cfg["vector_min_score"]),
+            "vector_hits": 0,
+            "multivector_hits": 0,
+            "text_hits": 0,
+            "rrf_hits": 0,
+            "structured_hits": 0,
+            "literal_hits": 0,
+            "formula_hits": 0,
+            "comparison_hits": 0,
+            "appendix_hits": 0,
+            "fill_hits": 0,
+            "route_policy": cfg.get("route_policy", query_family),
+        }
+        ts_cfg = _resolve_text_search_config(conn)
 
         with conn.cursor() as cur:
-            # 向量路
             if query_embedding:
                 try:
-                    cur.execute("""
-                        SELECT id, doc_id, page_number, content,
-                               1 - (embedding <=> %s::vector) AS score
-                        FROM text_chunks
-                        WHERE embedding IS NOT NULL
-                          AND 1 - (embedding <=> %s::vector) >= 0.40
-                        ORDER BY embedding <=> %s::vector
-                        LIMIT %s
-                    """, (query_embedding, query_embedding, query_embedding, top_k))
+                    cur.execute(
+                        """
+                            SELECT id, doc_id, page_number, content,
+                                   1 - (embedding <=> %s::vector) AS score
+                            FROM text_chunks
+                            WHERE embedding IS NOT NULL
+                              AND 1 - (embedding <=> %s::vector) >= %s
+                            ORDER BY embedding <=> %s::vector
+                            LIMIT %s
+                        """,
+                        (
+                            query_embedding,
+                            query_embedding,
+                            float(cfg["vector_min_score"]),
+                            query_embedding,
+                            int(cfg["vector_fetch_k"]),
+                        ),
+                    )
                     for row in cur.fetchall():
-                        cid = row[0]
-                        if cid not in seen_ids:
-                            seen_ids.add(cid)
-                            results.append({
-                                "chunk_id": f"tc_{cid}",
-                                "doc_id": str(row[1] or ""),
-                                "page_number": row[2] or 1,
-                                "source_db": "hybrid_vector",
-                                "content": row[3] or "",
-                                "score": round(float(row[4] or 0), 4),
-                                "metadata": {},
-                            })
+                        vector_hits.append(
+                            _with_retrieval_path(
+                                {
+                                    "chunk_id": f"tc_{row[0]}",
+                                    "doc_id": str(row[1] or ""),
+                                    "page_number": row[2] or 1,
+                                    "source_db": "hybrid_vector",
+                                    "content": row[3] or "",
+                                    "score": round(float(row[4] or 0), 4),
+                                    "metadata": {},
+                                },
+                                RETRIEVAL_PATH_DATABASE,
+                                evidence_kind="vector_chunk",
+                                route_stage="primary",
+                            )
+                        )
+                    observability["vector_hits"] = len(vector_hits)
+
+                    if has_chunk_vector_views:
+                        cur.execute(
+                            """
+                                SELECT
+                                    cv.id,
+                                    cv.chunk_id,
+                                    cv.view_type,
+                                    tc.doc_id,
+                                    tc.page_number,
+                                    tc.content,
+                                    1 - (cv.embedding <=> %s::vector) AS score
+                                FROM chunk_vector_views cv
+                                JOIN text_chunks tc ON tc.id = cv.chunk_id
+                                WHERE cv.embedding IS NOT NULL
+                                  AND 1 - (cv.embedding <=> %s::vector) >= %s
+                                ORDER BY cv.embedding <=> %s::vector
+                                LIMIT %s
+                            """,
+                            (
+                                query_embedding,
+                                query_embedding,
+                                float(cfg["vector_min_score"]),
+                                query_embedding,
+                                int(cfg["vector_fetch_k"]),
+                            ),
+                        )
+                        for row in cur.fetchall():
+                            multivector_hits.append(
+                                _with_retrieval_path(
+                                    {
+                                        "chunk_id": f"tc_{row[1]}",
+                                        "doc_id": str(row[3] or ""),
+                                        "page_number": row[4] or 1,
+                                        "source_db": "hybrid_multivector",
+                                        "content": row[5] or "",
+                                        "score": round(float(row[6] or 0), 4),
+                                        "metadata": {
+                                            "vector_view_id": row[0],
+                                            "vector_view_type": row[2] or "raw_chunk",
+                                        },
+                                    },
+                                    RETRIEVAL_PATH_DATABASE,
+                                    evidence_kind="multi_vector_parent",
+                                    route_stage="primary",
+                                )
+                            )
+                        observability["multivector_hits"] = len(multivector_hits)
                 except Exception as e:
                     logger.error(f"[hybrid_search] vector error: {e}")
                     conn.rollback()
+                    observability["vector_error"] = str(e)
 
-            # 全文路
-            cur.execute("""
-                SELECT id, doc_id, page_number, content,
-                       ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
-                FROM text_chunks
-                WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
-                ORDER BY score DESC
-                LIMIT %s
-            """, (query, query, top_k))
+            # Use stored tsv column (GIN index) when available (chinese config via zhparser),
+            # fall back to inline to_tsvector for deployments without zhparser.
+            _has_tsv_col = _table_has_column(conn, "text_chunks", "tsv")
+            if _has_tsv_col:
+                cur.execute(
+                    f"""
+                        SELECT id, doc_id, page_number, content,
+                               ts_rank(tsv, plainto_tsquery('{ts_cfg}', %s)) AS score
+                        FROM text_chunks
+                        WHERE tsv @@ plainto_tsquery('{ts_cfg}', %s)
+                        ORDER BY score DESC
+                        LIMIT %s
+                    """,
+                    (query, query, int(cfg["text_fetch_k"])),
+                )
+            else:
+                cur.execute(
+                    f"""
+                        SELECT id, doc_id, page_number, content,
+                               ts_rank(to_tsvector('{ts_cfg}', content),
+                                       plainto_tsquery('{ts_cfg}', %s)) AS score
+                        FROM text_chunks
+                        WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                        ORDER BY score DESC
+                        LIMIT %s
+                    """,
+                    (query, query, int(cfg["text_fetch_k"])),
+                )
             for row in cur.fetchall():
-                cid = row[0]
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    results.append({
-                        "chunk_id": f"tc_{cid}",
-                        "doc_id": str(row[1] or ""),
-                        "page_number": row[2] or 1,
-                        "source_db": "hybrid_text",
-                        "content": row[3] or "",
-                        "score": round(float(row[4] or 0), 4),
-                        "metadata": {},
-                    })
+                text_hits.append(
+                    _with_retrieval_path(
+                        {
+                            "chunk_id": f"tc_{row[0]}",
+                            "doc_id": str(row[1] or ""),
+                            "page_number": row[2] or 1,
+                            "source_db": "hybrid_text",
+                            "content": row[3] or "",
+                            "score": round(float(row[4] or 0), 4),
+                            "metadata": {},
+                        },
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="fulltext_chunk",
+                        route_stage="primary",
+                    )
+                )
+            observability["text_hits"] = len(text_hits)
 
-        # fee_rates 结构化表
-        for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
-            if chunk["chunk_id"] not in seen_ids:
-                seen_ids.add(chunk["chunk_id"])
+        # dense + sparse 融合：RRF
+        for chunk in _rrf_fuse_chunks(
+            [vector_hits, multivector_hits, text_hits],
+            rank_constant=int(cfg["rrf_rank_constant"]),
+        ):
+            cid = chunk.get("chunk_id")
+            if cid and cid not in seen_ids:
+                seen_ids.add(cid)
+                metadata = dict(chunk.get("metadata") or {})
+                metadata["query_family"] = query_family
+                chunk["metadata"] = metadata
                 results.append(chunk)
-        for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+        observability["rrf_hits"] = len(results)
+
+        for chunk in _query_fee_formula_text_chunks(conn, query, int(cfg["literal_top_k"])):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
+                observability["formula_hits"] = int(observability["formula_hits"]) + 1
                 results.append(chunk)
-        for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+        for chunk in _query_fee_comparison_text_chunks(conn, query, int(cfg["literal_top_k"])):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
+                observability["comparison_hits"] = int(observability["comparison_hits"]) + 1
                 results.append(chunk)
-        for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+        for chunk in _query_appendix_standard_text_chunks(conn, query, int(cfg["literal_top_k"])):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
+                observability["appendix_hits"] = int(observability["appendix_hits"]) + 1
+                results.append(chunk)
+        for chunk in _query_fill_requirement_text_chunks(conn, query, int(cfg["literal_top_k"])):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                observability["fill_hits"] = int(observability["fill_hits"]) + 1
                 results.append(chunk)
         if _should_include_structured_tables(query):
-            for chunk in _query_structured_tables(query, top_k):
+            for chunk in _query_structured_tables(query, int(cfg["structured_top_k"])):
                 if chunk["chunk_id"] not in seen_ids:
                     seen_ids.add(chunk["chunk_id"])
+                    observability["structured_hits"] = int(observability["structured_hits"]) + 1
                     results.append(chunk)
 
-        for chunk in _query_text_chunks_literal(conn, query, top_k):
+        for chunk in _query_text_chunks_literal(conn, query, int(cfg["literal_top_k"])):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
+                observability["literal_hits"] = int(observability["literal_hits"]) + 1
                 results.append(chunk)
 
-        # 按分数重排
-        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        observability["elapsed_ms"] = elapsed_ms
+        observability["total_candidates"] = len(results)
+        _log_retrieval_observability("hybrid_search", observability)
+
+        results.sort(
+            key=lambda chunk: (
+                float((chunk.get("metadata") or {}).get("rrf_score", 0.0) or 0.0),
+                float(chunk.get("score", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
+        for rank, chunk in enumerate(results, start=1):
+            metadata = dict(chunk.get("metadata") or {})
+            metadata["hybrid_rank"] = rank
+            metadata["query_family"] = query_family
+            metadata["hybrid_elapsed_ms"] = elapsed_ms
+            chunk["metadata"] = metadata
         return json.dumps(results[:top_k], ensure_ascii=False)
     except Exception as e:
         logger.error(f"[hybrid_search] error: {e}")
+        _log_retrieval_observability(
+            "hybrid_search_failed",
+            {
+                "query": query.strip(),
+                "top_k": int(top_k),
+                "error": str(e),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            },
+        )
         return json.dumps([])
     finally:
         if conn is not None:
@@ -1448,30 +2664,38 @@ def text_search(query: str, top_k: int = 8) -> str:
     conn = None
     try:
         conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
 
         # 1. Full-text search (to_tsvector)
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT id, doc_id, page_number, content,
-                           ts_rank(to_tsvector('chinese', content), plainto_tsquery('chinese', %s)) AS score
+                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
                     FROM text_chunks
-                    WHERE to_tsvector('chinese', content) @@ plainto_tsquery('chinese', %s)
+                    WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
                     ORDER BY score DESC
                     LIMIT %s
                 """, (query, query, top_k))
                 for row in cur.fetchall():
                     if row[0] not in seen_ids:
                         seen_ids.add(row[0])
-                        results.append({
-                            "chunk_id": f"tc_{row[0]}",
-                            "doc_id": str(row[1] or ""),
-                            "page_number": row[2] or 1,
-                            "source_db": "pg_fulltext",
-                            "content": row[3] or "",
-                            "score": round(float(row[4] or 0), 4),
-                            "metadata": {},
-                        })
+                        results.append(
+                            _with_retrieval_path(
+                                {
+                                    "chunk_id": f"tc_{row[0]}",
+                                    "doc_id": str(row[1] or ""),
+                                    "page_number": row[2] or 1,
+                                    "source_db": "pg_fulltext",
+                                    "content": row[3] or "",
+                                    "score": round(float(row[4] or 0), 4),
+                                    "metadata": {},
+                                },
+                                RETRIEVAL_PATH_DATABASE,
+                                evidence_kind="fulltext_chunk",
+                                route_stage="primary",
+                            )
+                        )
         except Exception as e:
             logger.error(f"[text_search] fulltext error: {e}")
 
@@ -1492,15 +2716,22 @@ def text_search(query: str, top_k: int = 8) -> str:
                     for row in cur.fetchall():
                         if row[0] not in seen_ids:
                             seen_ids.add(row[0])
-                            results.append({
-                                "chunk_id": f"tc_{row[0]}",
-                                "doc_id": str(row[1] or ""),
-                                "page_number": row[2] or 1,
-                                "source_db": "pgvector",
-                                "content": row[3] or "",
-                                "score": round(float(row[4] or 0), 4),
-                                "metadata": {},
-                            })
+                            results.append(
+                                _with_retrieval_path(
+                                    {
+                                        "chunk_id": f"tc_{row[0]}",
+                                        "doc_id": str(row[1] or ""),
+                                        "page_number": row[2] or 1,
+                                        "source_db": "pgvector",
+                                        "content": row[3] or "",
+                                        "score": round(float(row[4] or 0), 4),
+                                        "metadata": {},
+                                    },
+                                    RETRIEVAL_PATH_DATABASE,
+                                    evidence_kind="vector_chunk",
+                                    route_stage="primary",
+                                )
+                            )
         except Exception as e:
             logger.error(f"[text_search] vector error: {e}")
             if conn is not None:
@@ -1544,6 +2775,69 @@ def text_search(query: str, top_k: int = 8) -> str:
     return json.dumps(results[:top_k], ensure_ascii=False)
 
 
+@tool
+def pdf_page_search(query: str, top_k: int = 8) -> str:
+    """PDF 页级证据检索：直接返回最接近原文页面的 text_chunks 片段，适合规则条文和兜底取证。"""
+    if not query.strip():
+        return json.dumps([])
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
+        results: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for chunk in _query_text_chunks_literal(conn, query, top_k):
+            if chunk["chunk_id"] not in seen_ids:
+                seen_ids.add(chunk["chunk_id"])
+                chunk["source_db"] = "pdf_page"
+                results.append(chunk)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                    SELECT id, doc_id, page_number, content,
+                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
+                    FROM text_chunks
+                    WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                    ORDER BY score DESC, length(content) ASC
+                    LIMIT %s
+                """,
+                (query, query, top_k),
+            )
+            for row in cur.fetchall():
+                chunk_id = f"pdf_{row[0]}"
+                if chunk_id in seen_ids:
+                    continue
+                seen_ids.add(chunk_id)
+                results.append(
+                    _with_retrieval_path(
+                        {
+                            "chunk_id": chunk_id,
+                            "doc_id": str(row[1] or ""),
+                            "page_number": row[2] or 1,
+                            "source_db": "pdf_page",
+                            "content": row[3] or "",
+                            "score": round(float(row[4] or 0), 4),
+                            "metadata": {},
+                        },
+                        RETRIEVAL_PATH_PDF_PAGE,
+                        evidence_kind="pdf_page_fulltext",
+                        route_stage="fallback",
+                    )
+                )
+
+        results.sort(key=lambda item: item.get("score", 0), reverse=True)
+        return json.dumps(results[:top_k], ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[pdf_page_search] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
 # ── price_query（PG SQL 精确查询，保留）──────────────────────────────────────
 
 
@@ -1559,6 +2853,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
         normalized_period = _normalize_year_month(year_month)
 
         conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
         with conn.cursor() as cur:
 
             def _build_and_run(period_filter: str | None) -> list:
@@ -1566,7 +2861,7 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                 params: list = []
                 if material_name:
                     where_clauses.append(
-                        "(material_name ILIKE %s OR specification ILIKE %s OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))"
+                        f"(material_name ILIKE %s OR specification ILIKE %s OR to_tsvector('{ts_cfg}', material_name) @@ plainto_tsquery('{ts_cfg}', %s))"
                     )
                     params.extend([f"%{material_name}%", f"%{material_name}%", material_name])
                 if specification:
@@ -1684,7 +2979,9 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                     where_clauses2: list = []
                     params2: list = []
                     if material_name:
-                        where_clauses2.append("(material_name ILIKE %s OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))")
+                        where_clauses2.append(
+                            f"(material_name ILIKE %s OR to_tsvector('{ts_cfg}', material_name) @@ plainto_tsquery('{ts_cfg}', %s))"
+                        )
                         params2.extend([f"%{material_name}%", material_name])
                     if specification:
                         spec_norm2 = re.sub(r'[×xX*]', '%', specification)
@@ -1730,7 +3027,12 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
 
         results = []
         for row in rows:
-            chunk = _chunk_from_pg_row(row, "price_records", 0.85)
+            chunk = _with_retrieval_path(
+                _chunk_from_pg_row(row, "price_records", 0.85),
+                RETRIEVAL_PATH_DATABASE,
+                evidence_kind="structured_row",
+                route_stage="primary",
+            )
             if fallback_note:
                 chunk["content"] = fallback_note + " " + chunk["content"]
             results.append(chunk)
@@ -1757,6 +3059,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
     conn = None
     try:
         conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
         trend_point_rows = _query_trend_points(conn, material_name, start_month, end_month)
         if trend_point_rows:
             chunks = []
@@ -1773,29 +3076,36 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                         f"环比幅度:{float(delta_percent):+.2f}% "
                         f"趋势:{trend_direction} "
                     )
-                chunks.append({
-                    "chunk_id": f"trend_point_{point_id}",
-                    "doc_id": doc_id or "trend_points",
-                    "page_number": page_number or 1,
-                    "source_db": "trend_points",
-                    "content": content,
-                    "score": 0.88,
-                    "metadata": {
-                        "year_month": year_month,
-                        "avg_price": avg,
-                        "unit": unit,
-                        "delta": float(delta_value) if delta_value is not None else None,
-                        "delta_percent": float(delta_percent) if delta_percent is not None else None,
-                        "trend_direction": trend_direction,
-                    },
-                })
+                chunks.append(
+                    _with_retrieval_path(
+                        {
+                            "chunk_id": f"trend_point_{point_id}",
+                            "doc_id": doc_id or "trend_points",
+                            "page_number": page_number or 1,
+                            "source_db": "trend_points",
+                            "content": content,
+                            "score": 0.88,
+                            "metadata": {
+                                "year_month": year_month,
+                                "avg_price": avg,
+                                "unit": unit,
+                                "delta": float(delta_value) if delta_value is not None else None,
+                                "delta_percent": float(delta_percent) if delta_percent is not None else None,
+                                "trend_direction": trend_direction,
+                            },
+                        },
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="trend_point",
+                        route_stage="primary",
+                    )
+                )
             return json.dumps(chunks, ensure_ascii=False)
 
         where_parts: list[str] = []
         params: list = [f"%{material_name}%", f"%{material_name}%", material_name]
         where_parts.append(
-            "(material_name ILIKE %s OR specification ILIKE %s "
-            "OR to_tsvector('chinese', material_name) @@ plainto_tsquery('chinese', %s))"
+            f"(material_name ILIKE %s OR specification ILIKE %s "
+            f"OR to_tsvector('{ts_cfg}', material_name) @@ plainto_tsquery('{ts_cfg}', %s))"
         )
         if start_month:
             where_parts.append("year_month >= %s")
@@ -1858,7 +3168,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 logger.info(f"[price_trend] bigram fallback bigrams={bigrams} hits={len(rows)}")
 
         existing_months = {str(r[0]) for r in rows}
-        ocr_rows: list[tuple[str, float, str, str, int, str]] = []
+        fallback_chunks: list[dict] = []
         months_to_fill = [month for month in _iter_months(start_month, end_month) if month not in existing_months]
         for month in months_to_fill:
             fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=1)
@@ -1866,17 +3176,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 fallback_rows = _query_material_ocr_fallback(material_name, month)
             if not fallback_rows:
                 continue
-            for row in fallback_rows:
-                ocr_rows.append(
-                    (
-                        row["metadata"]["year_month"],
-                        float(row["metadata"]["price"]),
-                        row["metadata"]["unit"],
-                        material_name,
-                        row["page_number"],
-                        row["doc_id"],
-                    )
-                )
+            fallback_chunks.extend(fallback_rows)
 
         # 返回 chunk 格式，以便 _collect_chunks 可以处理并传递给 synthesizer
         chunks = []
@@ -1890,31 +3190,55 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 f"均价:{avg:.2f}元/{unit} "
                 + (f"规格:{spec} " if spec else "")
             )
-            chunks.append({
-                "chunk_id": f"price_trend_{material_name}_{r[0]}",
-                "doc_id": "price_trend",
-                "page_number": 1,
-                "source_db": "price_records",
-                "content": content,
-                "score": 0.85,
-                "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit},
-            })
-        for year_month, avg_price, unit, spec, page_number, doc_id in sorted(ocr_rows, key=lambda x: x[0]):
+            chunks.append(
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"price_trend_{material_name}_{r[0]}",
+                        "doc_id": "price_trend",
+                        "page_number": 1,
+                        "source_db": "price_records",
+                        "content": content,
+                        "score": 0.85,
+                        "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit},
+                    },
+                    RETRIEVAL_PATH_DATABASE,
+                    evidence_kind="structured_row",
+                    route_stage="primary",
+                )
+            )
+        for row in sorted(fallback_chunks, key=lambda item: item.get("metadata", {}).get("year_month", "")):
+            year_month = row["metadata"]["year_month"]
+            avg_price = float(row["metadata"]["price"])
+            unit = row["metadata"]["unit"]
+            spec = material_name
+            page_number = row.get("page_number")
+            doc_id = row.get("doc_id")
             content = (
                 f"{material_name} 价格走势 "
                 f"期间:{year_month} "
                 f"均价:{avg_price:.2f}元/{unit} "
                 + (f"规格:{spec} " if spec else "")
             )
-            chunks.append({
-                "chunk_id": f"price_trend_ocr_{material_name}_{year_month}",
-                "doc_id": doc_id or "",
-                "page_number": page_number or 1,
-                "source_db": "ocr_price_fallback",
-                "content": content,
-                "score": 0.82,
-                "metadata": {"year_month": year_month, "avg_price": avg_price, "unit": unit},
-            })
+            chunks.append(
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"price_trend_fallback_{material_name}_{year_month}_{row.get('source_db', '')}",
+                        "doc_id": doc_id or "",
+                        "page_number": page_number or 1,
+                        "source_db": row.get("source_db", "price_fallback"),
+                        "content": content,
+                        "score": row.get("score", 0.82),
+                        "metadata": {
+                            "year_month": year_month,
+                            "avg_price": avg_price,
+                            "unit": unit,
+                        },
+                    },
+                    str(row.get("metadata", {}).get("retrieval_path") or RETRIEVAL_PATH_OCR_JSON),
+                    evidence_kind=str(row.get("metadata", {}).get("evidence_kind") or "fallback_row"),
+                    route_stage=str(row.get("metadata", {}).get("route_stage") or "secondary"),
+                )
+            )
         chunks.sort(key=lambda chunk: chunk["metadata"].get("year_month", ""))
         logger.info(
             f"[price_trend] material='{material_name}' "

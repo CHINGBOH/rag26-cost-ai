@@ -29,7 +29,10 @@ services:
 
   # 2. PostgreSQL - 结构化数据库 (核心四库之二)
   postgres:
-    image: postgres:16-alpine
+    build:
+      context: ./infrastructure/docker
+      dockerfile: Dockerfile.postgres
+    image: rag-postgres:16-zhparser
     container_name: rag-postgres
     ports:
       - "5432:5432"

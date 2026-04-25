@@ -1,0 +1,50 @@
+# Custom PostgreSQL image with pgvector + zhparser for Chinese full-text search
+# Extends pgvector/pgvector:pg16 (Debian bookworm) with SCWS + zhparser v2.3
+#
+# Usage:
+#   docker build -t rag-postgres:16-zhparser -f infrastructure/docker/Dockerfile.postgres infrastructure/docker/
+#   or via docker-compose (see docker-compose.yml)
+
+FROM pgvector/pgvector:pg16 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    postgresql-server-dev-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. Build SCWS (Simple Chinese Word Segmentation) — required by zhparser v2.x
+RUN wget -q -O /tmp/scws.tar.bz2 \
+        http://www.xunsearch.com/scws/down/scws-1.2.3.tar.bz2 \
+    && tar xjf /tmp/scws.tar.bz2 -C /tmp \
+    && cd /tmp/scws-1.2.3 \
+    && ./configure --prefix=/usr/local -q \
+    && make -s install \
+    && ldconfig \
+    && rm -rf /tmp/scws*
+
+# 2. Build zhparser (pinned to v2.3)
+RUN wget -q -O /tmp/zhparser.tar.gz \
+        https://github.com/amutu/zhparser/archive/refs/tags/v2.3.tar.gz \
+    && tar xzf /tmp/zhparser.tar.gz -C /tmp \
+    && cd /tmp/zhparser-2.3 \
+    && make PG_CONFIG="$(which pg_config)" \
+    && make install PG_CONFIG="$(which pg_config)" \
+    && rm -rf /tmp/zhparser*
+
+
+FROM pgvector/pgvector:pg16
+
+# Copy compiled extension and SCWS runtime from builder
+COPY --from=builder /usr/lib/postgresql/16/lib/zhparser.so /usr/lib/postgresql/16/lib/
+COPY --from=builder /usr/lib/postgresql/16/lib/bitcode/zhparser* /usr/lib/postgresql/16/lib/bitcode/zhparser/
+COPY --from=builder /usr/share/postgresql/16/extension/zhparser* /usr/share/postgresql/16/extension/
+COPY --from=builder /usr/share/postgresql/16/tsearch_data/dict.utf8.xdb /usr/share/postgresql/16/tsearch_data/
+COPY --from=builder /usr/share/postgresql/16/tsearch_data/rules.utf8.ini /usr/share/postgresql/16/tsearch_data/
+# SCWS shared library (zhparser links against libscws.so at runtime)
+COPY --from=builder /usr/local/lib/libscws.so* /usr/local/lib/
+
+RUN ldconfig
+
+LABEL maintainer="RAG Dashboard" \
+      description="PostgreSQL 16 + pgvector + zhparser/SCWS for Chinese BM25 text search"
