@@ -937,35 +937,39 @@ export const AgentChat: React.FC = () => {
         </div>
 
         <div className="chat-input-area">
-          <div className="input-wrapper">
-            <textarea
-              ref={inputRef}
-              className="chat-textarea"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="输入造价相关问题…"
-              rows={1}
-              disabled={isLoading}
-            />
-            {isLoading ? (
-              <button className="cancel-btn" onClick={cancelStream}>■ 停止</button>
-            ) : (
-              <button
-                className="send-btn"
-                onClick={handleSend}
-                disabled={!input.trim()}
-              >
-                ➤
-              </button>
-            )}
-          </div>
-          <div className="input-hints">
-            <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
-            <span className="char-count">{input.length}</span>
-            {messages.length > 0 && (
-              <button className="clear-btn" onClick={clearMessages}>清空对话</button>
-            )}
+          <div className="chat-input-shell">
+            <div className="input-wrapper">
+              <textarea
+                ref={inputRef}
+                className="chat-textarea"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入造价相关问题…"
+                rows={1}
+                disabled={isLoading}
+              />
+              {isLoading ? (
+                <button className="cancel-btn" onClick={cancelStream}>■ 停止</button>
+              ) : (
+                <button
+                  className="send-btn"
+                  onClick={handleSend}
+                  disabled={!input.trim()}
+                >
+                  ➤
+                </button>
+              )}
+            </div>
+            <div className="input-hints">
+              <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
+              <div className="input-meta-actions">
+                <span className="char-count">{input.length}</span>
+                {messages.length > 0 && (
+                  <button className="clear-btn" onClick={clearMessages}>清空对话</button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </main>
