@@ -19,6 +19,7 @@ import json
 import re
 import logging
 import hashlib
+import ast
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -492,6 +493,57 @@ def _sanitize_copy_expression(expression: str) -> str:
     return sanitized
 
 
+def _is_safe_arithmetic_expression(expression: str) -> bool:
+    if not expression or not re.search(r"\d", expression) or not re.search(r"[\+\-\*/]", expression):
+        return False
+    if not re.fullmatch(r"[0-9\.\+\-\*\/\(\) ]+", expression):
+        return False
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return False
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.UAdd,
+        ast.USub,
+        ast.Load,
+    )
+    return all(isinstance(node, allowed_nodes) for node in ast.walk(parsed))
+
+
+def _extract_copy_expression(formula: str, substituted: str) -> str:
+    candidates: list[str] = []
+    for source in (substituted, formula):
+        normalized = _normalize_math_text(source)
+        candidates.extend(
+            segment.strip(" ，,")
+            for segment in re.split(r"\s*=\s*", normalized)
+            if segment.strip(" ，,")
+        )
+
+    best_candidate = ""
+    best_score = -1
+    for candidate in candidates:
+        sanitized = _sanitize_copy_expression(candidate)
+        if not _is_safe_arithmetic_expression(sanitized):
+            continue
+        digit_count = len(re.findall(r"\d", sanitized))
+        operator_count = len(re.findall(r"[\+\-\*/]", sanitized))
+        score = digit_count * 10 + operator_count
+        if score > best_score:
+            best_candidate = sanitized
+            best_score = score
+    return best_candidate
+
+
 def _extract_calc_title(prefix: str, first_segment: str, fallback_order: int) -> str:
     cleaned_prefix = re.sub(r"^(首先|然后|接着|再|最后|第一步|第1步|第二步|第2步|第三步|第3步|计算|求|得出)+", "", prefix or "").strip(" ：:")
     if cleaned_prefix:
@@ -547,8 +599,8 @@ def _build_calculation_steps_presentation(
 
         formula = calc_chain[0]
         substituted = " = ".join(calc_chain)
-        copy_expression = _sanitize_copy_expression(formula)
-        if not copy_expression or not re.search(r"[\+\-\*/]", copy_expression):
+        copy_expression = _extract_copy_expression(formula, substituted)
+        if not copy_expression:
             continue
 
         result_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(万元|万|元|%)?", result_text)

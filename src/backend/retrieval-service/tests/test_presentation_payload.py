@@ -161,6 +161,34 @@ def test_finalize_presentation_builds_calculation_steps_with_copy_expression():
     assert presentation["sources"][0]["page"] == "1"
 
 
+def test_finalize_presentation_prefers_substituted_expression_for_noisy_formula_text():
+    chunks = [
+        {"doc_filename": "深圳市建设工程计价费率标准（2025）.pdf", "page_number": 1, "content": "企业管理费推荐费率为20.44%。"},
+    ]
+    final_answer = (
+        "根据《深圳市建设工程计价费率标准（2025）》，企业管理费为21.462万元。"
+        "\n\n简要分析：\n"
+        "首先计算企业管理费：企业管理费按推荐费率20.44%计算，公式为（人工费+机械费*0.1）*企业管理费费率，"
+        "即（100万+50万*0.1）*20.44% = （100+5）*0.2044 = 21.462万元。"
+        "\n\n参考索引：\n"
+        "[1] 《深圳市建设工程计价费率标准（2025）》第 1 页"
+    )
+    citations_text = "参考索引：\n[1] 《深圳市建设工程计价费率标准（2025）》第 1 页"
+
+    presentation = finalize_presentation_payload(
+        query="某工程企业管理费按推荐费率计算是多少？",
+        query_type="calculation",
+        final_answer=final_answer,
+        chunks=chunks,
+        citations_text=citations_text,
+        existing_presentation=None,
+    )
+
+    assert presentation is not None
+    assert presentation["type"] == "calculation_steps"
+    assert presentation["steps"][0]["copy_expression"] == "(100+5)*0.2044"
+
+
 def test_prune_chunks_for_annual_price_query_drops_irrelevant_evidence():
     chunks = [
         {

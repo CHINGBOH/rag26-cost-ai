@@ -64,19 +64,69 @@ function formatSandboxNumber(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toString();
 }
 
+function normalizeSandboxExpression(expression: string): string {
+  return expression
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    .replace(/＋/g, '+')
+    .replace(/－/g, '-')
+    .replace(/×/g, '*')
+    .replace(/÷/g, '/')
+    .replace(/％/g, '%')
+    .replace(/—|–/g, '-');
+}
+
+function sanitizeSandboxExpression(expression: string): string {
+  return normalizeSandboxExpression(expression)
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, (_, num: string) => `${Number(num) / 100}`)
+    .replace(/万元|万|元|人民币/g, '')
+    .replace(/[^0-9.+\-*/() ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isValidSandboxExpression(expression: string): boolean {
+  if (!expression || !/\d/.test(expression) || !/[+\-*/]/.test(expression)) return false;
+  if (!/^[0-9.+\-*/() ]+$/.test(expression)) return false;
+
+  let balance = 0;
+  for (const char of expression) {
+    if (char === '(') balance += 1;
+    if (char === ')') balance -= 1;
+    if (balance < 0) return false;
+  }
+  return balance === 0;
+}
+
+function extractSandboxExpression(step: PresentationCalculationStep): string {
+  const candidates = [step.copy_expression, ...step.substituted.split(/\s*=\s*/)]
+    .map((part) => sanitizeSandboxExpression(part))
+    .filter((part) => isValidSandboxExpression(part));
+
+  if (candidates.length === 0) return step.copy_expression;
+
+  return candidates.sort((left, right) => right.length - left.length)[0];
+}
+
 const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ step }) => {
   const [copied, setCopied] = useState(false);
   const [verified, setVerified] = useState<string | null>(null);
+  const safeExpression = extractSandboxExpression(step);
 
   const copyExpression = async () => {
-    await navigator.clipboard.writeText(step.copy_expression);
+    await navigator.clipboard.writeText(safeExpression);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
   };
 
   const verifyExpression = () => {
+    if (!isValidSandboxExpression(safeExpression)) {
+      setVerified('计算错误');
+      return;
+    }
+
     try {
-      const result = new Function(`return (${step.copy_expression})`)();
+      const result = new Function(`"use strict"; return (${safeExpression});`)();
       setVerified(formatSandboxNumber(Number(result)));
     } catch {
       setVerified('计算错误');
@@ -117,7 +167,7 @@ const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ 
             </button>
           </div>
         </div>
-        <code className="calc-sandbox-expression">{step.copy_expression}</code>
+        <code className="calc-sandbox-expression">{safeExpression}</code>
         {verified && <div className="calc-sandbox-result">本地结果：{verified}</div>}
       </div>
     </div>
