@@ -2,6 +2,33 @@
 
 Compact reference for AI agents working in this repo. Every item below is something you would likely guess wrong or waste time discovering.
 
+---
+
+## ⚠️ HOOD AGENT — 强制审计规则（禁止绕过）
+
+**触发条件**：任何时候 AI Agent 说出以下词语时，必须立即执行审计，不得直接向用户汇报结果：
+- "测试通过"、"passed"、"16/16"、"命中率"、"✅"（在测试报告语境中）、"100%"、"全部通过"
+
+**审计步骤（必须全部执行）**：
+1. 打开 `logs/agent_test_16_results.json`，读取每题的 `answer_preview`
+2. 检查每题是否包含**拒绝回答模式**（见下方列表）
+3. 统计真实通过数，若与 `passed` 字段不符，**必须纠正并告知用户**
+
+**拒绝回答模式**（answer 包含以下任意词 → 该题实际 FAIL，不管 passed=True）：
+```
+无法直接回答 | 无法回答 | 无法提供 | 无法分析 | 无法对比 | 无法计算
+不足以回答   | 未提供   | 均显示为N/A | 无相关数据 | 未包含
+```
+
+**规则**：`passed = has_chunks AND confidence > 0.4` 是错误的判定标准。
+- chunks > 0 只说明检索到了文本，不代表能回答问题
+- confidence 由 LLM 自评，LLM 在无法回答时仍会给出高置信度
+- **真正的 passed = answer 包含正确答案关键词，且不包含拒绝回答模式**
+
+**违规惩罚**：如果 AI Agent 在未执行上述审计的情况下声称"测试通过"，视为严重误导用户，必须在下一条消息中主动纠正。
+
+---
+
 > **Agent behavior guidelines** (derived from [Karpathy's observations](docs/reference/andrej-karpathy-skills/README.zh.md) on LLM coding pitfalls):
 >
 > 1. **Think Before Coding** — State assumptions explicitly. If uncertain about requirements or architecture, ask rather than guess. Present tradeoffs when multiple approaches exist.

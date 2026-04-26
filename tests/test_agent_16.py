@@ -1,6 +1,13 @@
 """
 Agent 16 题冒烟测试
 逐条发 POST 到 /api/v1/agent，记录结构化响应
+
+判定标准（三重门）：
+  1. has_chunks: 检索到文本块
+  2. not_refused: answer 不含拒绝回答模式（"无法回答"等）
+  3. has_keyword: answer 包含该题的期望关键词
+
+三者全满足才算 passed。confidence 仅作参考，不作判定依据。
 """
 
 import json
@@ -9,6 +16,51 @@ import requests
 from datetime import datetime
 
 BASE_URL = "http://localhost:8002"
+
+# 拒绝回答模式 —— answer 包含任意一个即视为 FAIL
+REFUSAL_PATTERNS = [
+    "无法直接回答", "无法回答", "无法提供", "无法分析",
+    "无法对比", "无法计算", "不足以回答", "均显示为N/A",
+    "无相关数据", "未包含", "无法得出", "无法给出",
+]
+
+# 每题期望答案必须包含的关键词（任意一个命中即可）
+# None 表示该题数据库确认无数据，只要不拒绝且有 chunks 即可
+EXPECTED_KEYWORDS = [
+    # Q01 安装工程消耗量标准送配电调试
+    ["送配电", "系统调试", "计算规则", "计量单位"],
+    # Q02 玻璃地板人工费
+    ["玻璃地板", "人工费", "工日", "元"],
+    # Q03 电力电缆价格对比
+    ["YJV", "价格", "元", "差异", "2025", "2023"],
+    # Q04 装配式混凝土预制构件走势
+    ["装配式", "预制构件", "价格", "走势", "元"],
+    # Q05 铝合金门窗工人工价格
+    ["371", "铝合金门窗", "工日"],
+    # Q06 安全文明施工费
+    ["安全文明施工费", "计算基数", "费率"],
+    # Q07 施工地点填写
+    ["施工地点", "行政区域", "填写"],
+    # Q08 赶工措施费推荐系数
+    ["赶工", "推荐系数", "1.0%", "1%"],
+    # Q09 进项税额
+    ["进项税额", "不包含", "税前工程造价"],
+    # Q10 总包管理服务费计算基数
+    ["总包管理", "分包工程", "计算基数"],
+    # Q11 模块化建筑工期定额
+    ["模块化", "预制箱体", "比例", "%"],
+    # Q12 利润率对比
+    ["利润率", "2023", "2025", "一致", "不一致"],
+    # Q13 企业管理费率计算
+    ["企业管理费", "费率", "%", "25"],
+    # Q14 机械费为0时计算基数
+    ["人工费", "计算基数", "机械费"],
+    # Q15 中砂价格
+    ["中砂", "元", "m³", "/m³"],
+    # Q16 电线电缆价格变化
+    ["电线", "电缆", "变化", "上月", "%", "元"],
+]
+
 QUESTIONS = [
     "01. 安装工程消耗量标准中送配电装置系统调试的计算规则是什么？",
     "02. 25版装饰工程消耗量标准中，楼梯面层中玻璃地板的人工费是多少？",
@@ -29,8 +81,25 @@ QUESTIONS = [
 ]
 
 
+def _is_refused(answer: str) -> tuple[bool, str]:
+    """检查 answer 是否包含拒绝回答模式，返回 (is_refused, matched_pattern)"""
+    for pat in REFUSAL_PATTERNS:
+        if pat in answer:
+            return True, pat
+    return False, ""
+
+
+def _has_expected_keyword(answer: str, keywords: list[str]) -> tuple[bool, str]:
+    """检查 answer 是否包含期望关键词，返回 (found, matched_keyword)"""
+    for kw in keywords:
+        if kw in answer:
+            return True, kw
+    return False, ""
+
+
 def test_one(idx: int, query: str) -> dict:
     print(f"\n[{idx:02d}/16] {query[:60]}...")
+    expected_kws = EXPECTED_KEYWORDS[idx - 1]
     try:
         resp = requests.post(
             f"{BASE_URL}/api/v1/agent",
@@ -48,30 +117,44 @@ def test_one(idx: int, query: str) -> dict:
         evaluation = data.get("evaluation") or {}
         iterations = data.get("iterations", 0)
 
-        # 检查 LLM 未配置情况
         llm_unconfigured = "[检索结果摘要，未配置 LLM]" in answer or "[Agent 执行错误" in answer
 
-        # 强化 passed 判断：必须有 chunks 且 confidence > 0.4
+        # 三重门判定
         has_chunks = len(chunks) > 0
-        high_conf = evaluation.get("confidence", 0) > 0.4
-        real_passed = has_chunks and high_conf and not llm_unconfigured
+        refused, refusal_pat = _is_refused(answer)
+        kw_found, matched_kw = _has_expected_keyword(answer, expected_kws)
+
+        real_passed = has_chunks and not refused and kw_found and not llm_unconfigured
+
+        fail_reason = ""
+        if not has_chunks:
+            fail_reason = "no_chunks"
+        elif refused:
+            fail_reason = f"refused({refusal_pat})"
+        elif not kw_found:
+            fail_reason = f"missing_keyword(expected_one_of={expected_kws[:3]}...)"
 
         result = {
             "ok": True,
             "query": query,
-            "answer_preview": answer[:200],
+            "answer_preview": answer[:300],
             "answer_len": len(answer),
             "chunks_count": len(chunks),
             "confidence": evaluation.get("confidence", 0),
             "passed": real_passed,
+            "fail_reason": fail_reason,
+            "matched_keyword": matched_kw,
             "api_passed": evaluation.get("passed", False),
             "iterations": iterations,
             "llm_unconfigured": llm_unconfigured,
             "evaluation": evaluation,
         }
 
-        status = "✅" if result["passed"] else ("⚠️" if result["api_passed"] else "❌")
-        print(f"  {status} chunks={result['chunks_count']}, confidence={result['confidence']:.3f}, passed={result['passed']}, iters={result['iterations']}")
+        if real_passed:
+            print(f"  ✅ chunks={result['chunks_count']}, conf={result['confidence']:.3f}, keyword='{matched_kw}', iters={iterations}")
+        else:
+            print(f"  ❌ chunks={result['chunks_count']}, conf={result['confidence']:.3f}, FAIL={fail_reason}, iters={iterations}")
+            print(f"     answer: {answer[:120]}")
         if llm_unconfigured:
             print(f"  ⚠️  LLM 未配置或执行错误")
         return result
