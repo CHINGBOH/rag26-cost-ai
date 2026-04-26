@@ -109,3 +109,9 @@ sword_here psql -h localhost -U rag_user -d rag_db -c SELECT column_name, data_t
 ycopg2.connect(host='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
 t='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
 src/backend/retrieval-service/app/临时文件.md
+
+# Project assets (non-source)
+/backups/
+/demos/
+/recordings/
+/scripts/

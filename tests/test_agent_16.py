@@ -34,7 +34,7 @@ def test_one(idx: int, query: str) -> dict:
     try:
         resp = requests.post(
             f"{BASE_URL}/api/v1/agent",
-            json={"query": query, "session_id": f"test-{idx:02d}", "max_iterations": 1},
+            json={"query": query, "session_id": f"test-{idx:02d}", "max_iterations": 3},
             timeout=300,
         )
         if resp.status_code != 200:
@@ -51,6 +51,11 @@ def test_one(idx: int, query: str) -> dict:
         # 检查 LLM 未配置情况
         llm_unconfigured = "[检索结果摘要，未配置 LLM]" in answer or "[Agent 执行错误" in answer
 
+        # 强化 passed 判断：必须有 chunks 且 confidence > 0.4
+        has_chunks = len(chunks) > 0
+        high_conf = evaluation.get("confidence", 0) > 0.4
+        real_passed = has_chunks and high_conf and not llm_unconfigured
+
         result = {
             "ok": True,
             "query": query,
@@ -58,13 +63,14 @@ def test_one(idx: int, query: str) -> dict:
             "answer_len": len(answer),
             "chunks_count": len(chunks),
             "confidence": evaluation.get("confidence", 0),
-            "passed": evaluation.get("passed", False),
+            "passed": real_passed,
+            "api_passed": evaluation.get("passed", False),
             "iterations": iterations,
             "llm_unconfigured": llm_unconfigured,
             "evaluation": evaluation,
         }
 
-        status = "✅" if result["passed"] else "⚠️"
+        status = "✅" if result["passed"] else ("⚠️" if result["api_passed"] else "❌")
         print(f"  {status} chunks={result['chunks_count']}, confidence={result['confidence']:.3f}, passed={result['passed']}, iters={result['iterations']}")
         if llm_unconfigured:
             print(f"  ⚠️  LLM 未配置或执行错误")

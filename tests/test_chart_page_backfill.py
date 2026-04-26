@@ -40,6 +40,12 @@ def test_normalize_price_row_splits_collapsed_unit_price() -> None:
     assert normalized["price_tax"] == "189.0"
 
 
+def test_is_valid_material_label_rejects_malformed_ocr_fragment() -> None:
+    assert not ocr_json_to_pg.is_valid_material_label("程，企业管理费")
+    assert not ocr_json_to_pg.is_valid_material_label("价格信息")
+    assert ocr_json_to_pg.is_valid_material_label("普通硅酸盐水泥P.042.5R散装")
+
+
 def test_extract_chart_materials_keeps_material_labels() -> None:
     content = (
         "造价信息\n深圳建设工程价格信息\n●部分材料价格变化趋势图\n"
@@ -53,6 +59,11 @@ def test_extract_chart_materials_keeps_material_labels() -> None:
     assert "中砂" in materials
     assert "碎石5～25" in materials
     assert "柴油0号" in materials
+
+
+def test_normalize_material_name_canonicalizes_diesel_zero() -> None:
+    assert chart_backfill.normalize_material_name("柴油") == "柴油0号"
+    assert chart_backfill.normalize_material_name("柴油 0号") == "柴油0号"
 
 
 def test_extract_material_price_reads_text_chunk_page() -> None:

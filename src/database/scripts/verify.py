@@ -17,8 +17,18 @@ PG_CONFIG = {
     "password": os.environ.get("PG_PASSWORD") or "",
 }
 
-REQUIRED_TABLES     = ["document_registry", "text_chunks", "price_records", "fee_rates"]
+REQUIRED_TABLES     = [
+    "document_registry",
+    "text_chunks",
+    "price_records",
+    "fee_rates",
+    "canonical_concepts",
+    "concept_relations",
+    "concept_evidence_links",
+    "chunk_vector_views",
+]
 REQUIRED_EXTENSIONS = ["vector", "pg_trgm"]
+VECTOR_TABLES = ["text_chunks", "price_records", "fee_rates", "canonical_concepts", "chunk_vector_views"]
 
 PASS = "✅"
 FAIL = "❌"
@@ -79,7 +89,13 @@ def run():
 
         # ── 5. Embedding 覆盖率 ──────────────────────────────────────
         print("\n[5] Embedding coverage")
-        for tbl, min_pct in [("text_chunks", 90), ("price_records", 90), ("fee_rates", 90)]:
+        for tbl, min_pct in [
+            ("text_chunks", 90),
+            ("price_records", 90),
+            ("fee_rates", 90),
+            ("canonical_concepts", 90),
+            ("chunk_vector_views", 90),
+        ]:
             if tbl not in existing:
                 continue
             cur.execute(
@@ -98,8 +114,116 @@ def run():
             check(f"{tbl} embedding coverage", ok,
                   f"{with_emb:,}/{total:,} = {pct:.1f}%")
 
-        # ── 6. fee_rates 功能测试（模拟 tools.py 查询） ───────────────
-        print("\n[6] fee_rates functional test  (mirrors tools.py _query_structured_tables)")
+        # ── 6. Hybrid retrieval infra checks ──────────────────────────────
+        print("\n[6] Hybrid infra checks")
+        required_indexes = [
+            "idx_tc_embedding",
+            "idx_tc_tsv",
+            "idx_tc_content",
+            "idx_pr_embedding",
+            "idx_pr_name_trgm",
+            "idx_fr_embedding",
+            "idx_fr_name_trgm",
+        ]
+        cur.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+            """
+        )
+        existing_indexes = {r["indexname"] for r in cur.fetchall()}
+        for idx in required_indexes:
+            if not check(f"index: {idx}", idx in existing_indexes):
+                errors += 1
+
+        # ── 7. Vector column dimensions ─────────────────────────────────
+        print("\n[7] Vector column dimensions")
+        dims = {}
+        for tbl in VECTOR_TABLES:
+            if tbl not in existing:
+                continue
+            cur.execute(
+                """
+                SELECT a.atttypmod
+                FROM pg_attribute a
+                WHERE a.attrelid = %s::regclass
+                  AND a.attname = 'embedding'
+                  AND NOT a.attisdropped
+                LIMIT 1
+                """,
+                (f"public.{tbl}",),
+            )
+            row = cur.fetchone()
+            if not row:
+                check(f"{tbl}.embedding column exists", False)
+                errors += 1
+                continue
+            dim = int(row["atttypmod"] or 0)
+            dims[tbl] = dim
+            if not check(f"{tbl}.embedding dimension", dim > 0, f"{dim if dim > 0 else 'unknown'}"):
+                errors += 1
+
+        if dims:
+            unique_dims = sorted(set(dims.values()))
+            if not check("embedding dimensions consistent", len(unique_dims) == 1, str(dims)):
+                errors += 1
+            expected_dim = int(os.environ.get("EMBEDDING_VECTOR_DIM", "0") or "0")
+            if expected_dim > 0:
+                if not check(
+                    "embedding dimension matches EMBEDDING_VECTOR_DIM",
+                    len(unique_dims) == 1 and unique_dims[0] == expected_dim,
+                    f"expected={expected_dim}, actual={unique_dims}",
+                ):
+                    errors += 1
+
+        # ── 8. Concept graph coverage ───────────────────────────────────
+        print("\n[8] Concept graph coverage")
+        cur.execute("SELECT COUNT(*) AS n FROM canonical_concepts")
+        concept_count = int(cur.fetchone()["n"] or 0)
+        if not check("canonical_concepts has data", concept_count > 0, f"{concept_count} rows"):
+            errors += 1
+
+        cur.execute("SELECT COUNT(*) AS n FROM concept_evidence_links")
+        link_count = int(cur.fetchone()["n"] or 0)
+        if not check("concept_evidence_links has data", link_count > 0, f"{link_count} rows"):
+            errors += 1
+
+        cur.execute("SELECT COUNT(*) AS n FROM concept_relations")
+        relation_count = int(cur.fetchone()["n"] or 0)
+        if not check("concept_relations has data", relation_count > 0, f"{relation_count} rows"):
+            errors += 1
+
+        cur.execute(
+            """
+            SELECT evidence_kind, COUNT(*) AS n
+            FROM concept_evidence_links
+            GROUP BY evidence_kind
+            ORDER BY n DESC
+            """
+        )
+        kinds = {row["evidence_kind"]: int(row["n"]) for row in cur.fetchall()}
+        for kind in ("structured_row", "ocr_row", "pdf_page", "embedding_chunk"):
+            if not check(f"concept_evidence kind={kind}", kinds.get(kind, 0) > 0, str(kinds.get(kind, 0))):
+                errors += 1
+
+        # ── 9. Parent/multi-vector coverage ─────────────────────────────
+        print("\n[9] Parent/Multi-vector coverage")
+        cur.execute(
+            """
+            SELECT view_type, COUNT(*) AS n
+            FROM chunk_vector_views
+            GROUP BY view_type
+            ORDER BY view_type
+            """
+        )
+        view_counts = {row["view_type"]: int(row["n"]) for row in cur.fetchall()}
+        for view_type in ("raw_chunk", "parent_page_summary", "semantic_terms"):
+            if not check(f"chunk_vector_views view_type={view_type}", view_counts.get(view_type, 0) > 0, str(view_counts.get(view_type, 0))):
+                errors += 1
+
+        # ── 10. fee_rates 功能测试（模拟 tools.py 查询） ───────────────
+        print("\n[10] fee_rates functional test  (mirrors tools.py _query_structured_tables)")
         if "fee_rates" in existing:
             cur.execute("SELECT standard_year, COUNT(*) AS n FROM fee_rates GROUP BY standard_year")
             rows = cur.fetchall()
@@ -129,8 +253,8 @@ def run():
                     print(f"       {h['standard_year']} | {h['fee_name'][:30]} | "
                           f"{rmin}%～{rmax}% 推荐{rrec}%")
 
-        # ── 7. pgvector 余弦搜索冒烟测试 ─────────────────────────────
-        print("\n[7] pgvector smoke test")
+        # ── 11. pgvector 余弦搜索冒烟测试 ─────────────────────────────
+        print("\n[11] pgvector smoke test")
         if "text_chunks" in existing:
             cur.execute(
                 "SELECT id FROM text_chunks WHERE embedding IS NOT NULL LIMIT 1"
@@ -153,8 +277,8 @@ def run():
             else:
                 print(f"  {WARN} text_chunks 无 embedding，跳过向量测试")
 
-        # ── 8. 文档覆盖明细 ──────────────────────────────────────────
-        print("\n[8] Document coverage (text_chunks by file_name)")
+        # ── 12. 文档覆盖明细 ──────────────────────────────────────────
+        print("\n[12] Document coverage (text_chunks by file_name)")
         if "text_chunks" in existing:
             cur.execute(
                 "SELECT COALESCE(file_name, doc_id) AS src, COUNT(*) AS n "

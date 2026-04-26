@@ -923,8 +923,8 @@ def _materialize_graph_evidence(conn, evidence_row: tuple) -> dict | None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                    SELECT doc_id, page_number, item_name, calculation_formula,
-                           rate_upper_limit, unit
+                    SELECT doc_id, page_number, fee_name, base_formula,
+                           rate_recommended, calc_base
                     FROM fee_rates
                     WHERE id = %s
                     LIMIT 1
@@ -935,10 +935,10 @@ def _materialize_graph_evidence(conn, evidence_row: tuple) -> dict | None:
         if row:
             resolved_doc = str(row[0] or resolved_doc)
             resolved_page = int(row[1] or resolved_page)
-            upper = row[4]
-            upper_text = f"{float(upper):.2f}" if upper is not None else "N/A"
+            recommended = row[4]
+            rate_text = f"{float(recommended):.2f}" if recommended is not None else "N/A"
             resolved_content = (
-                f"{row[2] or ''} 计算公式:{row[3] or ''} 费率上限:{upper_text}% 单位:{row[5] or ''}"
+                f"{row[2] or ''} 计算公式:{row[3] or ''} 推荐费率:{rate_text}% 计算基数:{row[5] or ''}"
             ).strip()
             resolved_source = "fee_rates"
     elif source_table == "text_chunks":
@@ -1101,6 +1101,7 @@ def _expand_concept_hits_heuristic(conn, query: str, concept_hits: list[dict], t
                 if _should_include_structured_tables(query):
                     local_hits.extend(_query_structured_tables(query, top_k=1))
         except Exception as e:
+            conn.rollback()
             logger.warning(f"[concept_expand] failed for concept '{concept_name}': {e}")
             continue
 
@@ -1125,6 +1126,7 @@ def _expand_concept_hits(conn, query: str, concept_hits: list[dict], top_k: int 
             if graph_expanded:
                 return graph_expanded
         except Exception as exc:
+            conn.rollback()
             logger.warning(f"[concept_expand] graph recursive expansion failed, fallback to heuristic: {exc}")
 
     return _expand_concept_hits_heuristic(conn, query, concept_hits, top_k=top_k)

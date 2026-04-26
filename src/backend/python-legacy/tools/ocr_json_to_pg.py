@@ -39,11 +39,23 @@ PG_CONFIG = {
 
 # Embedding (reuse local model)
 EMBEDDING_MODEL = None
+_EMBEDDING_LOAD_FAILED = False  # Cache load failure to avoid retrying per-row
 UNIT_TOKEN_RE = re.compile(r"^(m³|m²|㎡|m|t|kg|个|套|组|台|块|片|工日|支|根|卷|桶|箱|件)$")
+INVALID_MATERIAL_RE = re.compile(r"[，,。；;：:]")
+MATERIAL_SKIP_TOKENS = (
+    "价格信息",
+    "造价信息",
+    "材料名称",
+    "部分材料价格变化趋势图",
+    "深圳建设工程价格信息",
+)
+MAX_REASONABLE_PRICE = 10_000_000.0
 
 
 def _get_embedding_model():
-    global EMBEDDING_MODEL
+    global EMBEDDING_MODEL, _EMBEDDING_LOAD_FAILED
+    if _EMBEDDING_LOAD_FAILED:
+        return None
     if EMBEDDING_MODEL is not None:
         return EMBEDDING_MODEL
     try:
@@ -55,6 +67,7 @@ def _get_embedding_model():
         return EMBEDDING_MODEL
     except Exception as e:
         logger.warning(f"Failed to load embedding model: {e}. Embeddings will be NULL.")
+        _EMBEDDING_LOAD_FAILED = True
         return None
 
 
@@ -199,7 +212,12 @@ def clean_price(val: str) -> Optional[float]:
     # 去掉逗号、空格、非数字字符（保留小数点）
     cleaned = re.sub(r"[^\d.\-]", "", val.replace(",", ""))
     try:
-        return float(cleaned) if cleaned else None
+        parsed = float(cleaned) if cleaned else None
+        if parsed is None:
+            return None
+        if abs(parsed) > MAX_REASONABLE_PRICE:
+            return None
+        return parsed
     except ValueError:
         return None
 
@@ -209,6 +227,18 @@ def normalize_material_unit(material_name: str, unit: str) -> str:
     if normalized in {"m", "m²"} and material_name in {"中砂", "碎石", "碎石5~25", "碎石5～25", "石粉渣"}:
         return "m³"
     return normalized
+
+
+def sanitize_price_record_fields(material: str, spec: str, unit: str) -> tuple[str, str, str]:
+    """Clamp field lengths to schema constraints and drop invalid units."""
+    clean_material = (material or "").strip()[:200]
+    clean_spec = (spec or "").strip()[:200]
+    clean_unit = normalize_material_unit(clean_material, unit or "")
+    if clean_unit and not UNIT_TOKEN_RE.match(clean_unit):
+        clean_unit = ""
+    if len(clean_unit) > 20:
+        clean_unit = ""
+    return clean_material, clean_spec, clean_unit[:20]
 
 
 def split_collapsed_unit_price(text: str, material_name: str) -> tuple[str, Optional[float], str]:
@@ -256,6 +286,19 @@ def normalize_price_row(row: Dict[str, str]) -> Dict[str, str]:
 
     normalized["unit"] = normalize_material_unit(material, normalized.get("unit", ""))
     return normalized
+
+
+def is_valid_material_label(material_name: str) -> bool:
+    normalized = re.sub(r"\s+", "", (material_name or ""))
+    if len(normalized) < 2 or len(normalized) > 80:
+        return False
+    if INVALID_MATERIAL_RE.search(normalized):
+        return False
+    if any(token in normalized for token in MATERIAL_SKIP_TOKENS):
+        return False
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", normalized):
+        return False
+    return True
 
 
 def infer_category(material_name: str) -> str:
@@ -332,10 +375,14 @@ def import_ocr_file(path: Path, conn) -> int:
             for row in rows:
                 row = normalize_price_row(row)
                 material = row.get("material", "").strip()
-                if not material or len(material) < 2:
+                if not is_valid_material_label(material):
+                    logger.warning(f"  Skip suspicious material label '{material}' on page {page_num} ({path.name})")
                     continue
                 spec = row.get("spec", "").strip()
                 unit = row.get("unit", "").strip()
+                material, spec, unit = sanitize_price_record_fields(material, spec, unit)
+                if not material:
+                    continue
                 price_tax = clean_price(row.get("price_tax", ""))
                 price_no_tax = clean_price(row.get("price_no_tax", ""))
                 if price_tax is None:
@@ -377,8 +424,31 @@ def import_ocr_file(path: Path, conn) -> int:
         return len(records)
     except Exception as e:
         conn.rollback()
-        logger.error(f"  ❌ Insert failed for {path.name}: {e}")
-        return 0
+        logger.warning(f"  ⚠ Batch insert failed for {path.name}, fallback to row-by-row: {e}")
+        inserted = 0
+        with conn.cursor() as cur:
+            for rec in records:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO price_records
+                        (doc_id, file_name, material_name, specification, unit,
+                         price_tax_included, price_tax_excluded, region, year_month,
+                         page_number, category, metadata, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        rec,
+                    )
+                    if cur.rowcount > 0:
+                        inserted += 1
+                except Exception as row_exc:
+                    conn.rollback()
+                    logger.warning(f"  Skip invalid row for {path.name}: {row_exc}")
+                else:
+                    conn.commit()
+        logger.info(f"  ✅ Imported {inserted} price records from {path.name} (row fallback)")
+        return inserted
 
 
 def _parse_html_table_simple(html: str) -> List[Dict[str, str]]:

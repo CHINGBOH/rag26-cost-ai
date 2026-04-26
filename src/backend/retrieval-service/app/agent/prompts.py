@@ -117,9 +117,10 @@ def resolve_llm_runtimes(
         or os.getenv("DEEPSEEK_BASE_URL")
         or configured_base_url,
         api_key=llm_config.get("api_key")
-        or os.getenv("DEEPSEEK_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or os.getenv("LLM_API_KEY", "none"),
+        or os.getenv("LLM_API_KEY")
+        or (_k if (_k := os.getenv("DEEPSEEK_API_KEY", "")) and _k.isascii() else None)
+        or (_k if (_k := os.getenv("OPENAI_API_KEY", "")) and _k.isascii() else None)
+        or "none",
         engine="api",
         route_mode=route_mode,
     )

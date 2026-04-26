@@ -83,12 +83,6 @@ CREATE INDEX IF NOT EXISTS idx_pr_spec_trgm ON price_records USING gin (specific
 CREATE INDEX IF NOT EXISTS idx_pr_embedding ON price_records USING hnsw (embedding vector_cosine_ops)
     WHERE embedding IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_pr_period    ON price_records(period);
-CREATE INDEX IF NOT EXISTS idx_pr_category  ON price_records(category);
-CREATE INDEX IF NOT EXISTS idx_pr_name_trgm ON price_records USING gin (material_name gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_pr_embedding ON price_records USING hnsw (embedding vector_cosine_ops)
-    WHERE embedding IS NOT NULL;
-
 -- ── trend_points / trend_relations ──────────────────────────────────
 -- 用于存储走势图恢复后的时序点与相邻月关系，PostgreSQL 作为主存。
 CREATE TABLE IF NOT EXISTS trend_points (
@@ -161,4 +155,75 @@ CREATE INDEX IF NOT EXISTS idx_fr_year      ON fee_rates(standard_year);
 CREATE INDEX IF NOT EXISTS idx_fr_category  ON fee_rates(fee_category);
 CREATE INDEX IF NOT EXISTS idx_fr_name_trgm ON fee_rates USING gin (fee_name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_fr_embedding ON fee_rates USING hnsw (embedding vector_cosine_ops)
+    WHERE embedding IS NOT NULL;
+
+-- ── concept graph + parent/multi-vector ─────────────────────────────
+CREATE TABLE IF NOT EXISTS canonical_concepts (
+    id              SERIAL PRIMARY KEY,
+    concept_type    VARCHAR(50) NOT NULL,
+    concept_name    TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    aliases         TEXT[] DEFAULT '{}',
+    preferred_route VARCHAR(50) DEFAULT 'hybrid_search',
+    metadata        JSONB DEFAULT '{}',
+    embedding       vector(1024),
+    created_at      TIMESTAMP DEFAULT NOW(),
+    UNIQUE (concept_type, normalized_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cc_type_name ON canonical_concepts(concept_type, concept_name);
+CREATE INDEX IF NOT EXISTS idx_cc_name_trgm ON canonical_concepts USING gin (concept_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_cc_embedding ON canonical_concepts USING hnsw (embedding vector_cosine_ops)
+    WHERE embedding IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS concept_relations (
+    id                SERIAL PRIMARY KEY,
+    source_concept_id INTEGER NOT NULL REFERENCES canonical_concepts(id) ON DELETE CASCADE,
+    target_concept_id INTEGER NOT NULL REFERENCES canonical_concepts(id) ON DELETE CASCADE,
+    relation_kind     VARCHAR(50) NOT NULL,
+    relation_weight   NUMERIC(8,4) DEFAULT 1.0,
+    metadata          JSONB DEFAULT '{}',
+    created_at        TIMESTAMP DEFAULT NOW(),
+    UNIQUE (source_concept_id, target_concept_id, relation_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cr_source ON concept_relations(source_concept_id);
+CREATE INDEX IF NOT EXISTS idx_cr_target ON concept_relations(target_concept_id);
+
+CREATE TABLE IF NOT EXISTS concept_evidence_links (
+    id                 SERIAL PRIMARY KEY,
+    concept_id         INTEGER NOT NULL REFERENCES canonical_concepts(id) ON DELETE CASCADE,
+    evidence_kind      VARCHAR(40) NOT NULL,
+    source_table       VARCHAR(40) NOT NULL,
+    source_id          BIGINT NOT NULL DEFAULT 0,
+    doc_id             TEXT NOT NULL DEFAULT '',
+    file_name          TEXT NOT NULL DEFAULT '',
+    page_number        INTEGER NOT NULL DEFAULT 0,
+    parent_doc_id      TEXT NOT NULL DEFAULT '',
+    parent_page_number INTEGER NOT NULL DEFAULT 0,
+    chunk_id           INTEGER NOT NULL DEFAULT 0,
+    link_score         NUMERIC(8,4) DEFAULT 1.0,
+    metadata           JSONB DEFAULT '{}',
+    created_at         TIMESTAMP DEFAULT NOW(),
+    UNIQUE (concept_id, evidence_kind, source_table, source_id, doc_id, page_number, chunk_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cel_concept ON concept_evidence_links(concept_id, evidence_kind);
+CREATE INDEX IF NOT EXISTS idx_cel_doc_page ON concept_evidence_links(doc_id, page_number);
+CREATE INDEX IF NOT EXISTS idx_cel_source ON concept_evidence_links(source_table, source_id);
+
+CREATE TABLE IF NOT EXISTS chunk_vector_views (
+    id          SERIAL PRIMARY KEY,
+    chunk_id    INTEGER NOT NULL REFERENCES text_chunks(id) ON DELETE CASCADE,
+    view_type   VARCHAR(40) NOT NULL,
+    view_text   TEXT NOT NULL,
+    embedding   vector(1024),
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMP DEFAULT NOW(),
+    UNIQUE (chunk_id, view_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cvv_chunk ON chunk_vector_views(chunk_id, view_type);
+CREATE INDEX IF NOT EXISTS idx_cvv_view_text_trgm ON chunk_vector_views USING gin (view_text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_cvv_embedding ON chunk_vector_views USING hnsw (embedding vector_cosine_ops)
     WHERE embedding IS NOT NULL;

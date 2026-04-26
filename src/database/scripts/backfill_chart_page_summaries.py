@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import argparse
 from pathlib import Path
 
 import psycopg2
@@ -87,7 +88,11 @@ def infer_category(material_name: str) -> str:
 
 
 def normalize_material_name(material_name: str) -> str:
-    return re.sub(r"\s+", "", (material_name or "")).replace("～", "~")
+    normalized = re.sub(r"\s+", "", (material_name or "")).replace("～", "~")
+    normalized = normalized.replace("（", "(").replace("）", ")")
+    if normalized in {"柴油", "柴油0#", "柴油0号", "柴油(0号)", "柴油（0号）"}:
+        return "柴油0号"
+    return normalized
 
 
 def extract_chart_materials(content: str) -> list[str]:
@@ -560,11 +565,86 @@ def backfill_trend_relations(conn) -> tuple[int, int]:
     return inserted_points, inserted_relations
 
 
+def audit_chart_page_coverage(conn) -> dict[str, object]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT doc_id, file_name, page_number, content
+            FROM text_chunks
+            WHERE file_name ILIKE '%价格信息%'
+              AND (
+                  content ILIKE '%部分材料价格变化趋势图%'
+                  OR content ILIKE '%价格变化趋势图%'
+                  OR content ILIKE '%价格走势图%'
+              )
+            ORDER BY file_name, page_number
+            """
+        )
+        rows = cur.fetchall()
+
+    page_summaries: list[dict[str, object]] = []
+    resolved_materials_total = 0
+    missing_materials_total = 0
+
+    for doc_id, file_name, chart_page, content in rows:
+        if not is_chart_page_content(content or ""):
+            continue
+
+        materials = extract_chart_materials(content or "")
+        year_month = extract_year_month(file_name or "")
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT material_name
+                FROM price_records
+                WHERE doc_id = %s
+                  AND year_month = %s
+                  AND price_tax_included IS NOT NULL
+                """,
+                (doc_id, year_month),
+            )
+            recovered = {normalize_material_name(row[0]) for row in cur.fetchall() if row[0]}
+
+        normalized_materials = [normalize_material_name(material) for material in materials]
+        resolved_materials = [material for material, normalized in zip(materials, normalized_materials) if normalized in recovered]
+        missing_materials = [material for material, normalized in zip(materials, normalized_materials) if normalized not in recovered]
+        resolved_materials_total += len(resolved_materials)
+        missing_materials_total += len(missing_materials)
+
+        page_summaries.append(
+            {
+                "file_name": file_name,
+                "year_month": year_month,
+                "chart_page": chart_page,
+                "materials_visible": len(materials),
+                "materials_resolved": len(resolved_materials),
+                "materials_missing": len(missing_materials),
+                "missing_examples": missing_materials[:5],
+            }
+        )
+
+    fully_covered_pages = sum(1 for item in page_summaries if item["materials_missing"] == 0)
+    return {
+        "chart_pages_total": len(page_summaries),
+        "chart_pages_fully_covered": fully_covered_pages,
+        "resolved_materials_total": resolved_materials_total,
+        "missing_materials_total": missing_materials_total,
+        "pages": page_summaries,
+    }
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Backfill chart page summaries and audit coverage.")
+    parser.add_argument("--audit-only", action="store_true", help="Only audit current chart page coverage.")
+    args = parser.parse_args()
+
     conn = psycopg2.connect(**PG_CONFIG)
     try:
-        summaries, inserted, updated = recover_chart_page_prices(conn)
-        trend_points, trend_relations = backfill_trend_relations(conn)
+        summaries = inserted = updated = trend_points = trend_relations = 0
+        if not args.audit_only:
+            summaries, inserted, updated = recover_chart_page_prices(conn)
+            trend_points, trend_relations = backfill_trend_relations(conn)
+        coverage = audit_chart_page_coverage(conn)
         print(
             json.dumps(
                 {
@@ -573,6 +653,7 @@ def main() -> None:
                     "price_records_updated": updated,
                     "trend_points_written": trend_points,
                     "trend_relations_written": trend_relations,
+                    "chart_page_coverage": coverage,
                 },
                 ensure_ascii=False,
                 indent=2,

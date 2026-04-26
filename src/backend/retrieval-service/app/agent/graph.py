@@ -48,10 +48,12 @@ from app.agent.query_analyzer import (
     is_fee_formula_query,
 )
 from app.agent.tools import (
+    concept_search,
     vector_search,
     keyword_search,
     graph_search,
     hybrid_search,
+    pdf_page_search,
     price_query,
     text_search,
     calculator,
@@ -68,14 +70,16 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [price_query, price_trend, text_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [concept_search, price_query, price_trend, text_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
 
 工具说明：
+- concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
 - text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
+- pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
 - price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
 - price_trend(material_name, start_month=None, end_month=None)：时序价格走势查询，返回某材料在时间范围内的月度均价列表（走势/趋势分析必用此工具）
 - vector_search(query, top_k=10)：向量相似度检索，适合语义相关段落
@@ -87,14 +91,16 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - 含“推荐系数”、“推荐费率”、“费率标准”、“赶工措施费”、“文明施工费”的问题 → 使用 text_search 或 category_search
 - 严禁对费率标准类问题使用 price_query（price_query 只查材料单价，不含费率系数）
 - fee_rates 表会被 text_search/keyword_search/category_search 自动检索，无需手动 SQL
+- 检索路径按顺序分化：数据库/向量索引 → OCR 字典化 JSON → PDF 页级原文；上一路命中充分时不要跳到下一路
 - 价格走势/趋势/变化幅度类问题 → 必须使用 price_trend，不得用 price_query 逐期查询
 - 费率版本对比（2023版 vs 2025版）→ 使用 keyword_search 并在参数中包含版本年份关键词
 
 工作方式：
-1. 执行当前计划步骤，选用最合适的工具（价格类用 price_query，规范文件用 text_search）
-2. 在发起新工具调用前，先评价上一步工具结果是否找到核心数据；若未找到，换关键词或换工具
-3. 信息已足够时直接停止调用工具（不要重复搜索），由后续合成节点生成答案
-4. 如果工具结果为空或不相关，明确说明检索失败，不要强行使用空结果
+1. 优先用 concept_search 命中核心概念，再根据建议下钻到价格、条文或页级证据
+2. 执行当前计划步骤，选用最合适的工具（价格类用 price_query，规范文件用 text_search）
+3. 在发起新工具调用前，先评价上一步工具结果是否找到核心数据；若未找到，换关键词或换工具
+4. 信息已足够时直接停止调用工具（不要重复搜索），由后续合成节点生成答案
+5. 如果工具结果为空或不相关，明确说明检索失败，不要强行使用空结果
 
 特殊检索规则（定额子目）：
 - 定额文档的子目按材料/工艺命名，楼梯/墙面/柱面/天棚/楼地面等是章节分类词，不是材料名
@@ -114,7 +120,9 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 - 复杂问题（如多工程类型对比、计算+引用）可拆 2~4 步
 - 每步格式：「动词 + 具体检索目标」，例如：「检索 2024年深圳市建筑人工单价」
 - 不要规划「合成答案」这一步（由系统自动完成）
+- 优先先做 concept_search 命中核心概念，再决定往结构化/OCR/PDF 哪条证据路径下钻
 - 优先使用 price_query 查材料价格，text_search 查定额规范文件
+- 三路检索原则：优先数据库和向量索引；结构化缺口再用 OCR JSON；仍不足时再用 pdf_page_search 做页级取证
 - 含"推荐系数"、"推荐费率"、"费率标准"、"赶工"、"措施费"的问题 → 第一步用 text_search（不用 price_query）
   例："赶工措施费推荐系数" → 步骤1: text_search query="赶工措施费"
 - 价格对比查询规则（重要）：若问题要求对比不同时期的价格，必须拆分为多步，
@@ -161,6 +169,29 @@ def _looks_like_annual_price_query(query: str, entities: dict | None = None) -> 
     return bool(re.match(r"^\d{4}$", period) and material and "信息价" in query)
 
 
+def _previous_month(period: str) -> str:
+    normalized = str(period or "").strip()
+    if not re.match(r"^\d{4}-\d{2}$", normalized):
+        return ""
+    year, month = normalized.split("-", 1)
+    y = int(year)
+    m = int(month)
+    if m == 1:
+        return f"{y - 1}-12"
+    return f"{y}-{m - 1:02d}"
+
+
+def _looks_like_multi_material_price_change_query(query: str, entities: dict | None = None) -> bool:
+    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
+    materials = analysis_entities.get("material_names") or []
+    period = str(analysis_entities.get("year_month") or "")
+    return bool(
+        len(materials) >= 2
+        and re.match(r"^\d{4}-\d{2}$", period)
+        and any(token in query for token in ("较上月", "上月", "环比", "变化幅度"))
+    )
+
+
 def _prune_chunks_for_query(
     query: str,
     query_type: str,
@@ -180,7 +211,8 @@ def _prune_chunks_for_query(
         ]
         if appendix_matched:
             return appendix_matched
-        return []
+        # No appendix-specific match — return all chunks rather than dropping everything
+        return chunks
 
     if query_type not in {"price", "comparison", "trend_chart"}:
         return chunks
@@ -936,10 +968,16 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         page = c.get("page_number") or c.get("page") or "?"
         score = c.get("score", 0)
         content = c.get("content", "")[:600]
+        retrieval_path = str((c.get("metadata") or {}).get("retrieval_path") or c.get("retrieval_path") or "")
+        path_label = {
+            "database": "数据库",
+            "ocr_json": "OCR JSON",
+            "pdf_page": "PDF页",
+        }.get(retrieval_path, "未标注路径")
         display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
         display = display.strip("《》")
         ref_label = f"《{display}》P{page}" if doc_name else f"来源[{i}]"
-        chunks_text += f"\n证据{i}：来源 {ref_label}，相关度 {score:.4f}\n内容：{content}\n"
+        chunks_text += f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}\n内容：{content}\n"
 
     first_ref = ""
     if chunks:
@@ -1138,6 +1176,12 @@ def planner_node(state: RAGAgentState) -> dict:
     if not steps or (len(steps) == 1 and not steps[0]):
         steps = [query]
 
+    if state.get("query_type") in {"price", "trend_chart", "comparison", "standard_ref"}:
+        first_step_lower = steps[0].lower() if steps else ""
+        if "concept_search" not in first_step_lower and "概念" not in steps[0]:
+            steps = [f"使用 concept_search 命中『{query}』中的核心概念并确认下钻方向"] + steps
+            logger.info("[planner] prepended concept_search step")
+
     # 定额/合规查询：若 LLM 未主动规划 category_search，确定性地前置一步
     if _QUOTA_RE.search(query):
         first_step_lower = steps[0].lower() if steps else ""
@@ -1187,6 +1231,19 @@ def planner_node(state: RAGAgentState) -> dict:
             f"若 price_query 无结果，仅使用 keyword_search 精确检索『{annual_period} 深圳 信息价 {annual_material}』原文，禁止拆分材料名称",
         ]
         logger.info(f"[planner] annual price query override, period='{annual_period}' material='{annual_material}'")
+
+    if state.get("query_type") in {"price", "trend_chart"} and _looks_like_multi_material_price_change_query(query, entities):
+        period = str(entities.get("year_month") or "")
+        previous_period = _previous_month(period)
+        materials = [str(item).strip() for item in (entities.get("material_names") or []) if str(item).strip()]
+        steps = [
+            f"使用 price_trend 查询『{material}』在 {previous_period} 至 {period} 的月度价格变化"
+            for material in materials
+        ]
+        logger.info(
+            f"[planner] multi-material price change override, period='{period}' "
+            f"previous='{previous_period}' materials={materials}"
+        )
 
     # 价格对比查询：提取两个期间，确保每个期间都有独立的 price_query 步骤
     price_compare_match = _PRICE_COMPARE_RE.search(query)
@@ -1355,6 +1412,19 @@ def tool_node(state: RAGAgentState) -> dict:
             cat_data = json.loads(content_str)
             if isinstance(cat_data, list) and cat_data:
                 for item in cat_data[:3]:
+                    if item.get("source_db") == "concept_search":
+                        concept_name = item.get("metadata", {}).get("concept_name", "")
+                        concept_type = item.get("metadata", {}).get("concept_type", "")
+                        preferred_tool = item.get("metadata", {}).get("preferred_tool", "")
+                        structured_hits = item.get("metadata", {}).get("structured_hits", 0)
+                        text_hits = item.get("metadata", {}).get("text_hits", 0)
+                        hint_str = (
+                            f"概念 {concept_name}({concept_type}) → {preferred_tool}; "
+                            f"结构化{structured_hits}条, 文本{text_hits}条"
+                        )
+                        if hint_str not in category_hints:
+                            category_hints.append(hint_str)
+                        continue
                     sec = item.get("section", "")
                     page = item.get("page_number", "")
                     snippet = item.get("content", "")[:60]
@@ -1436,10 +1506,10 @@ def tool_node(state: RAGAgentState) -> dict:
             else:
                 hint = (
                     "price_query 未查到价格数据（数据库中无该条目），"
-                    "请改用 text_search 或 keyword_search 搜索相关价格文档和信息价表格。"
+                    "请改用 text_search、keyword_search 或 pdf_page_search 搜索相关价格文档和信息价表格。"
                 )
         else:
-            hint = "上一步工具未检索到相关内容，请更换关键词或切换工具（如用 text_search 替代 keyword_search）重新尝试。"
+            hint = "上一步工具未检索到相关内容，请更换关键词或切换工具（如用 text_search、pdf_page_search 替代 keyword_search）重新尝试。"
         logger.warning(f"[tool_node] no new chunks, hint: {hint[:60]}")
         extra_messages = [HumanMessage(content=hint)]
 
@@ -1462,6 +1532,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     all_chunks = state.get("retrieved_chunks", [])
     query_entities = state.get("query_entities") or {}
 
+    all_chunks = [chunk for chunk in all_chunks if chunk.get("source_db") != "concept_search"]
     all_chunks = _enrich_chunks_with_filename(all_chunks)
     all_chunks = _prune_chunks_for_query(query, query_type, all_chunks, query_entities)
     logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")

@@ -21,6 +21,55 @@ cd src/backend/retrieval-service
 
 ---
 
+## Embedding + pgvector setup
+
+The retrieval stack uses PostgreSQL + pgvector for dense retrieval and fulltext indexes for sparse retrieval.
+
+### 1. Configure embedding backend
+
+```bash
+# llama.cpp OpenAI-compatible endpoint (recommended local path)
+export EMBEDDING_BACKEND=llama_cpp_http
+export LLAMA_CPP_EMBED_URL=http://127.0.0.1:8089
+export LLAMA_CPP_EMBED_MODEL=bge-m3-q8_0.gguf
+# optional strict guard
+export EMBEDDING_VECTOR_DIM=1024
+```
+
+### 2. Bootstrap pgvector infra
+
+```bash
+python src/database/scripts/setup_pgvector_infra.py --probe-backend
+```
+
+### 3. Backfill embeddings
+
+```bash
+python src/database/scripts/backfill_embeddings.py --table text_chunks --backend llama_cpp --llama-url http://127.0.0.1:8089 --limit 0
+python src/database/scripts/backfill_embeddings.py --table price_records --backend llama_cpp --llama-url http://127.0.0.1:8089 --limit 0
+python src/database/scripts/backfill_embeddings.py --table fee_rates --backend llama_cpp --llama-url http://127.0.0.1:8089 --limit 0
+python src/database/scripts/backfill_embeddings.py --table canonical_concepts --backend llama_cpp --llama-url http://127.0.0.1:8089 --limit 0
+python src/database/scripts/backfill_embeddings.py --table chunk_vector_views --backend llama_cpp --llama-url http://127.0.0.1:8089 --limit 0
+```
+
+### 4. Verify database/vector health
+
+```bash
+python src/database/scripts/verify.py
+python src/database/scripts/evaluate_retrieval_layers.py --strict
+```
+
+### 5. End-to-end OCR embedding pipeline
+
+```bash
+python src/database/scripts/run_full_ocr_embedding_pipeline.py \
+  --embedding-backend llama_cpp \
+  --llama-url http://127.0.0.1:8089 \
+  --strict-metrics
+```
+
+---
+
 ## Routes
 
 ### GET /health
@@ -216,8 +265,16 @@ Key vars read from repo-root `.env` (via `config/loader.py`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant vector DB |
-| `POSTGRES_URL` | `postgresql://rag_user:rag_password@localhost:5432/rag_db` | PostgreSQL |
-| `LLM_BASE_URL` | `http://localhost:8080` | llama-server (qwen2.5-7b) |
-| `EMBEDDING_MODEL_PATH` | `models/models--BAAI--bge-m3/...` | BGE-M3 local path |
+| `PG_HOST` / `PG_PORT` / `PG_DB` / `PG_USER` / `PG_PASSWORD` | `localhost/5432/rag_db/rag_user` | PostgreSQL connection |
+| `EMBEDDING_BACKEND` | `sentence_transformers` | `sentence_transformers` or `llama_cpp_http` |
+| `LLAMA_CPP_EMBED_URL` | `""` | llama.cpp `/v1/embeddings` endpoint |
+| `LLAMA_CPP_EMBED_MODEL` | `llama.cpp-embedding` | model field sent to llama.cpp endpoint |
+| `EMBEDDING_VECTOR_DIM` | `0` | optional strict dimension check (`0` = disabled) |
+| `RETRIEVAL_OBSERVABILITY_ENABLED` | `1` | emit retrieval/embedding observability logs |
+| `HYBRID_VECTOR_MIN_SCORE` | `0.40` | pgvector candidate threshold in `hybrid_search` |
+| `HYBRID_VECTOR_FETCH_MULTIPLIER` | `1` | vector candidate multiplier (`top_k * multiplier`) |
+| `HYBRID_TEXT_FETCH_MULTIPLIER` | `1` | fulltext candidate multiplier (`top_k * multiplier`) |
+| `HYBRID_RRF_RANK_CONSTANT` | `60` | RRF rank constant for dense+sparse fusion |
+| `HYBRID_STRUCTURED_TOP_K` | `top_k` | structured table candidate limit in hybrid pipeline |
+| `HYBRID_LITERAL_TOP_K` | `top_k` | literal/fallback candidate limit in hybrid pipeline |
 | `RETRIEVAL_SCORE_THRESHOLD` | `0.60` | Minimum chunk score |
