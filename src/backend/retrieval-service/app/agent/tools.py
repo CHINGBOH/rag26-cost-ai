@@ -2309,8 +2309,11 @@ def category_search(query: str, top_k: int = 5) -> str:
         conn = _get_pg_conn()
         with conn.cursor() as cur:
             q = query.strip()
+            # Split multi-token queries (space-separated) for token-level matching
+            tokens = [t.strip() for t in q.split() if len(t.strip()) >= 2]
+            primary_token = tokens[0] if tokens else q
 
-            # 策略1：ILIKE 精确字面匹配（中文复合词可靠），限制 < 600 chars，优先带章节号的短块
+            # 策略1：phrase ILIKE on full query (exact phrase match), limit < 600
             cur.execute("""
                 SELECT id, doc_id, page_number, content,
                        length(content) AS char_len
@@ -2337,6 +2340,22 @@ def category_search(query: str, top_k: int = 5) -> str:
                     ORDER BY length(content)
                     LIMIT %s
                 """, (f"%{q}%", top_k))
+                rows = cur.fetchall()
+
+            # 策略3：primary token ILIKE when multi-token phrase fails (e.g. "玻璃地板 楼梯面层")
+            if not rows and primary_token != q:
+                cur.execute("""
+                    SELECT id, doc_id, page_number, content,
+                           length(content) AS char_len
+                    FROM text_chunks
+                    WHERE content ILIKE %s
+                    ORDER BY
+                        CASE WHEN content ~ '[0-9]+\\.[0-9]+(\\.[0-9]+)*'
+                                  OR content ~ '（[一二三四五六七八九十0-9]+）'
+                             THEN 0 ELSE 1 END,
+                        length(content)
+                    LIMIT %s
+                """, (f"%{primary_token}%", top_k))
                 rows = cur.fetchall()
 
         results = []
