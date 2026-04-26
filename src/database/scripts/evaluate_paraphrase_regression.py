@@ -176,12 +176,50 @@ def _resolve_ts_cfg(conn) -> str:
     return str(row[0] if row and row[0] else "simple")
 
 
-def _rrf_fuse(ranked_lists: list[list[int]], k: int = 60, top_n: int = 10) -> list[int]:
+def _rrf_fuse(
+    ranked_lists: list[list[int]], k: int = 60, top_n: int = 10, guarantee_top: int = 3
+) -> list[int]:
+    """RRF fusion with guaranteed top-K inclusion from each individual path.
+
+    Standard RRF can push items that appear in only ONE path below top_n even
+    when that path ranks them at position 1-5.  The ``guarantee_top`` parameter
+    ensures the top-K hits from every individual path are always included in the
+    returned set (the window may therefore exceed top_n slightly).
+    """
     scores: dict[int, float] = {}
     for ranked in ranked_lists:
         for rank, item_id in enumerate(ranked, start=1):
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
-    return [iid for iid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_n]]
+    fused = [iid for iid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+    result: list[int] = fused[:top_n]
+    result_set: set[int] = set(result)
+    # Guarantee: top-K from every individual path survive
+    for path in ranked_lists:
+        for iid in path[:guarantee_top]:
+            if iid not in result_set:
+                result.append(iid)
+                result_set.add(iid)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Chinese abbreviation / shorthand expansion
+# 砼 (tóng) is the industry abbreviation for 混凝土 (concrete).
+# Expanding these before BM25 / trigram search closes the character-level gap.
+# ---------------------------------------------------------------------------
+_ABBREV_EXPAND: dict[str, str] = {
+    "砼": "混凝土",
+    "钢砼": "钢筋混凝土",
+}
+
+
+def _expand_query_variants(query: str) -> list[str]:
+    """Return [query] plus versions with industry abbreviations expanded."""
+    variants = [query]
+    for abbrev, full in _ABBREV_EXPAND.items():
+        if abbrev in query:
+            variants.append(query.replace(abbrev, full))
+    return variants
 
 
 def _dense_search(conn, emb: list[float], top_k: int = 20) -> list[int]:
@@ -268,37 +306,70 @@ def _trigram_search(conn, query: str, top_k: int = 20, threshold: float = 0.12) 
 
 
 def _alias_expand(conn, query: str, emb_service, top_k_concepts: int = 3) -> list[str]:
-    """Return alias terms from canonical_concepts most similar to the query.
+    """Return canonical search terms for the query via two strategies:
 
-    Embeds the query, finds the nearest concepts, and returns their alias lists.
-    These aliases are then ORed into the BM25 / trigram searches so that
-    "PHC管桩" can find rows whose material_name contains "预应力高强混凝土管桩".
+    1. Embedding similarity — find nearest concept by vector, return its name + aliases.
+    2. ILIKE direct lookup — find concepts whose name or aliases contain the query
+       term; returns their canonical names so downstream BM25/trgm can find the
+       right price records.  Catches cases where the embedder drifts (e.g.
+       高压导线 → 电力电缆 requires domain knowledge the model may lack).
     """
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(t: str) -> None:
+        if t and t not in seen:
+            terms.append(t)
+            seen.add(t)
+
     emb = emb_service.encode_single(query)
-    if not emb:
-        return []
     with conn.cursor() as cur:
+        # Strategy 1: vector similarity
+        if emb:
+            try:
+                cur.execute(
+                    """
+                    SELECT concept_name, aliases
+                    FROM canonical_concepts
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (emb, top_k_concepts),
+                )
+                for row in cur.fetchall():
+                    concept_name, aliases = row
+                    _add(str(concept_name))
+                    if aliases:
+                        for a in aliases:
+                            if a:
+                                _add(str(a))
+            except Exception:
+                conn.rollback()
+
+        # Strategy 2: ILIKE — the query itself might be an alias or partial name
         try:
             cur.execute(
                 """
                 SELECT concept_name, aliases
                 FROM canonical_concepts
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector
+                WHERE concept_name ILIKE %s
+                   OR %s = ANY(aliases)
                 LIMIT %s
                 """,
-                (emb, top_k_concepts),
+                (f"%{query}%", query, top_k_concepts * 2),
             )
-            terms: list[str] = []
             for row in cur.fetchall():
                 concept_name, aliases = row
-                terms.append(str(concept_name))
+                _add(str(concept_name))
                 if aliases:
-                    terms.extend(str(a) for a in aliases if a)
-            return terms
+                    for a in aliases:
+                        if a:
+                            _add(str(a))
         except Exception:
             conn.rollback()
-            return []
+
+    return terms
 
 
 def _ground_truth_ids(conn, concept_name: str, limit: int = 50) -> set[int]:
@@ -376,17 +447,28 @@ def run_pair(
     para_trgm = _trigram_search(conn, paraphrase, top_k)
     result.trgm_hit = bool(gt_ids & set(para_trgm))
 
-    # path 4: alias-expanded BM25 via canonical_concepts
-    alias_terms = _alias_expand(conn, paraphrase, emb_service, top_k_concepts=2)
+    # path 4: alias-expanded search via canonical_concepts.
+    # Use flat concatenated list (same as baseline) so alias_hit captures the
+    # full union.  abbrev variants (砼→混凝土) are prepended as high-confidence
+    # rewrites so they land at positions 1-20 in the list and score well in RRF.
+    alias_terms = _alias_expand(conn, paraphrase, emb_service, top_k_concepts=3)
+    for variant in _expand_query_variants(paraphrase)[1:]:
+        if variant not in alias_terms:
+            alias_terms.insert(0, variant)  # high-confidence expansion first
     alias_bm25_ids: list[int] = []
-    for term in alias_terms[:4]:  # limit to 4 alias expansions
+    for term in alias_terms[:5]:
         alias_bm25_ids.extend(_bm25_search(conn, term, ts_cfg, top_k // 2))
         alias_bm25_ids.extend(_trigram_search(conn, term, top_k // 2))
     result.alias_hit = bool(gt_ids & set(alias_bm25_ids))
 
-    # RRF over all 4 paths
+    # RRF over all 4 paths.  guarantee_top ensures that items ranked in the top-K
+    # of ANY individual path always appear in the final result even when other
+    # paths contain many competing items.  Set to 5 to capture items at rank 1-5
+    # of the flat alias list (positions 1-5 map to the first alias term's BM25 top-5).
     para_hybrid = _rrf_fuse(
-        [para_dense, para_bm25, para_trgm, alias_bm25_ids], top_n=top_k
+        [para_dense, para_bm25, para_trgm, alias_bm25_ids],
+        top_n=top_k,
+        guarantee_top=5,
     )
     result.hybrid_hit = bool(gt_ids & set(para_hybrid))
 

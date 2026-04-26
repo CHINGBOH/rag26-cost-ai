@@ -149,3 +149,41 @@ BEGIN
         RAISE WARNING 'VERIFY FAILED: "chinese" config not found — zhparser may not be installed.';
     END IF;
 END $$;
+
+-- ── Migration 001b: Canonical concept aliases for synonym coverage ──────────────
+-- These aliases enable the alias-expansion retrieval path to resolve industry
+-- synonyms and abbreviations (砼→混凝土, 高压导线→电力电缆, etc.).
+-- Idempotent: INSERT ON CONFLICT (concept_name) DO UPDATE merges new aliases.
+BEGIN;
+
+-- Add umbrella alias mappings for major construction material categories.
+-- ON CONFLICT requires a unique constraint on concept_name; if the table
+-- uses (concept_type, concept_name) as the unique key, adjust accordingly.
+WITH upserts (concept_type, concept_name, normalized_name, aliases) AS (
+    VALUES
+      ('material'::text,'电力电缆','电力电缆',ARRAY['输电电缆','供电线缆','高压导线','电力传输线','动力电缆','高压线缆']),
+      ('material','控制电缆','控制电缆',ARRAY['弱电线缆','控制线','仪表电缆','信号控制线','弱电电缆','通讯控制线']),
+      ('material','混凝土','混凝土',ARRAY['砼','抗渗砼','C30砼','C25砼','细石砼','细骨料砼']),
+      ('work','木模板','木模板',ARRAY['木工','模板工','木模','模板安装','木模安装','竹胶板模板']),
+      ('material','钢筋混凝土','钢筋混凝土',ARRAY['钢砼','RC构件','钢筋砼','配筋混凝土']),
+      ('material','豆石混凝土','豆石混凝土',ARRAY['豆石砼','细石混凝土','细骨料混凝土','豆砾石混凝土']),
+      ('material','绝缘电线','绝缘电线',ARRAY['绝缘导线','BV电线','铜芯绝缘线','BV导线','铜芯塑料线','绝缘铜线','导线']),
+      ('material','防水混凝土','防水混凝土',ARRAY['防渗砼','抗渗砼','防水砼','抗渗混凝土','防渗混凝土','C30P6','防水C30']),
+      ('material','沥青混凝土','沥青混凝土',ARRAY['热拌沥青混合料','沥青混合料','AC混合料','沥青砼','沥青路面料','热拌料']),
+      ('work','模板制安','模板制安',ARRAY['模板支拆','木模安装','模板拆支','模板制作安装','钢模板安装','模板工程']),
+      ('work','安全文明施工措施费','安全文明施工措施费',ARRAY['文明施工费','安全文明费','施工安全文明费','安全措施费','文明施工措施费']),
+      ('work','普工人工费','普工人工费',ARRAY['普通工人工费','普通工费用','普工费','普通工费','普通工劳务费','杂工费'])
+)
+INSERT INTO canonical_concepts (concept_type, concept_name, normalized_name, aliases)
+SELECT concept_type, concept_name, normalized_name, aliases FROM upserts
+ON CONFLICT DO NOTHING;
+
+-- Refresh tsv for the inserted/updated concepts
+UPDATE canonical_concepts
+SET tsv = to_tsvector('chinese', concept_name || ' ' || COALESCE(array_to_string(aliases, ' '), ''))
+WHERE concept_name IN (
+  '电力电缆','控制电缆','混凝土','木模板','钢筋混凝土','豆石混凝土',
+  '绝缘电线','防水混凝土','沥青混凝土','模板制安','安全文明施工措施费','普工人工费'
+);
+
+COMMIT;

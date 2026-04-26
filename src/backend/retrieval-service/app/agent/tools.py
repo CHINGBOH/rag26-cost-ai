@@ -85,6 +85,25 @@ _TSV_CONFIG_ENV = os.environ.get("PG_TSV_CONFIG", "chinese").strip().lower()
 _TSV_CONFIG_NAME: str | None = None
 _TSV_CONFIG_LOCK = _threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Chinese industry abbreviation expansion
+# 砼 (tóng) is the construction industry shorthand for 混凝土 (concrete).
+# Expanding before BM25/trgm search closes the character-level vocabulary gap.
+# ---------------------------------------------------------------------------
+_ABBREV_EXPAND: dict[str, str] = {
+    "砼": "混凝土",
+    "钢砼": "钢筋混凝土",
+}
+
+
+def _expand_query_variants(query: str) -> list[str]:
+    """Return [query] plus versions with industry abbreviations expanded."""
+    variants = [query]
+    for abbrev, full in _ABBREV_EXPAND.items():
+        if abbrev in query:
+            variants.append(query.replace(abbrev, full))
+    return variants
+
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
     raw = os.environ.get(name, "").strip()
@@ -431,14 +450,15 @@ def _build_query_concepts(query: str) -> list[dict]:
 
 
 def _count_price_record_hits(conn, term: str) -> int:
+    # Expand abbreviations: if term contains 砼 etc., also try the expanded form
+    variants = _expand_query_variants(term)
+    patterns = [f"%{v}%" for v in variants]
     with conn.cursor() as cur:
+        clauses = " OR ".join(["(material_name ILIKE %s OR specification ILIKE %s)"] * len(variants))
+        flat_params = [p for v in [f"%{v}%" for v in variants] for p in (v, v)]
         cur.execute(
-            """
-                SELECT COUNT(*)
-                FROM price_records
-                WHERE material_name ILIKE %s OR specification ILIKE %s
-            """,
-            (f"%{term}%", f"%{term}%"),
+            f"SELECT COUNT(*) FROM price_records WHERE {clauses}",
+            flat_params,
         )
         row = cur.fetchone()
     count = int(row[0] if row else 0)
