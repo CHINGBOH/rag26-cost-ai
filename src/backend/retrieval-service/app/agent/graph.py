@@ -70,7 +70,7 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, text_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [concept_search, price_query, price_trend, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -79,6 +79,7 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
 - text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
+- hybrid_search(query, top_k=10)：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
 - pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
 - price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
 - price_trend(material_name, start_month=None, end_month=None)：时序价格走势查询，返回某材料在时间范围内的月度均价列表（走势/趋势分析必用此工具）
@@ -88,7 +89,8 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - python_eval(code)：Python代码执行（适合复杂计算）
 
 费率标准专用路由规则（重要）：
-- 含“推荐系数”、“推荐费率”、“费率标准”、“赶工措施费”、“文明施工费”的问题 → 使用 text_search 或 category_search
+- 含“推荐系数”、“推荐费率”、“费率标准”、“赶工措施费”、“文明施工费”的问题 → 使用 text_search 或 category_search（text_search 自动检索 fee_rates 结构化表）
+- 定额消耗量/工艺描述类问题（如安装/装饰/建筑消耗量标准，同义词多、措辞不固定）→ 优先用 hybrid_search 而非 text_search
 - 严禁对费率标准类问题使用 price_query（price_query 只查材料单价，不含费率系数）
 - fee_rates 表会被 text_search/keyword_search/category_search 自动检索，无需手动 SQL
 - 检索路径按顺序分化：数据库/向量索引 → OCR 字典化 JSON → PDF 页级原文；上一路命中充分时不要跳到下一路
@@ -125,6 +127,7 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 - 三路检索原则：优先数据库和向量索引；结构化缺口再用 OCR JSON；仍不足时再用 pdf_page_search 做页级取证
 - 含"推荐系数"、"推荐费率"、"费率标准"、"赶工"、"措施费"的问题 → 第一步用 text_search（不用 price_query）
   例："赶工措施费推荐系数" → 步骤1: text_search query="赶工措施费"
+- 定额消耗量/施工工艺描述类问题（如安装/装饰/建筑工程消耗量标准）→ 第一步用 hybrid_search
 - 价格对比查询规则（重要）：若问题要求对比不同时期的价格，必须拆分为多步，
   每步单独调用 price_query 并指定对应 year_month，不得合并为一步
   例：“对比2025-12和2023-12” → 步骤1: price_query year_month=2025-12，步骤2: price_query year_month=2023-12
