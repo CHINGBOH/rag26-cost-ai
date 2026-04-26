@@ -1,0 +1,119 @@
+{
+  "version": "1.0",
+  "description": "深圳建设工程智能问答评估集",
+  "total": 16,
+  "questions": [
+    {
+      "id": "01",
+      "module": "RAG智能问答",
+      "question": "安装工程消耗量标准中送配电装置系统调试的计算规则是什么?",
+      "intent": "standard_ref",
+      "ground_truth": null
+    },
+    {
+      "id": "02",
+      "module": "RAG智能问答",
+      "question": "25 版装饰工程消耗量标准中，楼梯面层中玻璃地板的人工费是多少？",
+      "intent": "price",
+      "ground_truth": null
+    },
+    {
+      "id": "03",
+      "module": "RAG智能问答",
+      "question": "对比深圳市2025年12月和2023年12月工程建设信息价中，电力电缆规格型号为0.6/1KV YJV 5×120的价格差异",
+      "intent": "comparison",
+      "ground_truth": null
+    },
+    {
+      "id": "04",
+      "module": "RAG智能问答",
+      "question": "根据深圳信息价分析下从25年开始至今的装配式混凝土预制构件价格走势",
+      "intent": "trend_chart",
+      "ground_truth": null
+    },
+    {
+      "id": "05",
+      "module": "RAG智能问答",
+      "question": "2026年1月深圳信息价中，铝合金门窗工的人工价格是多少？",
+      "intent": "price",
+      "ground_truth": "371元/工日"
+    },
+    {
+      "id": "06",
+      "module": "RAG智能问答",
+      "question": "详细说明深圳市工程建设地方标准中，关于安全文明施工费的组成内容、计算基数以及计取规定",
+      "intent": "standard_ref",
+      "ground_truth": null
+    },
+    {
+      "id": "07",
+      "module": "RAG智能问答",
+      "question": "工程项目中施工地点要按照什么要求填写",
+      "intent": "standard_ref",
+      "ground_truth": null
+    },
+    {
+      "id": "08",
+      "module": "RAG智能问答",
+      "question": "2025版费率标准中，房建工程赶工措施费的推荐系数是多少？",
+      "intent": "price",
+      "ground_truth": "房建工程赶工措施费推荐系数为 0.5%~1.5%"
+    },
+    {
+      "id": "09",
+      "module": "RAG智能问答",
+      "question": "一般计税方法下，税前工程造价中的费用是否包含进项税额？",
+      "intent": "semantic",
+      "ground_truth": null
+    },
+    {
+      "id": "10",
+      "module": "RAG智能问答",
+      "question": "总包管理服务费的计算基数是什么？",
+      "intent": "semantic",
+      "ground_truth": null
+    },
+    {
+      "id": "11",
+      "module": "RAG智能问答",
+      "question": "模块化建筑工程施工工期定额适用于单体预制箱体应用比例大于多少的 ±0.00 以上工程？",
+      "intent": "standard_ref",
+      "ground_truth": null
+    },
+    {
+      "id": "12",
+      "module": "RAG智能问答",
+      "question": "2023版与2025版费率标准中，利润率的参考范围是否一致？",
+      "intent": "comparison",
+      "ground_truth": null
+    },
+    {
+      "id": "13",
+      "module": "RAG智能问答",
+      "question": "某工程人工费100万、材料费200万、机械费50万、企业管理费按推荐费率计算，按2025版推荐利润率计算，利润为多少？",
+      "intent": "calculation",
+      "ground_truth": null
+    },
+    {
+      "id": "14",
+      "module": "RAG智能问答",
+      "question": "按2025版标准，如果机械费为0，企业管理费的计算基数是什么？",
+      "intent": "calculation",
+      "ground_truth": null
+    },
+    {
+      "id": "15",
+      "module": "RAG智能问答",
+      "question": "2026年1月，中砂的价格是多少元/m³？",
+      "intent": "price",
+      "ground_truth": "中砂价格约为 90~100 元/m³（2026年1月深圳信息价）"
+    },
+    {
+      "id": "16",
+      "module": "RAG智能问答",
+      "question": "2026年1月，电线、电缆价格较上月的变化幅度是多少？",
+      "intent": "comparison",
+      "ground_truth": null
+    }
+  ]
+}
