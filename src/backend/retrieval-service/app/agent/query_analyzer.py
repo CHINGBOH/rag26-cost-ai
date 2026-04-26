@@ -42,13 +42,59 @@ STANDARD_REF_KEYWORDS = [
     "计算基数", "基数", "总包管理", "发包人", "分包",
 ]
 
+# ---------------------------------------------------------------------------
+# 行业别名规范化：alias -> canonical material_name（对应 price_records 实际字段值）
+# 用于 _normalize_material() 把同义词查询词映射为 DB 中存储的规范名称
+# ---------------------------------------------------------------------------
+_MATERIAL_NORMALIZE: dict[str, str] = {
+    # 混凝土 / 砼 系列
+    "防渗混凝土": "防水混凝土",
+    "抗渗混凝土": "防水混凝土",
+    "防渗砼": "防水混凝土",
+    "抗渗砼": "防水混凝土",
+    "防水砼": "防水混凝土",
+    "豆石砼": "豆石混凝土",
+    "细石砼": "混凝土",
+    "砼": "混凝土",
+    "钢砼": "钢筋混凝土",
+    # 沥青 系列
+    "热拌沥青混合料": "沥青混凝土",
+    "沥青混合料": "沥青混凝土",
+    "AC混合料": "沥青混凝土",
+    "沥青砼": "沥青混凝土",
+    "沥青路面料": "沥青混凝土",
+    "热拌料": "沥青混凝土",
+    # 电线电缆 系列
+    "绝缘导线": "绝缘电线",
+    "BV导线": "绝缘电线",
+    "铜芯绝缘线": "绝缘电线",
+    "铜芯塑料线": "绝缘电线",
+    "高压导线": "电力电缆",
+    "输电电缆": "电力电缆",
+    "动力电缆": "电力电缆",
+    "弱电线缆": "控制电缆",
+    "仪表电缆": "控制电缆",
+    # 模板 系列
+    "模板工": "模板制安",
+    "木工": "木模板",
+    "模板支拆": "模板制安",
+    "木模安装": "模板制安",
+}
+
+
 # 常见材料列表（按长度降序匹配，优先长词）
+# 含行业常用别名和省略形式，方便从用户查询中抽取材料名
 MATERIAL_LIST = [
     '加气混凝土砌块', '普通混凝土多排孔空心砌块', '普通混凝土空心砌块', '普通混凝土实心砖',
     '普通混凝土门套砖', '普通混凝土实心配套砖', '机制混凝土人行道路面砖', '机制混凝土路面环保砖',
     '机制混凝土路面透水砖', '覆膜建筑模板', '脚手架钢管', '松杂木脚手板', '阻燃型A级密目式安全立网',
     '热轧光圆钢筋', '热轧带肋钢筋', '普通硅酸盐水泥', '普通预拌混凝土', '泵送预拌混凝土',
     '湿拌抹灰砂浆', '湿拌砌筑砂浆', '普通沥青混凝土', '改性沥青混凝土', '乳化沥青',
+    # 别名 / 省略形式 — 让提取器能从用户查询词中找到材料
+    '防渗混凝土', '抗渗混凝土', '防渗砼', '抗渗砼', '防水砼', '豆石砼', '钢砼',
+    '热拌沥青混合料', '沥青混合料', 'AC混合料', '沥青砼',
+    '绝缘导线', 'BV导线', '铜芯绝缘线', '高压导线', '输电电缆', '动力电缆',
+    '弱电线缆', '仪表电缆', '模板工', '模板支拆', '木模安装', '砼',
     '种植屋面用耐根穿刺防水卷材', '混凝土路缘石', '沥青', '防水卷材', '防水涂料',
     '水泥', '钢筋', '混凝土', '中砂', '碎石', '块石', '毛石', '片石', '石粉渣',
     '白水泥', '砖', '涂料', '油漆', '防水', '保温', '管材', '电线', '电缆', '阀门',
@@ -140,7 +186,7 @@ _MATERIAL_QUERY_NOISE_RE = re.compile(
 
 class QueryAnalysis(TypedDict):
     intent: str          # 'price' | 'semantic' | 'calculation' | 'comparison' | 'trend_chart' | 'standard_ref'
-    entities: dict       # {year_month, material_name, spec, unit}
+    entities: dict       # {year_month, material_name, material_names, spec, unit}
     sub_queries: list    # 分解后的子查询列表
 
 
@@ -158,9 +204,12 @@ def _classify_intent(query: str) -> str:
     has_calc_keyword = any(kw in q for kw in CALC_KEYWORDS)
     if has_price_keyword:
         material = _extract_material(query)
+        year_month = _extract_year_month(query)
         explicit_calc = any(kw in q for kw in ("乘以", "除", "加", "减", "合计", "汇总", "百分比"))
-        if material or "信息价" in query:
-            return "calculation" if explicit_calc else "price"
+        if explicit_calc and (material or "信息价" in query):
+            return "calculation"
+        if material or "信息价" in query or year_month:
+            return "price"
     # calculation: 明确有公式或数值计算
     if has_calc_keyword and has_price_keyword:
         return "calculation"
@@ -191,13 +240,39 @@ def _extract_year_month(query: str) -> str:
     m = re.search(r"(20\d{2})\s*年", query)
     if m:
         return m.group(1)
+    m = re.search(r"(20\d{2})\s*版", query)
+    if m:
+        return m.group(1)
     m = re.search(r"\b(20\d{2})\b", query)
     if m:
         return m.group(1)
     return ""
 
 
+def _normalize_material(name: str) -> str:
+    """Map alias/abbreviation to canonical material name used in price_records.
+    Returns original name if no mapping found."""
+    # Exact alias match first
+    if name in _MATERIAL_NORMALIZE:
+        return _MATERIAL_NORMALIZE[name]
+    # Suffix/substring match: e.g. "每立方防渗混凝土" → find longest alias that is a substring
+    best = None
+    for alias, canonical in _MATERIAL_NORMALIZE.items():
+        if alias in name and (best is None or len(alias) > len(best)):
+            best = alias
+    if best:
+        # Replace the matched alias with canonical name in the original string
+        return name.replace(best, _MATERIAL_NORMALIZE[best])
+    return name
+
+
 def _extract_material(query: str) -> str:
+    normalized_query = re.sub(r"\s+", "", query or "").replace("～", "~").replace("㎡", "m²")
+    for mat in sorted(MATERIAL_LIST, key=len, reverse=True):
+        candidate = mat.replace("～", "~").replace("㎡", "m²")
+        if candidate in normalized_query:
+            return _normalize_material(mat)
+
     # 先去掉时间词和干扰词
     cleaned = re.sub(r"20\d{2}\s*年\s*\d{1,2}\s*月", "", query)
     cleaned = re.sub(r"20\d{2}-\d{1,2}", "", cleaned)
@@ -225,12 +300,49 @@ def _extract_material(query: str) -> str:
                 break
         merged = cleaned[merged_start:merged_end].strip("，,。；;：:\"'“”‘’（）()[]【】 ")
         if merged:
-            return merged
+            return _normalize_material(merged)
     # 按长度降序匹配，优先匹配长词
     for mat in sorted(MATERIAL_LIST, key=len, reverse=True):
         if mat in cleaned:
-            return mat
+            return _normalize_material(mat)
     return ""
+
+
+def _extract_materials(query: str) -> list[str]:
+    normalized_query = re.sub(r"\s+", "", query or "").replace("～", "~").replace("㎡", "m²")
+    if not normalized_query:
+        return []
+
+    matches: list[tuple[int, int, str]] = []
+    for mat in sorted(MATERIAL_LIST, key=len, reverse=True):
+        candidate = mat.replace("～", "~").replace("㎡", "m²")
+        start = 0
+        while True:
+            idx = normalized_query.find(candidate, start)
+            if idx == -1:
+                break
+            matches.append((idx, idx + len(candidate), mat))
+            start = idx + 1
+
+    if not matches:
+        material = _extract_material(query)
+        return [material] if material else []
+
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    occupied: list[tuple[int, int]] = []
+    selected: list[tuple[int, str]] = []
+    for start, end, material in matches:
+        if any(not (end <= left or start >= right) for left, right in occupied):
+            continue
+        occupied.append((start, end))
+        selected.append((start, material))
+
+    selected.sort(key=lambda item: item[0])
+    unique_materials: list[str] = []
+    for _, material in selected:
+        if material not in unique_materials:
+            unique_materials.append(material)
+    return unique_materials[:4]
 
 
 def _extract_specification(query: str) -> str:
@@ -253,6 +365,18 @@ def _extract_unit(query: str) -> str:
         if m:
             return m.group(1).strip() if m.lastindex else ""
     return ""
+
+
+def _previous_year_month(year_month: str) -> str:
+    normalized = _extract_year_month(year_month)
+    if not re.match(r"^\d{4}-\d{2}$", normalized):
+        return ""
+    year, month = normalized.split("-", 1)
+    y = int(year)
+    m = int(month)
+    if m == 1:
+        return f"{y - 1}-12"
+    return f"{y}-{m - 1:02d}"
 
 
 def extract_quota_search_term(query: str) -> str:
@@ -390,6 +514,8 @@ def _decompose(query: str, intent: str) -> list[str]:
     仅处理 comparison 和 price 的多时间/多材料情况。
     """
     sub_queries = []
+    materials = _extract_materials(query)
+    primary_material = materials[0] if materials else _extract_material(query)
 
     if intent == "comparison":
         # 检测比较型：提取所有年月和材料
@@ -404,7 +530,7 @@ def _decompose(query: str, intent: str) -> list[str]:
                 year_months.append((year, m))
         year_months = [f"{y}-{m.zfill(2)}" for y, m in year_months]
 
-        material = _extract_material(query)
+        material = primary_material
 
         if len(year_months) >= 2 and material:
             for ym in year_months:
@@ -416,10 +542,30 @@ def _decompose(query: str, intent: str) -> list[str]:
         else:
             sub_queries.append(query)
 
-    elif intent == "price":
+    elif intent in {"price", "trend_chart"}:
+        period = _extract_year_month(query)
+        previous_period = _previous_year_month(period) if period else ""
+        if (
+            len(materials) >= 2
+            and period
+            and any(token in query for token in ("较上月", "上月", "环比", "变化幅度"))
+        ):
+            for material in materials:
+                if previous_period:
+                    sub_queries.append(f"{previous_period} {material} 价格")
+                sub_queries.append(f"{period} {material} 价格")
+                if previous_period:
+                    sub_queries.append(f"计算 {material} {period} 较 {previous_period} 变化幅度")
+            return sub_queries
+
+        if len(materials) >= 2 and period:
+            for material in materials:
+                sub_queries.append(f"{period} {material} 价格")
+            return sub_queries
+
         # 检测是否有隐含对比（如 "现在多少钱" 暗示与历史对比）
         if re.search(r"现在|最近|最新|当前|本月", query):
-            material = _extract_material(query)
+            material = primary_material
             if material:
                 sub_queries.append(query)
                 sub_queries.append(f"最近3个月 {material} 价格趋势")
@@ -442,9 +588,11 @@ class QueryAnalyzer:
 
     def analyze(self, query: str) -> QueryAnalysis:
         intent = _classify_intent(query)
+        materials = _extract_materials(query)
         entities = {
             "year_month": _extract_year_month(query),
-            "material_name": _extract_material(query),
+            "material_name": materials[0] if materials else _extract_material(query),
+            "material_names": materials,
             "specification": _extract_specification(query),
             "unit": _extract_unit(query),
         }

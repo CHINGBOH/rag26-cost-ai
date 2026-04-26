@@ -91,8 +91,32 @@ _TSV_CONFIG_LOCK = _threading.Lock()
 # Expanding before BM25/trgm search closes the character-level vocabulary gap.
 # ---------------------------------------------------------------------------
 _ABBREV_EXPAND: dict[str, str] = {
+    # 混凝土 / 砼
     "砼": "混凝土",
     "钢砼": "钢筋混凝土",
+    "防渗砼": "防水混凝土",
+    "抗渗砼": "防水混凝土",
+    "防水砼": "防水混凝土",
+    "防渗混凝土": "防水混凝土",
+    "抗渗混凝土": "防水混凝土",
+    "豆石砼": "豆石混凝土",
+    "细石砼": "细石混凝土",
+    # 沥青
+    "热拌沥青混合料": "沥青混凝土",
+    "沥青混合料": "沥青混凝土",
+    "沥青砼": "沥青混凝土",
+    # 电线电缆
+    "绝缘导线": "绝缘电线",
+    "BV导线": "绝缘电线",
+    "铜芯绝缘线": "绝缘电线",
+    "高压导线": "电力电缆",
+    "输电电缆": "电力电缆",
+    "弱电线缆": "控制电缆",
+    "仪表电缆": "控制电缆",
+    # 模板
+    "模板支拆": "模板制安",
+    "木模安装": "模板制安",
+    "模板工": "模板制安",
 }
 
 
@@ -2921,6 +2945,16 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                 return cur.fetchall()
 
             rows = _build_and_run(normalized_period if normalized_period else None)
+
+            # Alias fallback: if material_name is an industry alias, retry with canonical name
+            if not rows and material_name and material_name in _ABBREV_EXPAND:
+                canonical = _ABBREV_EXPAND[material_name]
+                logger.info(f"[price_query] '{material_name}' -> alias fallback to '{canonical}'")
+                original_name = material_name
+                material_name = canonical
+                rows = _build_and_run(normalized_period if normalized_period else None)
+                if not rows:
+                    material_name = original_name
 
             # 若 material_name 过滤导致无结果，尝试仅用 spec 过滤
             if not rows and material_name and specification:

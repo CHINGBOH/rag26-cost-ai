@@ -306,13 +306,13 @@ def _trigram_search(conn, query: str, top_k: int = 20, threshold: float = 0.12) 
 
 
 def _alias_expand(conn, query: str, emb_service, top_k_concepts: int = 3) -> list[str]:
-    """Return canonical search terms for the query via two strategies:
+    """Return canonical search terms for the query via two strategies.
 
-    1. Embedding similarity — find nearest concept by vector, return its name + aliases.
-    2. ILIKE direct lookup — find concepts whose name or aliases contain the query
-       term; returns their canonical names so downstream BM25/trgm can find the
-       right price records.  Catches cases where the embedder drifts (e.g.
-       高压导线 → 电力电缆 requires domain knowledge the model may lack).
+    Strategy 2 (ILIKE/alias lookup) runs FIRST because canonical_concepts
+    contains ~15k OCR-extracted rows — vector similarity (Strategy 1) often
+    returns OCR noise (e.g. '热处理用导线') ahead of the clean canonical term
+    (e.g. '电力电缆').  ILIKE lookup against known aliases is higher-precision
+    and should occupy alias_terms[:5] so it actually gets searched.
     """
     terms: list[str] = []
     seen: set[str] = set()
@@ -324,7 +324,42 @@ def _alias_expand(conn, query: str, emb_service, top_k_concepts: int = 3) -> lis
 
     emb = emb_service.encode_single(query)
     with conn.cursor() as cur:
-        # Strategy 1: vector similarity
+        # Strategy 2 FIRST: ILIKE lookup on concept names and aliases.
+        # Four complementary ILIKE directions:
+        #   (A) concept_name ILIKE '%query%'   → query substring of a concept name
+        #   (B) query ILIKE '%%concept_name%%' → concept_name substring of the query
+        #       e.g. '2026年电力电缆单价查询' contains '电力电缆'
+        #   (C) query = ANY(aliases)           → query is an exact alias
+        #   (D) EXISTS (alias where query ILIKE '%%alias%%')
+        #       e.g. '防渗混凝土每立方多少钱' contains alias '防渗混凝土' of '防水混凝土'
+        # NOTE: literal '%' inside SQL strings must be escaped as '%%' for psycopg2.
+        try:
+            cur.execute(
+                """
+                SELECT concept_name, aliases
+                FROM canonical_concepts
+                WHERE concept_name ILIKE %s
+                   OR %s ILIKE ('%%' || concept_name || '%%')
+                   OR %s = ANY(aliases)
+                   OR EXISTS (
+                       SELECT 1 FROM unnest(COALESCE(aliases, ARRAY[]::text[])) AS a
+                       WHERE %s ILIKE ('%%' || a || '%%')
+                   )
+                LIMIT %s
+                """,
+                (f"%{query}%", query, query, query, top_k_concepts * 2),
+            )
+            for row in cur.fetchall():
+                concept_name, aliases = row
+                _add(str(concept_name))
+                if aliases:
+                    for a in aliases:
+                        if a:
+                            _add(str(a))
+        except Exception:
+            conn.rollback()
+
+        # Strategy 1 SECOND: vector similarity pads with semantically close terms.
         if emb:
             try:
                 cur.execute(
@@ -347,29 +382,28 @@ def _alias_expand(conn, query: str, emb_service, top_k_concepts: int = 3) -> lis
             except Exception:
                 conn.rollback()
 
-        # Strategy 2: ILIKE — the query itself might be an alias or partial name
+    return terms
+
+
+def _ilike_search(conn, term: str, top_k: int = 20) -> list[int]:
+    """Direct ILIKE substring search on price_records.material_name.
+
+    Mirrors production _load_concept_hits_from_graph which uses ILIKE matching
+    rather than full-text search.  This is more reliable than BM25/trgm for
+    short exact-match terms like material names (e.g. '绝缘电线' → records
+    named '10 绝缘电线', '绝缘电线' etc. which FTS ts_rank may deprioritize
+    behind records like '绝缘护套电线' that share the same tokens).
+    """
+    with conn.cursor() as cur:
         try:
             cur.execute(
-                """
-                SELECT concept_name, aliases
-                FROM canonical_concepts
-                WHERE concept_name ILIKE %s
-                   OR %s = ANY(aliases)
-                LIMIT %s
-                """,
-                (f"%{query}%", query, top_k_concepts * 2),
+                "SELECT id FROM price_records WHERE material_name ILIKE %s LIMIT %s",
+                (f"%{term}%", top_k),
             )
-            for row in cur.fetchall():
-                concept_name, aliases = row
-                _add(str(concept_name))
-                if aliases:
-                    for a in aliases:
-                        if a:
-                            _add(str(a))
+            return [int(r[0]) for r in cur.fetchall()]
         except Exception:
             conn.rollback()
-
-    return terms
+            return []
 
 
 def _ground_truth_ids(conn, concept_name: str, limit: int = 50) -> set[int]:
@@ -456,9 +490,10 @@ def run_pair(
         if variant not in alias_terms:
             alias_terms.insert(0, variant)  # high-confidence expansion first
     alias_bm25_ids: list[int] = []
-    for term in alias_terms[:5]:
+    for term in alias_terms[:10]:
         alias_bm25_ids.extend(_bm25_search(conn, term, ts_cfg, top_k // 2))
         alias_bm25_ids.extend(_trigram_search(conn, term, top_k // 2))
+        alias_bm25_ids.extend(_ilike_search(conn, term, top_k))   # matches production ILIKE behavior
     result.alias_hit = bool(gt_ids & set(alias_bm25_ids))
 
     # RRF over all 4 paths.  guarantee_top ensures that items ranked in the top-K
