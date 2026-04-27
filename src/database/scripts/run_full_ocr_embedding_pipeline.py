@@ -62,6 +62,12 @@ def main() -> None:
     if args.kb_dir:
         env["KB_DIR"] = args.kb_dir
 
+    run_step(
+        "Reconcile live OCR outputs",
+        [sys.executable, "src/database/scripts/ocr_output_reconciliation.py"],
+        env,
+    )
+
     if not args.skip_fee_import:
         run_step(
             "Import fee rates",

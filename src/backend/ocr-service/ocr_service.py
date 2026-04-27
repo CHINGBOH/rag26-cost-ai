@@ -11,6 +11,7 @@ import asyncio
 import time
 import uuid
 import json
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
@@ -43,6 +44,28 @@ MAX_PAGES_TOTAL = 1000                     # hard limit
 MAX_IMAGE_DIMENSION = 4000                 # px, resize if larger
 MAX_WIDTH_PIXELS = 1200                    # px, controls PDF render DPI (lower = less GPU memory)
 OCR_WORKERS = 1                            # thread pool size for blocking OCR (GPU is NOT thread-safe)
+SECOND_PASS_WIDTH_PIXELS = 1800            # wider rerender for weak OCR pages
+SECOND_PASS_CONFIDENCE = 0.72              # retry when OCR confidence is below this threshold
+SECOND_PASS_MIN_TEXT_CHARS = 48            # retry when OCR text is too sparse to trust
+NATIVE_TEXT_MIN_CHARS = 60                 # minimum non-whitespace chars before trusting embedded PDF text
+NATIVE_TEXT_MIN_BLOCKS = 4                 # minimum line blocks before skipping OCR
+IMAGE_HEAVY_PAGE_COVERAGE = 0.35           # only image-heavy pages should block native-text fast path
+STRUCTURED_PAGE_KEYWORDS = (
+    "序号",
+    "项目编码",
+    "项目名称",
+    "材料名称",
+    "规格",
+    "型号",
+    "单位",
+    "价格",
+    "单价",
+    "费率",
+    "推荐费率",
+    "参考范围",
+    "计算规则",
+    "工作内容",
+)
 
 # Persistent output dirs (Docker-friendly via env vars)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +129,7 @@ class OCRPageResult(BaseModel):
     raw_text: str
     markdown: str
     confidence: float
+    route_info: Optional[dict] = None
 
 
 class OCRDocumentResult(BaseModel):
@@ -115,6 +139,7 @@ class OCRDocumentResult(BaseModel):
     pages: List[OCRPageResult]
     full_text: str
     processing_time: float
+    route_metrics: Optional[dict] = None
 
 
 class AsyncJobResponse(BaseModel):
@@ -128,6 +153,307 @@ class AsyncJobStatus(BaseModel):
     progress: dict
     result: Optional[OCRDocumentResult] = None
     error: Optional[str] = None
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _build_native_page_result_from_text_dict(text_dict: dict) -> OCRPageResult:
+    text_blocks: List[OCRTextBlock] = []
+    lines: List[str] = []
+
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            text_parts = []
+            for span in line.get("spans", []):
+                span_text = str(span.get("text") or "")
+                if span_text.strip():
+                    text_parts.append(span_text)
+            if not text_parts:
+                continue
+
+            line_text = "".join(text_parts).strip()
+            if not line_text:
+                continue
+
+            line_bbox = line.get("bbox") or block.get("bbox") or [0, 0, 0, 0]
+            x0, y0, x1, y1 = [float(v) for v in line_bbox[:4]]
+            text_blocks.append(
+                OCRTextBlock(
+                    text=line_text,
+                    confidence=1.0,
+                    bbox={
+                        "x": x0,
+                        "y": y0,
+                        "width": max(0.0, x1 - x0),
+                        "height": max(0.0, y1 - y0),
+                    },
+                )
+            )
+            lines.append(line_text)
+
+    raw_text = "\n".join(lines).strip()
+    return OCRPageResult(
+        page_number=0,
+        text_blocks=text_blocks,
+        tables=[],
+        figures=[],
+        raw_text=raw_text,
+        markdown=raw_text,
+        confidence=1.0 if text_blocks else 0.0,
+    )
+
+
+def _get_page_text_dict(page: fitz.Page) -> dict:
+    try:
+        return page.get_text("dict")
+    except Exception:
+        return {}
+
+
+def _extract_native_page_result(page: fitz.Page) -> OCRPageResult:
+    return _build_native_page_result_from_text_dict(_get_page_text_dict(page))
+
+
+def _is_strong_native_text(raw_text: str, block_count: int) -> bool:
+    return len(_compact_text(raw_text)) >= NATIVE_TEXT_MIN_CHARS and block_count >= NATIVE_TEXT_MIN_BLOCKS
+
+
+def _looks_like_structured_native_page(raw_text: str) -> bool:
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    keyword_hits = sum(1 for keyword in STRUCTURED_PAGE_KEYWORDS if keyword in raw_text)
+    short_lines = sum(1 for line in lines if len(_compact_text(line)) <= 12)
+    numeric_lines = sum(1 for line in lines if sum(ch.isdigit() for ch in line) >= 3)
+
+    return keyword_hits >= 4 or (keyword_hits >= 2 and len(lines) >= 8) or (
+        len(lines) >= 12 and short_lines >= 8 and numeric_lines >= 5
+    )
+
+
+def _get_embedded_image_stats(page: fitz.Page, text_dict: Optional[dict] = None) -> tuple[bool, float]:
+    if text_dict is None:
+        text_dict = _get_page_text_dict(page)
+
+    try:
+        page_area = float(page.rect.width) * float(page.rect.height)
+    except Exception:
+        page_area = 0.0
+
+    if page_area <= 0:
+        return False, 0.0
+
+    total_image_area = 0.0
+    has_images = False
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 1:
+            continue
+
+        bbox = block.get("bbox") or [0, 0, 0, 0]
+        if len(bbox) < 4:
+            continue
+
+        x0, y0, x1, y1 = [float(v) for v in bbox[:4]]
+        image_area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        if image_area <= 0:
+            continue
+
+        has_images = True
+        total_image_area += image_area
+
+    coverage = min(1.0, total_image_area / page_area) if has_images else 0.0
+    return has_images, coverage
+
+
+def _should_skip_ocr_for_native_page(native_page: OCRPageResult, embedded_image_coverage: float) -> bool:
+    if not _is_strong_native_text(native_page.raw_text, len(native_page.text_blocks)):
+        return False
+    if embedded_image_coverage >= IMAGE_HEAVY_PAGE_COVERAGE:
+        return False
+    if _looks_like_structured_native_page(native_page.raw_text):
+        return False
+    return True
+
+
+def _should_overlay_native_text(native_page: OCRPageResult) -> bool:
+    return _is_strong_native_text(native_page.raw_text, len(native_page.text_blocks))
+
+
+def _merge_native_text_with_ocr_page(native_page: OCRPageResult, ocr_page: OCRPageResult) -> OCRPageResult:
+    if not _should_overlay_native_text(native_page):
+        return ocr_page
+
+    return OCRPageResult(
+        page_number=ocr_page.page_number,
+        text_blocks=native_page.text_blocks,
+        tables=ocr_page.tables,
+        figures=ocr_page.figures,
+        raw_text=native_page.raw_text,
+        markdown=native_page.markdown,
+        confidence=max(native_page.confidence, ocr_page.confidence),
+    )
+
+
+def _render_pdf_page_to_image(
+    page: fitz.Page,
+    output_dir: str,
+    page_number: int,
+    max_width_pixels: int = MAX_WIDTH_PIXELS,
+    suffix: str = "",
+) -> str:
+    page_rect = page.rect
+    page_width_pt = page_rect.width
+    target_dpi = min(300, int(max_width_pixels / page_width_pt * 72))
+
+    mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
+    pix = page.get_pixmap(matrix=mat)
+    image_path = os.path.join(output_dir, f"page_{page_number:04d}{suffix}.jpg")
+    pix.save(image_path)
+    return image_path
+
+
+def _run_ocr_on_image(image_path: str, serialize_ocr: bool = False) -> OCRPageResult:
+    if serialize_ocr:
+        with _gpu_lock:
+            return _process_image_sync(image_path)
+    return _process_image_sync(image_path)
+
+
+def _score_ocr_page_result(page_result: OCRPageResult) -> tuple[int, float, int, int, int]:
+    return (
+        len(page_result.tables) + len(page_result.figures),
+        page_result.confidence,
+        len(_compact_text(page_result.raw_text)),
+        len(page_result.text_blocks),
+        len(page_result.markdown or ""),
+    )
+
+
+def _should_trigger_second_pass(ocr_page: OCRPageResult) -> bool:
+    if ocr_page.tables or ocr_page.figures:
+        return False
+    if ocr_page.confidence >= SECOND_PASS_CONFIDENCE:
+        return False
+    return len(_compact_text(ocr_page.raw_text)) < SECOND_PASS_MIN_TEXT_CHARS
+
+
+def _build_page_route_info(
+    *,
+    strategy: str,
+    reason: str,
+    native_page: OCRPageResult,
+    has_embedded_images: bool,
+    embedded_image_coverage: float,
+    ocr_attempts: int,
+    used_second_pass: bool,
+) -> dict:
+    return {
+        "strategy": strategy,
+        "reason": reason,
+        "native_text_chars": len(_compact_text(native_page.raw_text)),
+        "native_text_blocks": len(native_page.text_blocks),
+        "has_embedded_images": has_embedded_images,
+        "embedded_image_coverage": round(embedded_image_coverage, 4),
+        "ocr_attempts": ocr_attempts,
+        "used_second_pass": used_second_pass,
+    }
+
+
+def _build_document_route_metrics(pages: List[OCRPageResult]) -> dict:
+    metrics = {
+        "native_pages": 0,
+        "ocr_pages": 0,
+        "hybrid_pages": 0,
+        "second_pass_pages": 0,
+        "total_ocr_attempts": 0,
+    }
+
+    for page in pages:
+        route_info = page.route_info or {}
+        strategy = route_info.get("strategy")
+        if strategy == "native":
+            metrics["native_pages"] += 1
+        elif strategy == "hybrid":
+            metrics["hybrid_pages"] += 1
+        else:
+            metrics["ocr_pages"] += 1
+
+        attempts = int(route_info.get("ocr_attempts") or 0)
+        metrics["total_ocr_attempts"] += attempts
+        if route_info.get("used_second_pass"):
+            metrics["second_pass_pages"] += 1
+
+    metrics["total_pages"] = len(pages)
+    return metrics
+
+
+def _process_pdf_page_with_routing(
+    page: fitz.Page,
+    output_dir: str,
+    page_number: int,
+    *,
+    serialize_ocr: bool,
+) -> OCRPageResult:
+    text_dict = _get_page_text_dict(page)
+    native_page = _build_native_page_result_from_text_dict(text_dict)
+    has_embedded_images, embedded_image_coverage = _get_embedded_image_stats(page, text_dict=text_dict)
+
+    if _should_skip_ocr_for_native_page(native_page, embedded_image_coverage):
+        native_page.page_number = page_number
+        native_page.route_info = _build_page_route_info(
+            strategy="native",
+            reason="strong_native_text",
+            native_page=native_page,
+            has_embedded_images=has_embedded_images,
+            embedded_image_coverage=embedded_image_coverage,
+            ocr_attempts=0,
+            used_second_pass=False,
+        )
+        return native_page
+
+    route_reason = "weak_native_text"
+    if embedded_image_coverage >= IMAGE_HEAVY_PAGE_COVERAGE:
+        route_reason = "embedded_images"
+    elif _looks_like_structured_native_page(native_page.raw_text):
+        route_reason = "structured_native_page"
+
+    image_path = _render_pdf_page_to_image(page, output_dir, page_number)
+    first_ocr_page = _run_ocr_on_image(image_path, serialize_ocr=serialize_ocr)
+    selected_ocr_page = first_ocr_page
+    attempts = 1
+    used_second_pass = False
+
+    if _should_trigger_second_pass(first_ocr_page):
+        retry_image_path = _render_pdf_page_to_image(
+            page,
+            output_dir,
+            page_number,
+            max_width_pixels=SECOND_PASS_WIDTH_PIXELS,
+            suffix="_retry",
+        )
+        retry_ocr_page = _run_ocr_on_image(retry_image_path, serialize_ocr=serialize_ocr)
+        attempts = 2
+        used_second_pass = True
+        if _score_ocr_page_result(retry_ocr_page) >= _score_ocr_page_result(first_ocr_page):
+            selected_ocr_page = retry_ocr_page
+
+    page_result = _merge_native_text_with_ocr_page(native_page, selected_ocr_page)
+    page_result.page_number = page_number
+    page_result.route_info = _build_page_route_info(
+        strategy="hybrid" if _should_overlay_native_text(native_page) else "ocr",
+        reason=route_reason,
+        native_page=native_page,
+        has_embedded_images=has_embedded_images,
+        embedded_image_coverage=embedded_image_coverage,
+        ocr_attempts=attempts,
+        used_second_pass=used_second_pass,
+    )
+    return page_result
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +669,15 @@ async def process_image(file: UploadFile = File(...)):
             _ocr_executor, _process_image_sync, image_path
         )
         page_result.page_number = 1
+        page_result.route_info = {
+            "strategy": "ocr",
+            "reason": "image_upload",
+            "native_text_chars": 0,
+            "native_text_blocks": 0,
+            "has_embedded_images": False,
+            "ocr_attempts": 1,
+            "used_second_pass": False,
+        }
 
         return OCRDocumentResult(
             document_id=f"doc_img_{uuid.uuid4().hex}",
@@ -351,6 +686,7 @@ async def process_image(file: UploadFile = File(...)):
             pages=[page_result],
             full_text=page_result.raw_text,
             processing_time=time.time() - start,
+            route_metrics=_build_document_route_metrics([page_result]),
         )
     except HTTPException:
         raise
@@ -382,24 +718,16 @@ async def _process_pdf_sync(pdf_path: str, temp_dir: str, original_filename: str
         raise HTTPException(status_code=400, detail=f"PDF too large (max {MAX_PAGES_TOTAL} pages)")
 
     pages: List[OCRPageResult] = []
-    loop = asyncio.get_event_loop()
 
     try:
         for page_num in range(total_pages):
             page = doc.load_page(page_num)
-            page_rect = page.rect
-            page_width_pt = page_rect.width
-            target_dpi = min(200, int(MAX_WIDTH_PIXELS / page_width_pt * 72))
-
-            mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
-            pix = page.get_pixmap(matrix=mat)
-            image_path = os.path.join(temp_dir, f"page_{page_num + 1:04d}.jpg")
-            pix.save(image_path)
-
-            page_result = await loop.run_in_executor(
-                _ocr_executor, _process_image_sync, image_path
+            page_result = _process_pdf_page_with_routing(
+                page,
+                temp_dir,
+                page_num + 1,
+                serialize_ocr=True,
             )
-            page_result.page_number = page_num + 1
             pages.append(page_result)
     finally:
         doc.close()
@@ -413,6 +741,7 @@ async def _process_pdf_sync(pdf_path: str, temp_dir: str, original_filename: str
         pages=pages,
         full_text=full_text,
         processing_time=0.0,
+        route_metrics=_build_document_route_metrics(pages),
     )
 
 
@@ -446,19 +775,12 @@ def _process_pdf_background(job_id: str, pdf_path: str, job_dir: str, original_f
         try:
             for page_num in range(total_pages):
                 page = doc.load_page(page_num)
-                page_rect = page.rect
-                page_width_pt = page_rect.width
-                target_dpi = min(200, int(MAX_WIDTH_PIXELS / page_width_pt * 72))
-
-                mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
-                pix = page.get_pixmap(matrix=mat)
-                image_path = os.path.join(job_dir, f"page_{page_num + 1:04d}.jpg")
-                pix.save(image_path)
-
-                # GPU operations must be serialized with lock
-                with _gpu_lock:
-                    page_result = _process_image_sync(image_path)
-                page_result.page_number = page_num + 1
+                page_result = _process_pdf_page_with_routing(
+                    page,
+                    job_dir,
+                    page_num + 1,
+                    serialize_ocr=True,
+                )
 
                 with open(pages_file, "a", encoding="utf-8") as f:
                     f.write(json.dumps(page_result.model_dump(), ensure_ascii=False) + "\n")
@@ -482,6 +804,7 @@ def _process_pdf_background(job_id: str, pdf_path: str, job_dir: str, original_f
             pages=pages,
             full_text=full_text,
             processing_time=0.0,
+            route_metrics=_build_document_route_metrics(pages),
         )
 
         result_path = os.path.join(OUTPUT_DIR, f"{job_id}_result.json")

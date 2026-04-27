@@ -19,6 +19,8 @@ import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2 import sql as pgsql
 
+from src.database.scripts.ocr_output_reconciliation import build_ocr_source_candidate_score
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -169,26 +171,8 @@ def normalize_document_label(value: str) -> str:
     return re.sub(r"\s+", "", (value or "")).strip()
 
 
-def score_ocr_source_candidate(path: Path, data: Dict[str, Any]) -> tuple[int, int, int, int, str]:
-    pages = data.get("pages")
-    page_count = len(pages) if isinstance(pages, list) else 0
-    table_count = 0
-    text_len = 0
-    if isinstance(pages, list):
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            tables = page.get("tables")
-            if isinstance(tables, list):
-                table_count += len(tables)
-            text = page.get("text")
-            if isinstance(text, str):
-                text_len += len(text)
-    try:
-        file_size = path.stat().st_size
-    except OSError:
-        file_size = 0
-    return (page_count, table_count, text_len, file_size, str(path))
+def score_ocr_source_candidate(path: Path, data: Dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+    return build_ocr_source_candidate_score(path, data, OCR_DIR)
 
 
 def refresh_text_chunks(cur, doc_id: str, file_name: str) -> int:

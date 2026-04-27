@@ -25,6 +25,7 @@ OCR_SERVICE = "http://localhost:8001"
 KB_ROOT     = Path(__file__).parent.parent / "data" / "knowledge_base"
 OUT_ROOT    = Path(__file__).parent.parent / "data" / "ocr_outputs"
 STATE_FILE  = OUT_ROOT / "_scan_state.json"
+SUMMARY_FILE = OUT_ROOT / "processing_summary.json"
 
 SYNC_PAGE_LIMIT   = 30          # ≤30页用同步接口
 POLL_INTERVAL     = 15          # 秒，轮询间隔
@@ -46,6 +47,171 @@ def save_state(state: dict):
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def empty_route_metrics() -> dict:
+    return {
+        "native_pages": 0,
+        "ocr_pages": 0,
+        "hybrid_pages": 0,
+        "second_pass_pages": 0,
+        "total_ocr_attempts": 0,
+        "total_pages": 0,
+        "known_pages": 0,
+    }
+
+
+def extract_route_metrics(result: dict) -> dict:
+    route_metrics = result.get("route_metrics")
+    if isinstance(route_metrics, dict):
+        metrics = empty_route_metrics()
+        for key in metrics:
+            if key == "known_pages":
+                continue
+            metrics[key] = int(route_metrics.get(key) or 0)
+        metrics["known_pages"] = metrics["total_pages"]
+        return metrics
+
+    metrics = empty_route_metrics()
+    pages = result.get("pages")
+    if not isinstance(pages, list):
+        return metrics
+
+    metrics["total_pages"] = len(pages)
+    for page in pages:
+        route_info = page.get("route_info")
+        if not isinstance(route_info, dict):
+            continue
+
+        metrics["known_pages"] += 1
+        strategy = route_info.get("strategy")
+        if strategy == "native":
+            metrics["native_pages"] += 1
+        elif strategy == "hybrid":
+            metrics["hybrid_pages"] += 1
+        elif strategy == "ocr":
+            metrics["ocr_pages"] += 1
+
+        metrics["total_ocr_attempts"] += int(route_info.get("ocr_attempts") or 0)
+        if route_info.get("used_second_pass"):
+            metrics["second_pass_pages"] += 1
+
+    return metrics
+
+
+def load_route_metrics_from_output(output_file: Path) -> dict:
+    try:
+        with open(output_file, encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return empty_route_metrics()
+    return extract_route_metrics(payload)
+
+
+def backfill_state_route_metrics(state: dict, pdfs: list[Path]) -> bool:
+    changed = False
+    for pdf in pdfs:
+        entry = state.get(str(pdf))
+        if not isinstance(entry, dict) or entry.get("status") != "done":
+            continue
+
+        metrics = entry.get("route_metrics")
+        if isinstance(metrics, dict) and int(metrics.get("known_pages") or 0) > 0:
+            continue
+
+        output_file = Path(entry.get("output") or output_path(pdf))
+        loaded_metrics = load_route_metrics_from_output(output_file)
+        if int(loaded_metrics.get("known_pages") or 0) <= 0:
+            continue
+
+        entry["route_metrics"] = loaded_metrics
+        changed = True
+
+    return changed
+
+
+def summarize_state(state: dict, pdfs: list[Path]) -> dict:
+    summary = {
+        "files": {
+            "total": len(pdfs),
+            "done": 0,
+            "error": 0,
+            "todo": 0,
+            "files_with_route_metrics": 0,
+        },
+        "route_metrics": empty_route_metrics(),
+        "route_ratios": {
+            "native_ratio": 0.0,
+            "ocr_ratio": 0.0,
+            "hybrid_ratio": 0.0,
+        },
+        "generated_at": int(time.time()),
+    }
+
+    for pdf in pdfs:
+        entry = state.get(str(pdf))
+        if not isinstance(entry, dict):
+            summary["files"]["todo"] += 1
+            continue
+
+        status = entry.get("status")
+        if status == "done":
+            summary["files"]["done"] += 1
+        elif status == "error":
+            summary["files"]["error"] += 1
+        else:
+            summary["files"]["todo"] += 1
+            continue
+
+        metrics = entry.get("route_metrics") if status == "done" else None
+        if not isinstance(metrics, dict):
+            continue
+
+        known_pages = int(metrics.get("known_pages") or 0)
+        if known_pages <= 0:
+            continue
+
+        summary["files"]["files_with_route_metrics"] += 1
+        for key in summary["route_metrics"]:
+            summary["route_metrics"][key] += int(metrics.get(key) or 0)
+
+    known_pages = summary["route_metrics"]["known_pages"]
+    if known_pages > 0:
+        summary["route_ratios"] = {
+            "native_ratio": round(summary["route_metrics"]["native_pages"] / known_pages, 4),
+            "ocr_ratio": round(summary["route_metrics"]["ocr_pages"] / known_pages, 4),
+            "hybrid_ratio": round(summary["route_metrics"]["hybrid_pages"] / known_pages, 4),
+        }
+
+    return summary
+
+
+def save_processing_summary(summary: dict):
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    with open(SUMMARY_FILE, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+
+
+def print_route_summary(summary: dict):
+    route_metrics = summary["route_metrics"]
+    known_pages = route_metrics["known_pages"]
+    if known_pages <= 0:
+        print("  路由统计: 当前结果未提供 route metrics")
+        return
+
+    route_ratios = summary["route_ratios"]
+    print(
+        "  路由统计: "
+        f"native={route_metrics['native_pages']} ({route_ratios['native_ratio']:.1%}) | "
+        f"ocr={route_metrics['ocr_pages']} ({route_ratios['ocr_ratio']:.1%}) | "
+        f"hybrid={route_metrics['hybrid_pages']} ({route_ratios['hybrid_ratio']:.1%})"
+    )
+    print(
+        "            "
+        f"second-pass={route_metrics['second_pass_pages']} | "
+        f"ocr_attempts={route_metrics['total_ocr_attempts']} | "
+        f"known_pages={known_pages}/{route_metrics['total_pages']}"
+    )
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────────────
@@ -136,6 +302,12 @@ def scan_pdf(pdf: Path, pages: int) -> dict:
 # ── 主逻辑 ───────────────────────────────────────────────────────────────────
 
 def cmd_status(state: dict, pdfs: list[Path]):
+    if backfill_state_route_metrics(state, pdfs):
+        save_state(state)
+
+    summary = summarize_state(state, pdfs)
+    save_processing_summary(summary)
+
     done = [p for p in pdfs if str(p) in state and state[str(p)]["status"] == "done"]
     fail = [p for p in pdfs if str(p) in state and state[str(p)]["status"] == "error"]
     todo = [p for p in pdfs if str(p) not in state or state[str(p)]["status"] not in ("done",)]
@@ -143,6 +315,7 @@ def cmd_status(state: dict, pdfs: list[Path]):
     print(f"  ✅ 完成: {len(done)}")
     print(f"  ❌ 失败: {len(fail)}")
     print(f"  ⏳ 待处理: {len(todo)}")
+    print_route_summary(summary)
     print()
     for p in done:
         s = state[str(p)]
@@ -198,6 +371,7 @@ def run_scan(pdfs: list[Path], state: dict, force: bool):
                 sum(p["confidence"] for p in result.get("pages", [])) / len(result["pages"])
                 if result.get("pages") else 0
             )
+            route_metrics = extract_route_metrics(result)
 
             state[str(pdf)] = {
                 "status": "done",
@@ -208,16 +382,27 @@ def run_scan(pdfs: list[Path], state: dict, force: bool):
                 "tables": total_tables,
                 "figures": total_figures,
                 "avg_confidence": round(avg_conf, 4),
+                "route_metrics": route_metrics,
             }
             save_state(state)
+            save_processing_summary(summarize_state(state, pdfs))
 
             print(f"  ✅ {elapsed}s | 文字块:{total_blocks} 表格:{total_tables} 图表:{total_figures} 置信度:{avg_conf:.2%}")
+            if route_metrics["known_pages"] > 0:
+                print(
+                    "     路由 | "
+                    f"native:{route_metrics['native_pages']} "
+                    f"ocr:{route_metrics['ocr_pages']} "
+                    f"hybrid:{route_metrics['hybrid_pages']} "
+                    f"second-pass:{route_metrics['second_pass_pages']}"
+                )
             print(f"  → {out}")
 
         except Exception as e:
             elapsed = round(time.time() - t0)
             state[str(pdf)] = {"status": "error", "error": str(e)[:300], "elapsed": elapsed}
             save_state(state)
+            save_processing_summary(summarize_state(state, pdfs))
             print(f"  ❌ 失败: {e}")
 
         print()
@@ -249,9 +434,12 @@ def main():
 
     # 最终汇总
     state = load_state()
-    done = sum(1 for v in state.values() if v.get("status") == "done")
-    fail = sum(1 for v in state.values() if v.get("status") == "error")
+    summary = summarize_state(state, pdfs)
+    save_processing_summary(summary)
+    done = summary["files"]["done"]
+    fail = summary["files"]["error"]
     print(f"═══ 完成 ═══  ✅{done}  ❌{fail}  共{len(pdfs)}个")
+    print_route_summary(summary)
 
 
 if __name__ == "__main__":

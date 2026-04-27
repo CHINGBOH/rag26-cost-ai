@@ -14,6 +14,7 @@ ocr_tools/
 
 data/ocr_outputs/
 ├── _scan_state.json       # 扫描进度（跳过已完成的文件）
+├── processing_summary.json # 批处理汇总，含 native / ocr / hybrid 路由统计
 ├── 深圳信息价/             # 镜像 knowledge_base 目录结构
 └── 深圳市建设工程地方标准/
 ```
@@ -59,6 +60,15 @@ python3 ocr_tools/batch_scan.py --pdf "data/knowledge_base/深圳信息价/2025-
       "page_number": 1,
       "confidence": 0.972,
       "raw_text": "...",
+      "route_info": {
+        "strategy": "hybrid",
+        "reason": "structured_native_page",
+        "native_text_chars": 893,
+        "native_text_blocks": 24,
+        "has_embedded_images": false,
+        "ocr_attempts": 1,
+        "used_second_pass": false
+      },
       "text_blocks": [{"text": "...", "confidence": 0.99, "bbox": {"x":0,"y":0,"width":100,"height":20}}],
       "tables": [{"html": "<table>...", "markdown": "| 列1 | 列2 |...", "cells": [...]}],
       "figures": [
@@ -70,9 +80,30 @@ python3 ocr_tools/batch_scan.py --pdf "data/knowledge_base/深圳信息价/2025-
         }
       ]
     }
-  ]
+  ],
+  "route_metrics": {
+    "native_pages": 12,
+    "ocr_pages": 18,
+    "hybrid_pages": 11,
+    "second_pass_pages": 3,
+    "total_ocr_attempts": 32,
+    "total_pages": 41
+  }
 }
 ```
+
+### route_info / route_metrics 说明
+
+- `route_info.strategy`: 页级路由结果，取值为 `native`、`ocr`、`hybrid`
+- `route_info.reason`: 进入该路由的主因，例如 `strong_native_text`、`structured_native_page`、`embedded_images`
+- `route_info.ocr_attempts`: 该页实际 OCR 次数；弱结果页触发 second-pass 时会变为 `2`
+- `route_metrics`: 文档级汇总，用于 batch_scan 直接统计真实语料的 native / ocr / hybrid 命中比例
+
+### Batch 扫描报表
+
+- `batch_scan.py` 现在会把每个文件的 `route_metrics` 写入 `data/ocr_outputs/_scan_state.json`
+- 同时生成 `data/ocr_outputs/processing_summary.json`，汇总已处理文件的页级路由分布、second-pass 命中数和总 OCR 尝试次数
+- `python3 ocr_tools/batch_scan.py --status` 会直接打印当前已知页的 native / ocr / hybrid 比例
 
 ### figures.text_in_region 说明
 走势图/坐标图内的所有文字（Y轴刻度、X轴标签、图例名称、单位标注）。
@@ -92,3 +123,4 @@ python3 ocr_tools/batch_scan.py --pdf "data/knowledge_base/深圳信息价/2025-
 1. 必须先启动 OCR 容器：脚本会自动检查，若服务不在线会报错退出
 2. 断点续扫：`_scan_state.json` 记录每个文件状态，`--force` 才会覆盖
 3. 大文件上传（>100MB）需等待，上传超时设为 120s
+4. 若 OCR 结果中包含 `route_info` / `route_metrics`，`batch_scan.py --status` 会自动回填并汇总路由统计

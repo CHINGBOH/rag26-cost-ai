@@ -15,6 +15,13 @@ from psycopg2.extras import RealDictCursor
 
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+
+from src.database.scripts.ocr_output_reconciliation import (  # noqa: E402
+    build_ocr_source_candidate_score,
+    list_missing_scan_state_outputs,
+)
+
 OCR_OUTPUT_DIR = Path(os.environ.get("OCR_OUTPUT_DIR", ROOT / "data" / "ocr_outputs"))
 _PERIOD_RE = re.compile(r"(20\d{2})[-年](\d{1,2})")
 _SKIP_OCR_FILENAMES = {
@@ -66,26 +73,8 @@ def normalize_document_label(value: str) -> str:
     return re.sub(r"\s+", "", (value or "")).strip()
 
 
-def score_ocr_source_candidate(path: Path, data: dict[str, object]) -> tuple[int, int, int, int, str]:
-    pages = data.get("pages")
-    page_count = len(pages) if isinstance(pages, list) else 0
-    table_count = 0
-    text_len = 0
-    if isinstance(pages, list):
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            tables = page.get("tables")
-            if isinstance(tables, list):
-                table_count += len(tables)
-            text = page.get("text")
-            if isinstance(text, str):
-                text_len += len(text)
-    try:
-        file_size = path.stat().st_size
-    except OSError:
-        file_size = 0
-    return (page_count, table_count, text_len, file_size, str(path))
+def score_ocr_source_candidate(path: Path, data: dict[str, object]) -> tuple[int, int, int, int, int, str]:
+    return build_ocr_source_candidate_score(path, data, OCR_OUTPUT_DIR)
 
 
 def has_column(cur, table_name: str, column_name: str) -> bool:
@@ -182,6 +171,12 @@ def print_missing_docs(label: str, docs: list[dict[str, object]]) -> None:
     print(f"       {label}: {len(docs)}")
     for doc in docs[:10]:
         print(f"         - {doc['file_name']} | {doc['source_path']}")
+
+
+def print_missing_outputs(label: str, outputs: list[dict[str, str]]) -> None:
+    print(f"       {label}: {len(outputs)}")
+    for item in outputs[:10]:
+        print(f"         - {item['output']} | source_pdf={item['source_pdf']}")
 
 
 def run():
@@ -451,6 +446,15 @@ def run():
         if not OCR_OUTPUT_DIR.exists():
             print(f"  {WARN} OCR output dir missing: {OCR_OUTPUT_DIR}")
         else:
+            missing_scan_state_outputs = list_missing_scan_state_outputs(OCR_OUTPUT_DIR)
+            if not check(
+                "scan_state live OCR outputs present",
+                len(missing_scan_state_outputs) == 0,
+                f"missing={len(missing_scan_state_outputs)}",
+            ):
+                errors += 1
+                print_missing_outputs("missing live OCR outputs", missing_scan_state_outputs)
+
             source_docs = collect_ocr_source_docs()
             if not source_docs:
                 print(f"  {WARN} no OCR source documents discovered under {OCR_OUTPUT_DIR}")

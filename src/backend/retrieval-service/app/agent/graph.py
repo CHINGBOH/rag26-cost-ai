@@ -60,6 +60,7 @@ from app.agent.tools import (
     python_eval,
     category_search,
     price_trend,
+    rule_clause_search,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 
@@ -70,7 +71,7 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -78,6 +79,7 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 工具说明：
 - concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
+- rule_clause_search(query, doc_id='', doc_filename='', section='', page_start=0, page_end=0, top_k=8)：在已锁定文档和页段范围内二跳检索条文正文，目录命中后优先使用
 - text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
 - hybrid_search(query, top_k=10)：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
 - pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
@@ -107,6 +109,7 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 特殊检索规则（定额子目）：
 - 定额文档的子目按材料/工艺命名，楼梯/墙面/柱面/天棚/楼地面等是章节分类词，不是材料名
 - 检索定额子目前必须先用 category_search 确认材料所在章节编号，再带章节号做 text_search
+- 一旦目录/章节命中，下一步必须用 rule_clause_search 在锁定文档和页段范围内下钻，不要回到无约束 text_search
 - 禁止把位置限定词（楼梯/墙面/柱面/台阶/踢脚等）与材料名合并成一个检索词
 - 若 text_search/keyword_search 返回空结果，立即去除位置限定词，只用材料名重试
 
@@ -953,6 +956,255 @@ def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
     return existing_chunks
 
 
+_SECTION_ID_RE = re.compile(r"^\d{1,2}(?:\.\d{1,2})+$")
+_REFUSAL_RE = re.compile(
+    r"无法直接回答|无法回答|无法确认|无法给出可靠结论|暂时无法给出可靠结论|"
+    r"知识库中未检索到相关信息|未检索到可用原文|未检索到直接依据|未检索到直接价格依据|"
+    r"现有检索结果不足|暂无可用来源"
+)
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _looks_like_refusal_answer(answer: str) -> bool:
+    return bool(_REFUSAL_RE.search(_compact_text(answer)))
+
+
+def _is_catalog_evidence(chunk: dict) -> bool:
+    metadata = chunk.get("metadata") or {}
+    return metadata.get("evidence_kind") == "pdf_catalog_chunk"
+
+
+def _has_substantive_evidence(chunks: list[dict]) -> bool:
+    return any(
+        chunk.get("source_db") != "concept_search" and not _is_catalog_evidence(chunk)
+        for chunk in chunks
+    )
+
+
+def _build_answer_evaluation(query_type: str, final_answer: str, chunks: list[dict]) -> dict:
+    catalog_hits = sum(1 for chunk in chunks if _is_catalog_evidence(chunk))
+    usable_hits = sum(
+        1
+        for chunk in chunks
+        if chunk.get("source_db") != "concept_search" and not _is_catalog_evidence(chunk)
+    )
+    refusal = _looks_like_refusal_answer(final_answer)
+    only_catalog = catalog_hits > 0 and usable_hits == 0
+    source_count = len(
+        {
+            chunk.get("doc_filename") or chunk.get("source") or chunk.get("doc_id")
+            for chunk in chunks
+            if chunk.get("doc_filename") or chunk.get("source") or chunk.get("doc_id")
+        }
+    )
+
+    if refusal and only_catalog:
+        confidence = 0.2
+        passed = False
+        feedback = "catalog_only_refusal"
+    elif query_type == "standard_ref" and only_catalog:
+        confidence = 0.32
+        passed = False
+        feedback = "catalog_only_insufficient"
+    elif refusal and usable_hits == 0:
+        confidence = 0.25
+        passed = False
+        feedback = "refusal_without_evidence"
+    else:
+        confidence = 0.35 if usable_hits == 0 else min(0.93, 0.56 + usable_hits * 0.08 + min(0.12, max(0, source_count - 1) * 0.04))
+        passed = usable_hits > 0 and not refusal
+        feedback = "ok" if passed else "insufficient_evidence"
+        if refusal:
+            confidence = min(confidence, 0.45)
+            passed = False
+            feedback = "refusal_with_evidence"
+
+    completeness = min(1.0, usable_hits / 4) if usable_hits else (0.2 if catalog_hits else 0.0)
+    coverage_estimate = min(1.0, (usable_hits + min(catalog_hits, 1)) / 4) if chunks else 0.0
+    source_diversity = min(1.0, source_count / 3) if source_count else 0.0
+
+    return {
+        "passed": passed,
+        "confidence": round(confidence, 3),
+        "completeness": round(completeness, 3),
+        "consistency": 0.9 if usable_hits else 0.45,
+        "information_gain": round(min(1.0, usable_hits / 3), 3),
+        "source_diversity": round(source_diversity, 3),
+        "fact_consistency": 0.88 if usable_hits else 0.4,
+        "coverage_estimate": round(coverage_estimate, 3),
+        "feedback": feedback,
+        "catalog_hits": catalog_hits,
+        "usable_hits": usable_hits,
+    }
+
+
+def _build_rule_clause_search_query(query: str) -> str:
+    if is_fill_requirement_query(query):
+        fill_field = extract_fill_requirement_search_term(query)
+        if fill_field:
+            return fill_field
+    if is_appendix_standard_query(query):
+        standard_title = extract_appendix_standard_title(query)
+        clause_terms = extract_appendix_standard_terms(query)
+        appendix_query = " ".join([standard_title, *clause_terms]).strip()
+        if appendix_query:
+            return appendix_query
+    if is_fee_formula_query(query):
+        fee_query = extract_fee_formula_search_term(query).replace("计算公式", "").strip()
+        if fee_query:
+            return fee_query
+    quota_term = extract_quota_search_term(query)
+    return quota_term or query.strip()
+
+
+def _extract_catalog_entries(content: str) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    pending_section = ""
+    for raw_line in content.splitlines():
+        line = _compact_text(raw_line)
+        if not line:
+            continue
+
+        direct_match = re.match(
+            r"(?P<section>\d{1,2}(?:\.\d{1,2})+)(?P<title>.*?)(?:[.·…]{2,})?(?P<page>\d{1,4})$",
+            line,
+        )
+        if direct_match:
+            entries.append((direct_match.group("section"), int(direct_match.group("page"))))
+            pending_section = ""
+            continue
+
+        section_match = re.match(r"(?P<section>\d{1,2}(?:\.\d{1,2})+)(?P<title>.+)$", line)
+        if section_match:
+            pending_section = section_match.group("section")
+            continue
+
+        digits = re.sub(r"[^0-9]", "", line)
+        if pending_section and digits and len(digits) <= 4:
+            entries.append((pending_section, int(digits)))
+            pending_section = ""
+
+    return entries
+
+
+def _resolve_catalog_page_window(content: str, section: str, fallback_page: int) -> tuple[int, int]:
+    if not section:
+        return fallback_page, fallback_page + 6 if fallback_page else 0
+
+    entries = _extract_catalog_entries(content)
+    anchor_page = 0
+    next_page = 0
+    for index, (entry_section, page) in enumerate(entries):
+        if entry_section != section:
+            continue
+        anchor_page = page
+        if index + 1 < len(entries):
+            next_page = entries[index + 1][1] - 1
+        break
+
+    if anchor_page <= 0:
+        anchor_page = fallback_page
+    if next_page <= 0 or next_page < anchor_page:
+        next_page = anchor_page + 6 if anchor_page else 0
+    return anchor_page, next_page
+
+
+def _resolve_chapter_scope(query: str, chunks: list[dict]) -> dict | None:
+    if not chunks:
+        return None
+
+    core_query = _compact_text(_build_rule_clause_search_query(query))
+    best_scope: dict | None = None
+    best_score: tuple[int, int, int, int, int, int, float] | None = None
+
+    for chunk in _enrich_chunks_with_filename(list(chunks)):
+        content = str(chunk.get("content") or "")
+        compact_content = _compact_text(content)
+        section = str(chunk.get("section") or "").strip()
+        if section and not _SECTION_ID_RE.match(section):
+            section = ""
+        page_number = int(chunk.get("page_number") or 0)
+        exact_term_hit = bool(core_query and core_query in compact_content)
+        exact_section_hit = bool(section and compact_content.startswith(section))
+        page_start, page_end = _resolve_catalog_page_window(content, section, page_number)
+        score = (
+            1 if exact_term_hit else 0,
+            1 if exact_section_hit else 0,
+            1 if page_start > 20 else 0,
+            section.count(".") if section else 0,
+            1 if chunk.get("doc_filename") else 0,
+            page_start,
+            float(chunk.get("score") or 0.0),
+        )
+        if best_score is not None and score <= best_score:
+            continue
+        best_score = score
+        best_scope = {
+            "target_doc_id": str(chunk.get("doc_id") or ""),
+            "target_doc_filename": str(chunk.get("doc_filename") or ""),
+            "target_section": section,
+            "target_page_start": page_start,
+            "target_page_end": page_end,
+        }
+
+    return best_scope
+
+
+def _build_scope_hint(state: RAGAgentState) -> str:
+    doc_name = str(state.get("target_doc_filename") or "")
+    section = str(state.get("target_section") or "")
+    page_start = int(state.get("target_page_start") or 0)
+    page_end = int(state.get("target_page_end") or 0)
+    parts = []
+    if doc_name:
+        parts.append(doc_name)
+    if section:
+        parts.append(f"section={section}")
+    if page_start > 0:
+        if page_end > 0 and page_end >= page_start:
+            parts.append(f"pages={page_start}-{page_end}")
+        else:
+            parts.append(f"page={page_start}")
+    return ", ".join(parts)
+
+
+def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
+    if not state.get("force_clause_drilldown"):
+        return None
+
+    doc_id = str(state.get("target_doc_id") or "")
+    doc_filename = str(state.get("target_doc_filename") or "")
+    if not doc_id and not doc_filename:
+        return None
+
+    query = _build_rule_clause_search_query(state["query"])
+    section = str(state.get("target_section") or "")
+    page_start = int(state.get("target_page_start") or 0)
+    page_end = int(state.get("target_page_end") or 0)
+    if page_start > 0 and page_end <= 0:
+        page_end = page_start + 6
+
+    args = {
+        "query": query,
+        "doc_id": doc_id,
+        "doc_filename": doc_filename,
+        "section": section,
+        "page_start": page_start,
+        "page_end": page_end,
+        "top_k": 6,
+    }
+    tool_hash = hashlib.md5(json.dumps(args, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return {
+        "id": f"forced_rule_clause_{tool_hash}",
+        "name": "rule_clause_search",
+        "args": args,
+        "type": "tool_call",
+    }
+
+
 def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semantic") -> str:
     """把检索结果拼成 prompt，让 LLM 生成答案"""
     if not chunks:
@@ -1008,6 +1260,13 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
             + "\n".join(f"   - {n}" for n in fallback_notices) + "\n"
         )
 
+    catalog_only_hint = ""
+    if query_type == "standard_ref" and chunks and not _has_substantive_evidence(chunks) and any(_is_catalog_evidence(c) for c in chunks):
+        catalog_only_hint = (
+            "\n5. 当前只有目录/索引命中，没有条文正文。必须明确说明无法确认具体条文内容，"
+            "不能把目录标题或目录页内容当作最终规则答案。\n"
+        )
+
     return (
         f"用户问题：{query}\n\n"
         f"知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
@@ -1018,6 +1277,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
         f"3. {query_type_hint}\n"
         f"{fallback_hint}\n"
+        f"{catalog_only_hint}"
         "格式要求（必须遵守）\n"
         "1. 第一段直接回答用户问题，不写\"【问题】\"\"【结论】\"等标签。\n"
         "2. 第二段以\"简要分析：\"开头，只保留关键依据、对比逻辑或必要计算过程，不要展开冗长思维记录。\n"
@@ -1277,6 +1537,12 @@ def planner_node(state: RAGAgentState) -> dict:
         "current_step": 0,
         "thought_process": [],
         "category_hints": [],
+        "target_doc_id": "",
+        "target_doc_filename": "",
+        "target_section": "",
+        "target_page_start": 0,
+        "target_page_end": 0,
+        "force_clause_drilldown": False,
         "fallback_mode": False,
         "llm_runtime": runtime,
     }
@@ -1318,9 +1584,34 @@ def executor_node(state: RAGAgentState) -> dict:
     step_hint = plan[current_step] if current_step < len(plan) else plan[-1]
     progress = f"{current_step + 1}/{len(plan)}"
 
+    forced_tool_call = _build_forced_rule_clause_tool_call(state)
+    if forced_tool_call is not None:
+        scope_hint = _build_scope_hint(state)
+        forced_step_hint = f"强制调用 rule_clause_search 下钻条文正文（{scope_hint}）" if scope_hint else "强制调用 rule_clause_search 下钻条文正文"
+        thought_process.append(f"步骤{current_step+1}：{forced_step_hint}")
+        step_msg = HumanMessage(content=f"[当前进度 {progress}] {forced_step_hint}")
+        forced_response = AIMessage(content="", tool_calls=[forced_tool_call])
+        logger.info(f"[executor] forced rule_clause_search: {forced_tool_call['args']}")
+        return {
+            "messages": [step_msg, forced_response],
+            "iterations": iteration + 1,
+            "current_step": current_step,
+            "thought_process": thought_process,
+            "has_tool_calls": True,
+            "pending_tool_calls": [forced_tool_call],
+            "step_number": current_step + 1,
+            "total_steps": len(plan),
+            "step_hint": forced_step_hint,
+            "force_clause_drilldown": False,
+            "llm_runtime": state.get("llm_runtime") or {},
+        }
+
     # 如果有章节定位提示，注入到步骤消息中帮助 LLM 精准检索
     category_hints = state.get("category_hints") or []
-    if category_hints:
+    scope_hint = _build_scope_hint(state)
+    if scope_hint:
+        step_content = f"[已锁定检索范围：{scope_hint}]\n[当前进度 {progress}] 请执行：{step_hint}"
+    elif category_hints:
         hints_str = "；".join(category_hints[:3])
         step_content = f"[章节定位参考：{hints_str}]\n[当前进度 {progress}] 请执行：{step_hint}"
     else:
@@ -1428,13 +1719,6 @@ def tool_node(state: RAGAgentState) -> dict:
                         if hint_str not in category_hints:
                             category_hints.append(hint_str)
                         continue
-                    sec = item.get("section", "")
-                    page = item.get("page_number", "")
-                    snippet = item.get("content", "")[:60]
-                    if sec or snippet:
-                        hint_str = f"{sec} P{page}: {snippet}" if sec else snippet
-                        if hint_str not in category_hints:
-                            category_hints.append(hint_str)
         except Exception:
             pass
 
@@ -1525,6 +1809,39 @@ def tool_node(state: RAGAgentState) -> dict:
     }
 
 
+def chapter_resolver_node(state: RAGAgentState) -> dict:
+    if state.get("query_type") != "standard_ref":
+        return {}
+
+    retrieved_chunks = _enrich_chunks_with_filename(list(state.get("retrieved_chunks") or []))
+    if any((chunk.get("metadata") or {}).get("evidence_kind") == "rule_clause_chunk" for chunk in retrieved_chunks):
+        return {
+            "retrieved_chunks": retrieved_chunks,
+            "force_clause_drilldown": False,
+        }
+
+    catalog_chunks = [chunk for chunk in retrieved_chunks if _is_catalog_evidence(chunk)]
+    if not catalog_chunks:
+        return {"retrieved_chunks": retrieved_chunks}
+
+    resolved_scope = _resolve_chapter_scope(state["query"], catalog_chunks)
+    if not resolved_scope:
+        return {"retrieved_chunks": retrieved_chunks}
+
+    logger.info(
+        "[chapter_resolver] doc=%s section=%s pages=%s-%s",
+        resolved_scope.get("target_doc_filename") or resolved_scope.get("target_doc_id"),
+        resolved_scope.get("target_section"),
+        resolved_scope.get("target_page_start"),
+        resolved_scope.get("target_page_end"),
+    )
+    return {
+        "retrieved_chunks": retrieved_chunks,
+        **resolved_scope,
+        "force_clause_drilldown": True,
+    }
+
+
 def synthesize_node(state: RAGAgentState) -> dict:
     """
     合成节点：用 messages channel 中积累的全部 chunks 生成最终答案。
@@ -1543,20 +1860,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     citations_text = _format_citations(all_chunks)
     presentation = _build_presentation_payload(query, query_type, all_chunks)
 
-    # 简单置信度估算（供 SSE eval_scores 事件用）
-    n = len(all_chunks)
-    confidence = min(0.95, 0.5 + n * 0.05) if n > 0 else 0.3
-    evaluation = {
-        "passed": True,
-        "confidence": confidence,
-        "completeness": min(1.0, n / 8),
-        "consistency": 0.85,
-        "information_gain": 0.8,
-        "source_diversity": min(1.0, len({c.get("source", "") for c in all_chunks}) / 3),
-        "fact_consistency": 0.85,
-        "coverage_estimate": min(1.0, n / 5),
-        "feedback": "ok",
-    }
+    evaluation = _build_answer_evaluation(query_type, "", all_chunks)
 
     if state.get("stream_response"):
         runtime = state.get("llm_runtime") or {}
@@ -1587,6 +1891,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     from app.rag_pipeline import _strip_latex
     citations_text = refine_citations_for_answer(final_answer, all_chunks, citations_text)
     final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text, query_type)
+    evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks)
     presentation = finalize_presentation_payload(
         query=query,
         query_type=query_type,
@@ -1654,7 +1959,9 @@ def build_agent_graph(checkpointer=None):
     Thought-Plan-Act graph:
 
     query_analysis → planner_node → executor_node ↔ tool_node  (plan steps loop)
-                                         ↓ (all steps done or max iter)
+                                 ↓ chapter_resolver
+                             chapter_resolver → executor_node
+                                 ↓ (all steps done or max iter)
                                     synthesize_node → END
     """
     g = StateGraph(RAGAgentState)
@@ -1663,6 +1970,7 @@ def build_agent_graph(checkpointer=None):
     g.add_node("planner_node", planner_node)
     g.add_node("executor_node", executor_node)
     g.add_node("tool_node", tool_node)
+        g.add_node("chapter_resolver", chapter_resolver_node)
     g.add_node("synthesize_node", synthesize_node)
 
     g.set_entry_point("query_analysis")
@@ -1685,7 +1993,8 @@ def build_agent_graph(checkpointer=None):
         },
     )
 
-    g.add_edge("tool_node", "executor_node")
+    g.add_edge("tool_node", "chapter_resolver")
+    g.add_edge("chapter_resolver", "executor_node")
     g.add_edge("synthesize_node", END)
 
     return g.compile(checkpointer=checkpointer)
