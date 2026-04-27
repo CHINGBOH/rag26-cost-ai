@@ -21,6 +21,12 @@ class RAGAgentState(TypedDict):
     tool_call_cache: dict[str, str]     # {tool_name+args_hash: result} 去重缓存
     calculation_inputs: dict            # 从 chunks 中提取的数值 {name: value}
     category_hints: list[str]          # category_search 返回的章节定位字符串，跨步骤传递
+    target_doc_id: str                  # resolved doc scope for forced rule-clause drilldown
+    target_doc_filename: str            # resolved file_name scope for forced rule-clause drilldown
+    target_section: str                 # resolved section id, e.g. 10.3.6
+    target_page_start: int              # resolved page window start for scoped clause retrieval
+    target_page_end: int                # resolved page window end for scoped clause retrieval
+    force_clause_drilldown: bool        # when True, executor must call rule_clause_search next
     fallback_mode: bool                 # True = 已触发位置词降级，防止无限循环
     has_tool_calls: bool                # executor_node 标记是否有待执行的 tool_calls
     llm_config: dict                    # LLM routing config from request
