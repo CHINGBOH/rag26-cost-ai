@@ -2508,13 +2508,21 @@ def graph_search(query: str, top_k: int = 10) -> str:
 
 
 @tool
-def hybrid_search(query: str, top_k: int = 10) -> str:
-    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。"""
+def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str:
+    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。
+
+    Args:
+        query: 检索关键词
+        top_k: 返回结果数量
+        path_constraint: 可选，章节路径前缀过滤（如 '第二册电气设备安装工程/10.%'）。
+    """
     if not query.strip():
         return json.dumps([])
 
     conn = None
     started = time.perf_counter()
+    path_filter_sql = "AND tc.path LIKE %s" if path_constraint else ""
+    path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
         cfg = _get_hybrid_runtime_config(top_k)
         query_family = str((_concept_analyzer.analyze(query).get("intent") or "semantic"))
@@ -2550,14 +2558,17 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
 
         with conn.cursor() as cur:
             if query_embedding:
+                # Increase IVFFlat probe count for better recall (default probes=1 misses clusters)
+                cur.execute("SET ivfflat.probes = 10")
                 try:
                     cur.execute(
-                        """
+                        f"""
                             SELECT id, doc_id, page_number, content,
                                    1 - (embedding <=> %s::vector) AS score
                             FROM text_chunks
                             WHERE embedding IS NOT NULL
                               AND 1 - (embedding <=> %s::vector) >= %s
+                              {path_filter_sql.replace('tc.', '')}
                             ORDER BY embedding <=> %s::vector
                             LIMIT %s
                         """,
@@ -2565,6 +2576,7 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                             query_embedding,
                             query_embedding,
                             float(cfg["vector_min_score"]),
+                            *path_filter_params,
                             query_embedding,
                             int(cfg["vector_fetch_k"]),
                         ),
@@ -2650,10 +2662,11 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                ts_rank(tsv, plainto_tsquery('{ts_cfg}', %s)) AS score
                         FROM text_chunks
                         WHERE tsv @@ plainto_tsquery('{ts_cfg}', %s)
+                        {path_filter_sql.replace('tc.', '')}
                         ORDER BY score DESC
                         LIMIT %s
                     """,
-                    (query, query, int(cfg["text_fetch_k"])),
+                    (query, query, *path_filter_params, int(cfg["text_fetch_k"])),
                 )
             else:
                 cur.execute(
@@ -2663,10 +2676,11 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                        plainto_tsquery('{ts_cfg}', %s)) AS score
                         FROM text_chunks
                         WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                        {path_filter_sql.replace('tc.', '')}
                         ORDER BY score DESC
                         LIMIT %s
                     """,
-                    (query, query, int(cfg["text_fetch_k"])),
+                    (query, query, *path_filter_params, int(cfg["text_fetch_k"])),
                 )
             for row in cur.fetchall():
                 text_hits.append(
@@ -2774,14 +2788,24 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
 
 
 @tool
-def text_search(query: str, top_k: int = 8) -> str:
-    """语义向量搜索+全文检索：从 text_chunks 表中检索"""
+def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
+    """语义向量搜索+全文检索：从 text_chunks 表中检索。
+
+    Args:
+        query: 检索关键词
+        top_k: 返回结果数量
+        path_constraint: 可选，章节路径前缀过滤（如 '第二册电气设备安装工程/10.%'），
+                         限定检索范围到特定章节，避免跨册噪声。
+    """
     if not query.strip():
         return json.dumps([])
 
     results = []
     seen_ids = set()
     conn = None
+    # Build optional path filter clause (parameterized, injection-safe)
+    path_filter_sql = "AND path LIKE %s" if path_constraint else ""
+    path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
         conn = _get_pg_conn()
         ts_cfg = _resolve_text_search_config(conn)
@@ -2794,9 +2818,10 @@ def text_search(query: str, top_k: int = 8) -> str:
                            ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
                     FROM text_chunks
                     WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                    {path_filter_sql}
                     ORDER BY score DESC
                     LIMIT %s
-                """, (query, query, top_k))
+                """, (query, query, *path_filter_params, top_k))
                 for row in cur.fetchall():
                     if row[0] not in seen_ids:
                         seen_ids.add(row[0])
@@ -2824,15 +2849,18 @@ def text_search(query: str, top_k: int = 8) -> str:
             query_embedding = _get_embedding(query.strip())
             if query_embedding:
                 with conn.cursor() as cur:
-                    cur.execute("""
+                    # Increase IVFFlat probe count for better recall (default probes=1 misses clusters)
+                    cur.execute("SET ivfflat.probes = 10")
+                    cur.execute(f"""
                         SELECT id, doc_id, page_number, content,
                                1 - (embedding <=> %s::vector) AS score
                         FROM text_chunks
                         WHERE embedding IS NOT NULL
                           AND 1 - (embedding <=> %s::vector) >= 0.40
+                          {path_filter_sql}
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
-                    """, (query_embedding, query_embedding, query_embedding, top_k))
+                    """, (query_embedding, query_embedding, *path_filter_params, query_embedding, top_k))
                     for row in cur.fetchall():
                         if row[0] not in seen_ids:
                             seen_ids.add(row[0])
@@ -3589,3 +3617,77 @@ def python_eval(code: str, chunks_json: str = "") -> str:
     except Exception as e:
         logger.error(f"[python_eval] error: {e}")
         return f"[沙箱调用失败: {e}]"
+
+
+@tool
+def get_catalog_map(query: str, top_k: int = 12) -> str:
+    """章节目录检索：根据关键词查找相关章节的 ID 和路径，用于在调用 text_search/hybrid_search 前确定 path_constraint。
+
+    调用时机：当需要检索工程标准条文、计算规则、费率说明时，先调用此工具确定目标章节路径，
+    再将 path 字段作为 path_constraint 传给 text_search 或 hybrid_search。
+
+    返回：[{chapter_id, title, path, file_name, depth}]
+    示例：get_catalog_map('送配电装置系统调试') →
+          [{chapter_id: '10.1.7', path: '第二册电气设备安装工程/10.1/10.1.7', ...}]
+    """
+    if not query.strip():
+        return json.dumps([])
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
+        results = []
+        with conn.cursor() as cur:
+            # BM25 search on catalog_index.title
+            cur.execute(
+                f"""
+                SELECT chapter_id, title, path, file_name, depth,
+                       ts_rank(to_tsvector('simple', coalesce(title,'')),
+                               plainto_tsquery('simple', %s)) AS score
+                FROM catalog_index
+                WHERE to_tsvector('simple', coalesce(title,''))
+                      @@ plainto_tsquery('simple', %s)
+                ORDER BY score DESC, depth ASC
+                LIMIT %s
+                """,
+                (query, query, top_k),
+            )
+            for row in cur.fetchall():
+                results.append({
+                    "chapter_id": row[0] or "",
+                    "title":      row[1] or "",
+                    "path":       row[2] or "",
+                    "file_name":  row[3] or "",
+                    "depth":      row[4] or 1,
+                    "score":      round(float(row[5] or 0), 4),
+                })
+        if not results:
+            # Fallback: ILIKE title search
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT chapter_id, title, path, file_name, depth, 0.1 AS score
+                    FROM catalog_index
+                    WHERE title ILIKE %s
+                    ORDER BY depth ASC
+                    LIMIT %s
+                    """,
+                    (f"%{query}%", top_k),
+                )
+                for row in cur.fetchall():
+                    results.append({
+                        "chapter_id": row[0] or "",
+                        "title":      row[1] or "",
+                        "path":       row[2] or "",
+                        "file_name":  row[3] or "",
+                        "depth":      row[4] or 1,
+                        "score":      round(float(row[5] or 0), 4),
+                    })
+        logger.info(f"[get_catalog_map] query='{query}' hits={len(results)}")
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[get_catalog_map] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)

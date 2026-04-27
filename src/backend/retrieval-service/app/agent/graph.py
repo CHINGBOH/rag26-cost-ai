@@ -1788,6 +1788,33 @@ def _parse_plan(content: str) -> list[str]:
     return steps[:4] if steps else [state["query"] if False else ""]
 
 
+_QUESTION_STRIP_RE = re.compile(
+    r"(是什么|有哪些|怎么算|如何|是否|多少|的是|吗|呢|？|\?|请问|请|告诉我|帮我|查一下|计算规则|适用范围|说明|规定|规范)"
+)
+
+def _extract_navigator_keywords(query: str) -> list[str]:
+    """Extract candidate technical keywords from a full question for catalog matching.
+
+    Returns a list of candidate strings to try in order, from most specific to broadest.
+    """
+    cleaned = _QUESTION_STRIP_RE.sub("", query).strip()
+    parts = [p.strip() for p in re.split(r"[中的，,\s]+", cleaned) if p.strip()]
+    candidates = [
+        p for p in parts
+        if 2 < len(p) <= 20
+        and not re.fullmatch(r"\d+\.?\d*", p)   # skip pure numbers like "10." or "01."
+        and not re.fullmatch(r"[a-zA-Z0-9]+", p)  # skip pure ASCII sequences
+    ]
+    if not candidates:
+        return [query[:20]]
+    # Try all candidates; longer/digit-bearing ones tend to be more specific section titles
+    candidates.sort(key=lambda p: (any(c.isdigit() for c in p), len(p)), reverse=True)
+    # Also include original cleaned text as last resort
+    if cleaned not in candidates and 2 < len(cleaned) <= 30:
+        candidates.append(cleaned)
+    return candidates or [query[:20]]
+
+
 def navigator_node(state: RAGAgentState) -> dict:
     """
     导航节点：在 planner 之前运行，用 get_catalog_map 扫描目录索引，
@@ -1801,15 +1828,40 @@ def navigator_node(state: RAGAgentState) -> dict:
     if query_type in {"price", "trend_chart"}:
         return {"roadmap": [], "workspace": []}
 
-    logger.info(f"[navigator] scanning catalog for query='{query[:60]}'")
-    try:
-        catalog_result = get_catalog_map.invoke({"query": query, "top_k": 8})
-        hits = json.loads(catalog_result) if catalog_result else []
-    except Exception as e:
-        logger.error(f"[navigator] get_catalog_map failed: {e}")
-        hits = []
+    kw_candidates = _extract_navigator_keywords(query)
+    logger.info(f"[navigator] scanning catalog for query='{query[:60]}' candidates={kw_candidates[:3]}")
 
-    # Build roadmap: keep top distinct file_name/path entries
+    hits: list[dict] = []
+    tried: set[str] = set()
+    all_candidate_hits: list[tuple[str, list[dict]]] = []  # (keyword, hits)
+    for kw in kw_candidates + [query]:
+        if kw in tried or len(kw) < 3:
+            continue
+        tried.add(kw)
+        try:
+            catalog_result = get_catalog_map.invoke({"query": kw, "top_k": 8})
+            result_hits = json.loads(catalog_result) if catalog_result else []
+            if result_hits:
+                all_candidate_hits.append((kw, result_hits))
+        except Exception as e:
+            logger.error(f"[navigator] get_catalog_map failed for '{kw}': {e}")
+
+    if all_candidate_hits:
+        # Prefer the hit set most specifically matching the query:
+        # score = kw_len / avg_top_title_len (higher = keyword covers more of the title = more specific)
+        # Also prefer higher depth (chapter level 3 > 2 > 1)
+        def _specificity(item: tuple[str, list[dict]]) -> tuple[float, int, int]:
+            kw, h_list = item
+            avg_title_len = sum(len(h.get("title", "")) for h in h_list[:3]) / max(len(h_list[:3]), 1)
+            ratio = len(kw) / max(avg_title_len, 1)
+            max_depth = max(h.get("depth", 1) for h in h_list)
+            return (ratio, max_depth, len(kw))
+
+        all_candidate_hits.sort(key=_specificity, reverse=True)
+        best_kw, hits = all_candidate_hits[0]
+        logger.info(f"[navigator] catalog hit with kw='{best_kw}': {len(hits)} results")
+
+    # Build roadmap: keep top distinct file-level path entries
     seen_paths: set[str] = set()
     roadmap = []
     for h in hits:
@@ -2055,8 +2107,17 @@ def executor_node(state: RAGAgentState) -> dict:
     # 如果有章节定位提示，注入到步骤消息中帮助 LLM 精准检索
     category_hints = state.get("category_hints") or []
     scope_hint = _build_scope_hint(state)
+    roadmap = state.get("roadmap") or []
     if scope_hint:
         step_content = f"[已锁定检索范围：{scope_hint}]\n[当前进度 {progress}] 请执行：{step_hint}"
+    elif roadmap:
+        # Inject top path constraints from navigator so executor LLM uses them
+        path_hints = "；".join(r["path"] for r in roadmap[:2])
+        step_content = (
+            f"[Navigator路径约束：{path_hints}]\n"
+            f"[当前进度 {progress}] 请执行：{step_hint}\n"
+            f"（调用 text_search 或 hybrid_search 时请设置 path_constraint='{roadmap[0]['path']}'）"
+        )
     elif category_hints:
         hints_str = "；".join(category_hints[:3])
         step_content = f"[章节定位参考：{hints_str}]\n[当前进度 {progress}] 请执行：{step_hint}"
@@ -2115,9 +2176,25 @@ def executor_node(state: RAGAgentState) -> dict:
         response = AIMessage(content="")
 
     if response.tool_calls:
-        logger.info(f"[executor] tool calls: {[tc['name'] for tc in response.tool_calls]}")
+        # Auto-inject path_constraint from roadmap when LLM didn't set it
+        _PATH_CONSTRAINT_TOOLS = {"text_search", "hybrid_search"}
+        if roadmap:
+            primary_path = roadmap[0]["path"]
+            patched_calls = []
+            for tc in response.tool_calls:
+                if tc["name"] in _PATH_CONSTRAINT_TOOLS:
+                    args = dict(tc.get("args", {}))
+                    if not args.get("path_constraint"):
+                        args["path_constraint"] = primary_path
+                        tc = {**tc, "args": args}
+                        logger.info(f"[executor] injected path_constraint='{primary_path}' into {tc['name']}")
+                patched_calls.append(tc)
+        else:
+            patched_calls = list(response.tool_calls)
+        patched_response = AIMessage(content=response.content or "", tool_calls=patched_calls)
+        logger.info(f"[executor] tool calls: {[tc['name'] for tc in patched_calls]}")
         return {
-            "messages": [step_msg, response],
+            "messages": [step_msg, patched_response],
             "iterations": iteration + 1,
             "current_step": current_step,
             "thought_process": thought_process,
@@ -2125,7 +2202,7 @@ def executor_node(state: RAGAgentState) -> dict:
             "step_number": current_step + 1,
             "total_steps": len(plan),
             "step_hint": step_hint,
-            "pending_tool_calls": response.tool_calls,
+            "pending_tool_calls": patched_calls,
             "llm_runtime": runtime,
         }
     else:

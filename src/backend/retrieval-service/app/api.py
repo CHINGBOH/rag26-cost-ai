@@ -399,7 +399,8 @@ async def agent_query(request: AgentRequest):
             "presentation_policy": None,
             "roadmap": [],
             "workspace": [],
-        }        result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
+        }
+        result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
             "session_id": thread_id,
             "query": result["query"],
