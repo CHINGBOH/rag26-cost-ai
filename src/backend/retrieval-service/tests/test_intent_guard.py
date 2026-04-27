@@ -83,3 +83,20 @@ def test_executor_fallback_tool_call_targets_fee_formula_for_standard_ref() -> N
     assert tool_call is not None
     assert tool_call["name"] == "text_search"
     assert "2025 企业管理费 计算公式" in tool_call["args"]["query"]
+
+
+def test_rule_based_fallback_answer_returns_manual_conclusion_for_zero_machine_cost() -> None:
+    chunks = [
+        {
+            "doc_filename": "深圳市建设工程计价费率标准（2025）.pdf",
+            "page_number": 1,
+            "content": "企业管理费＝（人工费＋机械费×0.1）×企业管理费费率",
+        }
+    ]
+    answer = graph_module._build_rule_based_fallback_answer(
+        "按2025版标准，如果机械费为0，企业管理费的计算基数是什么？",
+        chunks,
+    )
+
+    assert "计算基数为人工费" in answer
+    assert "P1" in answer
