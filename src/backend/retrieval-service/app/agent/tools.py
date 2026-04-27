@@ -2048,12 +2048,15 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                     rrec_s = f"{float(rrec):.4g}%" if rrec is not None else "—"
                     # Build clear content with calc_base so LLM knows what to multiply
                     calc_base_note = f"计算基数：{cbase}" if cbase else ""
+                    # When applicable_scope is empty, fall back to source_text which often
+                    # contains per-engineering-type breakdowns (e.g. 房建工程 vs 市政工程)
+                    scope_display = scope or (src or "").replace("\n", " ").strip()
                     content_text = (
                         f"【{yr}版费率标准】{fname}（{fcat}）\n"
                         f"费率参考范围：{rmin_s}～{rmax_s}，推荐费率：{rrec_s}（单位：%，使用时÷100）\n"
                         f"{calc_base_note}\n"
                         f"计算公式：{formula or ''}\n"
-                        f"适用范围：{scope or ''}"
+                        f"适用范围/原文：{scope_display}"
                     ).strip()
                     results.append({
                         "chunk_id": cid,
