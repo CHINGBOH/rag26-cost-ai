@@ -2903,6 +2903,106 @@ def pdf_page_search(query: str, top_k: int = 8) -> str:
             _put_pg_conn(conn)
 
 
+# ── rule_clause_search（目录命中后二跳定向检索条文正文）─────────────────────
+
+
+@tool
+def rule_clause_search(
+    query: str,
+    doc_id: str = "",
+    doc_filename: str = "",
+    section: str = "",
+    page_start: int = 0,
+    page_end: int = 0,
+    top_k: int = 8,
+) -> str:
+    """条文定向检索：在已锁定文档/章节/页段范围内二跳检索条文正文。
+    目录命中后优先使用此工具，传入 doc_id/doc_filename/section/page_start/page_end
+    来限定检索范围，避免跨文档噪音。
+    未传 doc_id/doc_filename 时退化为全库 text_search。
+    """
+    if not query.strip():
+        return json.dumps([])
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            conditions = ["content ILIKE %s"]
+            params: list = [f"%{query.strip()}%"]
+
+            if doc_id:
+                conditions.append("doc_id = %s")
+                params.append(doc_id)
+            elif doc_filename:
+                conditions.append("doc_id IN (SELECT id FROM document_registry WHERE file_name ILIKE %s)")
+                params.append(f"%{doc_filename}%")
+
+            if page_start and page_end and page_end >= page_start:
+                conditions.append("page_number BETWEEN %s AND %s")
+                params.extend([page_start, page_end])
+            elif page_start:
+                conditions.append("page_number >= %s")
+                params.append(page_start)
+
+            if section:
+                conditions.append("content ILIKE %s")
+                params.append(f"%{section}%")
+
+            where = " AND ".join(conditions)
+            params.append(top_k * 3)
+            cur.execute(
+                f"SELECT id, doc_id, page_number, content FROM text_chunks WHERE {where} LIMIT %s",
+                params,
+            )
+            rows = cur.fetchall()
+
+            # fallback: drop ILIKE filter, keep scope constraints only
+            if not rows and (doc_id or doc_filename or page_start):
+                conditions2 = []
+                params2: list = []
+                if doc_id:
+                    conditions2.append("doc_id = %s")
+                    params2.append(doc_id)
+                elif doc_filename:
+                    conditions2.append("doc_id IN (SELECT id FROM document_registry WHERE file_name ILIKE %s)")
+                    params2.append(f"%{doc_filename}%")
+                if page_start and page_end and page_end >= page_start:
+                    conditions2.append("page_number BETWEEN %s AND %s")
+                    params2.extend([page_start, page_end])
+                if conditions2:
+                    params2.append(top_k * 2)
+                    cur.execute(
+                        f"SELECT id, doc_id, page_number, content FROM text_chunks WHERE {' AND '.join(conditions2)} ORDER BY page_number LIMIT %s",
+                        params2,
+                    )
+                    rows = cur.fetchall()
+
+            results = []
+            for row in rows[:top_k]:
+                results.append(
+                    _with_retrieval_path(
+                        {
+                            "id": str(row[0]),
+                            "doc_id": str(row[1]),
+                            "page_number": row[2],
+                            "content": row[3],
+                            "score": 0.75,
+                            "source_db": "rule_clause_search",
+                        },
+                        "rule_clause_search",
+                        {"doc_id": doc_id, "section": section, "page_start": page_start, "page_end": page_end},
+                    )
+                )
+            return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[rule_clause_search] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
 # ── price_query（PG SQL 精确查询，保留）──────────────────────────────────────
 
 

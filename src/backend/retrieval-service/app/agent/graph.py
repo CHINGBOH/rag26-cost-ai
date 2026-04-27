@@ -19,7 +19,6 @@ import json
 import re
 import logging
 import hashlib
-import ast
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -60,8 +59,17 @@ from app.agent.tools import (
     python_eval,
     category_search,
     price_trend,
+    rule_clause_search,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
+from app.agent.presentation_payloads import (
+    _build_presentation_payload,
+    _format_citations,
+    _normalize_final_answer,
+    _prune_chunks_for_query,
+    finalize_presentation_payload,
+    refine_citations_for_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +78,7 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -78,6 +86,7 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 工具说明：
 - concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
+- rule_clause_search(query, doc_id='', doc_filename='', section='', page_start=0, page_end=0, top_k=8)：在已锁定文档和页段范围内二跳检索条文正文，目录命中后优先使用
 - text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
 - hybrid_search(query, top_k=10)：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
 - pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
@@ -107,6 +116,7 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 特殊检索规则（定额子目）：
 - 定额文档的子目按材料/工艺命名，楼梯/墙面/柱面/天棚/楼地面等是章节分类词，不是材料名
 - 检索定额子目前必须先用 category_search 确认材料所在章节编号，再带章节号做 text_search
+- 一旦目录/章节命中，下一步必须用 rule_clause_search 在锁定文档和页段范围内下钻，不要回到无约束 text_search
 - 禁止把位置限定词（楼梯/墙面/柱面/台阶/踢脚等）与材料名合并成一个检索词
 - 若 text_search/keyword_search 返回空结果，立即去除位置限定词，只用材料名重试
 
@@ -147,8 +157,6 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 {"steps": ["步骤1", "步骤2", ...]}
 """
 
-_INTERNAL_SOURCES = {"智能体问答", "agent_qa", "eval_qa"}
-
 _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
     "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字",
     "comparison": "4. 先给对比结论（谁高/谁低/差距多少），再分别列各方数据，最后计算差值",
@@ -159,92 +167,6 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 
 
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
-
-
-def _display_doc_name(doc_name: str) -> str:
-    return doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
-
-
-def _looks_like_annual_price_query(query: str, entities: dict | None = None) -> bool:
-    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
-    period = str(analysis_entities.get("year_month") or "")
-    material = str(analysis_entities.get("material_name") or "")
-    return bool(re.match(r"^\d{4}$", period) and material and "信息价" in query)
-
-
-def _previous_month(period: str) -> str:
-    normalized = str(period or "").strip()
-    if not re.match(r"^\d{4}-\d{2}$", normalized):
-        return ""
-    year, month = normalized.split("-", 1)
-    y = int(year)
-    m = int(month)
-    if m == 1:
-        return f"{y - 1}-12"
-    return f"{y}-{m - 1:02d}"
-
-
-def _looks_like_multi_material_price_change_query(query: str, entities: dict | None = None) -> bool:
-    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
-    materials = analysis_entities.get("material_names") or []
-    period = str(analysis_entities.get("year_month") or "")
-    return bool(
-        len(materials) >= 2
-        and re.match(r"^\d{4}-\d{2}$", period)
-        and any(token in query for token in ("较上月", "上月", "环比", "变化幅度"))
-    )
-
-
-def _prune_chunks_for_query(
-    query: str,
-    query_type: str,
-    chunks: list[dict],
-    entities: dict | None = None,
-) -> list[dict]:
-    if not chunks:
-        return chunks
-
-    if query_type == "standard_ref" and is_appendix_standard_query(query):
-        title = extract_appendix_standard_title(query)
-        terms = extract_appendix_standard_terms(query)
-        appendix_matched = [
-            chunk for chunk in chunks
-            if title in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
-            or any(term in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or "")) for term in terms)
-        ]
-        if appendix_matched:
-            return appendix_matched
-        # No appendix-specific match — return all chunks rather than dropping everything
-        return chunks
-
-    if query_type not in {"price", "comparison", "trend_chart"}:
-        return chunks
-
-    analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
-    material = str(analysis_entities.get("material_name") or "").strip()
-    specification = str(analysis_entities.get("specification") or "").strip()
-    if not material:
-        return chunks
-
-    material_matched = [
-        chunk for chunk in chunks
-        if material in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
-    ]
-    if material_matched:
-        chunks = material_matched
-    elif _looks_like_annual_price_query(query, analysis_entities):
-        return []
-
-    if specification:
-        spec_matched = [
-            chunk for chunk in chunks
-            if specification in (chunk.get("content") or "")
-        ]
-        if spec_matched:
-            chunks = spec_matched
-
-    return chunks
-
 
 def _enrich_chunks_with_filename(chunks: list) -> list:
     """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
@@ -284,658 +206,6 @@ def _enrich_chunks_with_filename(chunks: list) -> list:
     return chunks
 
 
-def _format_citations(chunks: list, allowed_refs: set[tuple[str, str]] | None = None) -> str:
-    """从 chunks 生成尾部参考来源列表（按显示字符串去重，过滤内部数据集）"""
-    seen_refs: set[str] = set()
-    ordered: list[str] = []
-    for c in chunks[:12]:
-        doc_name = c.get("doc_filename") or c.get("source") or ""
-        page = c.get("page_number") or c.get("page") or "?"
-        if not doc_name:
-            continue
-        display = _display_doc_name(doc_name)
-        if display in _INTERNAL_SOURCES:
-            continue
-        page_str = str(page)
-        if allowed_refs is not None and (display, page_str) not in allowed_refs:
-            continue
-        ref = f"《{display}》第 {page} 页"
-        if ref not in seen_refs:
-            seen_refs.add(ref)
-            ordered.append(ref)
-    if not ordered:
-        return ""
-    lines = ["参考索引："]
-    for i, ref in enumerate(ordered, 1):
-        lines.append(f"[{i}] {ref}")
-    return "\n".join(lines)
-
-
-def _build_evidence_block(chunks: list) -> str:
-    if not chunks:
-        return "1. 暂无可引用依据，知识库未检索到可支撑回答的原文。"
-
-    lines: list[str] = []
-    for i, c in enumerate(chunks[:3], 1):
-        doc_name = c.get("doc_filename") or c.get("source") or "未知来源"
-        page = c.get("page_number") or c.get("page") or "?"
-        content = re.sub(r"\s+", " ", c.get("content", "")).strip()[:120]
-        display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
-        lines.append(f"{i}. 《{display}》第 {page} 页")
-        if content:
-            lines.append(f"   关键内容：{content}")
-    return "\n".join(lines)
-
-
-def _split_answer_components(answer_without_refs: str, chunks: list[dict]) -> tuple[str, str]:
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer_without_refs) if p.strip()]
-    if len(paragraphs) == 1 and "简要分析" in paragraphs[0]:
-        inline_parts = re.split(r"简要分析[:：]", paragraphs[0], maxsplit=1)
-        direct_part = inline_parts[0].strip()
-        analysis_part = inline_parts[1].strip() if len(inline_parts) > 1 else ""
-        paragraphs = [part for part in [direct_part, analysis_part] if part]
-    direct_answer = paragraphs[0] if paragraphs else "现有检索结果不足，暂时无法给出可靠结论。"
-    remaining = paragraphs[1:]
-
-    if remaining and re.match(r"简要分析[:：]", remaining[0]):
-        analysis_text = "\n\n".join(
-            [re.sub(r"^简要分析[:：]?\s*", "", remaining[0]).strip(), *remaining[1:]]
-        ).strip()
-    else:
-        analysis_text = "\n\n".join(remaining).strip()
-
-    if not analysis_text:
-        analysis_text = _build_evidence_block(chunks)
-    return direct_answer, analysis_text
-
-
-def refine_citations_for_answer(answer: str, chunks: list[dict], citations_text: str) -> str:
-    explicit_refs = {
-        (name.strip(), page.strip())
-        for name, page in re.findall(r"【《([^》]+)》P\s*(\d+)】", answer or "")
-    }
-    if explicit_refs:
-        filtered = _format_citations(chunks, explicit_refs)
-        if filtered:
-            return filtered
-    return citations_text
-
-
-def _build_answer_title(query_type: str) -> str:
-    return {
-        "standard_ref": "规则说明",
-        "calculation": "结果摘要",
-        "comparison": "对比结果",
-        "price": "价格摘要",
-        "trend_chart": "趋势摘要",
-    }.get(query_type, "回答摘要")
-
-
-def _split_sentences(text: str) -> list[str]:
-    cleaned = re.sub(r"\s+", " ", text or "").strip()
-    if not cleaned:
-        return []
-    parts = [part.strip(" ，,") for part in re.split(r"[。；;]\s*", cleaned) if part.strip()]
-    return [part for part in parts if len(part) >= 6]
-
-
-def _shorten_sentence(text: str, max_length: int = 92) -> str:
-    normalized = re.sub(r"\s+", " ", text or "").strip()
-    if len(normalized) <= max_length:
-        return normalized
-
-    clauses = [part.strip(" ，,") for part in re.split(r"[，,]", normalized) if part.strip()]
-    chosen: list[str] = []
-    total = 0
-    for clause in clauses:
-        if chosen and total + len(clause) + 1 > max_length:
-            break
-        chosen.append(clause)
-        total += len(clause) + 1
-    shortened = "，".join(chosen).strip() or normalized[:max_length].rstrip("，,")
-    if shortened and shortened[-1] not in "。！？":
-        shortened += "。"
-    return shortened
-
-
-def _build_summary_text(query_type: str, direct_answer: str) -> str:
-    sentences = _split_sentences(direct_answer)
-    if not sentences:
-        return direct_answer.strip()
-
-    limit = 1 if query_type in {"standard_ref", "calculation"} else 2
-    picked = [_shorten_sentence(sentence) for sentence in sentences[:limit]]
-    return " ".join(part for part in picked if part).strip()
-
-
-def _highlight_kind(sentence: str, query_type: str) -> str:
-    if any(token in sentence for token in ("适用", "适用于", "范围")):
-        return "scope"
-    if any(token in sentence for token in ("不单独计算", "不另计", "已包括", "不单列")):
-        return "exclusion"
-    if any(token in sentence for token in ("按“", "按\"", "按", "计量单位", "为单位计算")) and "计算" in sentence:
-        return "method"
-    if "人工费" in sentence:
-        return "labor"
-    if "材料费" in sentence:
-        return "material"
-    if "机械费" in sentence:
-        return "machine"
-    if any(token in sentence for token in ("价格", "单价", "均价", "差值", "涨幅", "跌幅")):
-        return "metric"
-    if any(token in sentence for token in ("建议", "注意", "无法", "未单独列出", "缺失")):
-        return "hint"
-    if query_type == "standard_ref":
-        return "rule"
-    return "detail"
-
-
-def _build_highlights(query_type: str, direct_answer: str, analysis_text: str) -> list[dict]:
-    highlights: list[dict] = []
-    seen_values: set[str] = set()
-    for sentence in [*_split_sentences(direct_answer), *_split_sentences(analysis_text)]:
-        normalized = sentence.strip()
-        if normalized in seen_values:
-            continue
-        seen_values.add(normalized)
-        highlights.append(
-            {
-                "kind": _highlight_kind(normalized, query_type),
-                "value": normalized,
-            }
-        )
-        if len(highlights) >= 4:
-            break
-    return highlights
-
-
-def _parse_citation_items(citations_text: str) -> list[dict]:
-    items: list[dict] = []
-    for line in (citations_text or "").splitlines():
-        match = re.match(r"\[(\d+)\]\s+《(.+?)》第\s+(.+?)\s+页", line.strip())
-        if match:
-            items.append(
-                {
-                    "index": int(match.group(1)),
-                    "title": match.group(2),
-                    "page": match.group(3),
-                }
-            )
-    return items
-
-
-def _build_answer_sections_presentation(
-    query: str,
-    query_type: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-) -> dict | None:
-    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
-    if not answer_without_refs:
-        return None
-
-    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
-    highlights = _build_highlights(query_type, direct_answer, analysis_text)
-    analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
-    sections = [
-        {"kind": "analysis" if idx == 0 else "detail", "body": paragraph}
-        for idx, paragraph in enumerate(analysis_paragraphs[:2])
-    ]
-    sources = _parse_citation_items(citations_text)[:4]
-
-    note = None
-    if len(query) <= 28:
-        note = query
-
-    return {
-        "type": "answer_sections",
-        "query_type": query_type,
-        "title": _build_answer_title(query_type),
-        "note": note,
-        "summary": _build_summary_text(query_type, direct_answer),
-        "highlights": highlights,
-        "sections": sections,
-        "sources": sources,
-    }
-
-
-def _normalize_math_text(text: str) -> str:
-    return (
-        (text or "")
-        .replace("（", "(")
-        .replace("）", ")")
-        .replace("＋", "+")
-        .replace("－", "-")
-        .replace("×", "*")
-        .replace("÷", "/")
-        .replace("％", "%")
-        .replace("—", "-")
-        .replace("–", "-")
-    )
-
-
-def _sanitize_copy_expression(expression: str) -> str:
-    sanitized = _normalize_math_text(expression)
-    sanitized = re.sub(
-        r"([0-9]+(?:\.[0-9]+)?)\s*%",
-        lambda m: format(float(m.group(1)) / 100, ".12g"),
-        sanitized,
-    )
-    sanitized = re.sub(r"(万元|万|元|人民币)", "", sanitized)
-    sanitized = re.sub(r"\s+", " ", sanitized).strip()
-    sanitized = re.sub(r"[^0-9\.\+\-\*\/\(\) ]", "", sanitized)
-    sanitized = re.sub(r"\s+", " ", sanitized).strip()
-    return sanitized
-
-
-def _is_safe_arithmetic_expression(expression: str) -> bool:
-    if not expression or not re.search(r"\d", expression) or not re.search(r"[\+\-\*/]", expression):
-        return False
-    if not re.fullmatch(r"[0-9\.\+\-\*\/\(\) ]+", expression):
-        return False
-    try:
-        parsed = ast.parse(expression, mode="eval")
-    except SyntaxError:
-        return False
-
-    allowed_nodes = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Constant,
-        ast.Add,
-        ast.Sub,
-        ast.Mult,
-        ast.Div,
-        ast.UAdd,
-        ast.USub,
-        ast.Load,
-    )
-    return all(isinstance(node, allowed_nodes) for node in ast.walk(parsed))
-
-
-def _extract_copy_expression(formula: str, substituted: str) -> str:
-    candidates: list[str] = []
-    for source in (substituted, formula):
-        normalized = _normalize_math_text(source)
-        candidates.extend(
-            segment.strip(" ，,")
-            for segment in re.split(r"\s*=\s*", normalized)
-            if segment.strip(" ，,")
-        )
-
-    best_candidate = ""
-    best_score = -1
-    for candidate in candidates:
-        sanitized = _sanitize_copy_expression(candidate)
-        if not _is_safe_arithmetic_expression(sanitized):
-            continue
-        digit_count = len(re.findall(r"\d", sanitized))
-        operator_count = len(re.findall(r"[\+\-\*/]", sanitized))
-        score = digit_count * 10 + operator_count
-        if score > best_score:
-            best_candidate = sanitized
-            best_score = score
-    return best_candidate
-
-
-def _extract_calc_title(prefix: str, first_segment: str, fallback_order: int) -> str:
-    cleaned_prefix = re.sub(r"^(首先|然后|接着|再|最后|第一步|第1步|第二步|第2步|第三步|第3步|计算|求|得出)+", "", prefix or "").strip(" ：:")
-    if cleaned_prefix:
-        return cleaned_prefix
-    candidate = first_segment.strip()
-    if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z（）()]+", candidate):
-        return candidate
-    return f"步骤{fallback_order}"
-
-
-def _build_calculation_steps_presentation(
-    query: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-) -> dict | None:
-    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
-    if not answer_without_refs:
-        return None
-
-    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
-    candidate_sentences: list[str] = []
-    for part in [direct_answer, analysis_text]:
-        candidate_sentences.extend([s.strip() for s in re.split(r"[。；;]\s*", part) if s.strip()])
-
-    steps: list[dict] = []
-    seen_signatures: set[tuple[str, str]] = set()
-    for sentence in candidate_sentences:
-        if "=" not in sentence or not re.search(r"\d", sentence):
-            continue
-
-        prefix = ""
-        expr_text = sentence
-        if "：" in sentence:
-            maybe_prefix, maybe_expr = sentence.split("：", 1)
-            if "=" in maybe_expr:
-                prefix = maybe_prefix.strip()
-                expr_text = maybe_expr.strip()
-
-        segments = [seg.strip(" ，,") for seg in re.split(r"\s*=\s*", _normalize_math_text(expr_text)) if seg.strip(" ，,")]
-        if len(segments) < 3:
-            continue
-
-        title = _extract_calc_title(prefix, segments[0], len(steps) + 1)
-        expression_segments = segments[1:] if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z（）()]+", segments[0]) else segments
-        if len(expression_segments) < 2:
-            continue
-
-        result_text = expression_segments[-1]
-        calc_chain = expression_segments[:-1]
-        if not calc_chain:
-            continue
-
-        formula = calc_chain[0]
-        substituted = " = ".join(calc_chain)
-        copy_expression = _extract_copy_expression(formula, substituted)
-        if not copy_expression:
-            continue
-
-        result_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(万元|万|元|%)?", result_text)
-        unit = result_match.group(2) if result_match else ""
-        result_value = result_match.group(1) if result_match else result_text
-
-        signature = (title, result_value)
-        if signature in seen_signatures:
-            continue
-        seen_signatures.add(signature)
-
-        steps.append(
-            {
-                "order": len(steps) + 1,
-                "title": title,
-                "formula": formula,
-                "substituted": substituted,
-                "result": result_value,
-                "result_text": result_text,
-                "unit": unit,
-                "copy_expression": copy_expression,
-            }
-        )
-
-    if not steps:
-        return None
-
-    return {
-        "type": "calculation_steps",
-        "title": "计算沙箱",
-        "note": query if len(query) <= 40 else None,
-        "summary": _build_summary_text("calculation", direct_answer),
-        "highlights": _build_highlights("calculation", direct_answer, analysis_text),
-        "steps": steps,
-        "sources": _parse_citation_items(citations_text)[:4],
-    }
-
-
-def _parse_price_point(chunk: dict) -> dict | None:
-    metadata = chunk.get("metadata") or {}
-    content = chunk.get("content", "") or ""
-    doc_name = chunk.get("doc_filename") or chunk.get("source") or ""
-    page = chunk.get("page_number") or chunk.get("page") or None
-
-    label = metadata.get("year_month")
-    if not label:
-        period_match = re.search(r"期间[:：]\s*(20\d{2}-\d{2})", content)
-        if period_match:
-            label = period_match.group(1)
-
-    raw_value = metadata.get("avg_price")
-    if raw_value is None:
-        raw_value = metadata.get("price")
-    if raw_value is None:
-        value_match = re.search(r"(?:均价|价格)[:：]\s*([0-9]+(?:\.[0-9]+)?)", content)
-        if value_match:
-            raw_value = value_match.group(1)
-    if raw_value is None:
-        return None
-
-    try:
-        value = float(raw_value)
-    except (TypeError, ValueError):
-        return None
-
-    unit = metadata.get("unit")
-    if not unit:
-        unit_match = re.search(r"单位[:：]\s*([^\s]+)", content)
-        if unit_match:
-            unit = unit_match.group(1)
-        else:
-            unit_match = re.search(r"元/([^\s，,。；;]+)", content)
-            if unit_match:
-                unit = unit_match.group(1)
-
-    source_label = (
-        doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "").strip("《》")
-        if doc_name
-        else ""
-    )
-
-    return {
-        "label": label or "当前",
-        "value": round(value, 2),
-        "unit": unit or "",
-        "page": page,
-        "source": source_label,
-    }
-
-
-def _extract_title_parts_from_chunks(chunks: list[dict]) -> tuple[str, str]:
-    for chunk in chunks:
-        content = (chunk.get("content") or "").strip()
-        if not content:
-            continue
-        prefix = re.split(r"单位[:：]|价格走势", content, maxsplit=1)[0].strip()
-        parts = prefix.split()
-        if not parts:
-            continue
-        material = parts[0]
-        specification = " ".join(parts[1:]).strip()
-        return material, specification
-    return "", ""
-
-
-def _build_price_title(query: str, fallback: str, chunks: list[dict]) -> str:
-    analysis = _analyzer.analyze(query)
-    entities = analysis.get("entities", {}) if isinstance(analysis, dict) else analysis.entities
-    material = entities.get("material_name") or ""
-    specification = entities.get("specification") or ""
-    if not specification or len(specification) < 4:
-        spec_match = re.search(r"(\d+(?:\.\d+)?/\d+\s*[Kk][Vv]\s*[A-Za-z]+\s*\d+\s*[×xX*]\s*\d+)", query)
-        if spec_match:
-            specification = re.sub(r"\s+", " ", spec_match.group(1)).strip()
-    if not material or len(material) < 2:
-        chunk_material, chunk_specification = _extract_title_parts_from_chunks(chunks)
-        material = material or chunk_material
-        if (not specification or len(specification) < 4) and chunk_specification:
-            specification = chunk_specification
-    if material and specification:
-        return f"{material} {specification}{fallback}"
-    if material:
-        return f"{material}{fallback}"
-    return fallback
-
-
-def _build_presentation_payload(query: str, query_type: str, chunks: list[dict]) -> dict | None:
-    if query_type not in {"comparison", "trend_chart", "price"}:
-        return None
-
-    parsed_points = []
-    for chunk in chunks:
-        point = _parse_price_point(chunk)
-        if point:
-            parsed_points.append(point)
-
-    if not parsed_points:
-        return None
-
-    grouped: dict[str, dict] = {}
-    for point in parsed_points:
-        entry = grouped.setdefault(
-            point["label"],
-            {
-                "label": point["label"],
-                "values": [],
-                "unit": point["unit"],
-                "pages": set(),
-                "sources": set(),
-            },
-        )
-        entry["values"].append(point["value"])
-        if point["page"]:
-            entry["pages"].add(point["page"])
-        if point["source"]:
-            entry["sources"].add(point["source"])
-        if not entry["unit"] and point["unit"]:
-            entry["unit"] = point["unit"]
-
-    points = []
-    for label in sorted(grouped.keys()):
-        entry = grouped[label]
-        values = entry["values"]
-        avg_value = sum(values) / len(values)
-        points.append(
-            {
-                "label": label,
-                "value": round(avg_value, 2),
-                "min_value": round(min(values), 2),
-                "max_value": round(max(values), 2),
-                "count": len(values),
-                "pages": sorted(entry["pages"]),
-                "sources": sorted(entry["sources"]),
-            }
-        )
-
-    if not points:
-        return None
-
-    unit = next((entry["unit"] for entry in grouped.values() if entry["unit"]), "")
-    note = ""
-    if any(point["count"] > 1 for point in points):
-        note = "同月存在多条报价时，图表按当月均值展示，卡片保留区间。"
-
-    if query_type == "comparison" and len(points) >= 2:
-        base = points[0]["value"]
-        target = points[-1]["value"]
-        delta = round(target - base, 2)
-        delta_percent = round(delta / base * 100, 2) if base else None
-        return {
-            "type": "price_comparison",
-            "title": _build_price_title(query, "价格对比", chunks),
-            "unit": unit,
-            "points": points,
-            "delta": delta,
-            "delta_percent": delta_percent,
-            "note": note,
-        }
-
-    if query_type == "trend_chart" and len(points) >= 2:
-        start_value = points[0]["value"]
-        end_value = points[-1]["value"]
-        delta = round(end_value - start_value, 2)
-        delta_percent = round(delta / start_value * 100, 2) if start_value else None
-        return {
-            "type": "price_trend",
-            "title": _build_price_title(query, "价格走势", chunks),
-            "unit": unit,
-            "points": points,
-            "delta": delta,
-            "delta_percent": delta_percent,
-            "note": note,
-        }
-
-    return {
-        "type": "price_snapshot",
-        "title": _build_price_title(query, "价格概览", chunks),
-        "unit": unit,
-        "points": points,
-        "note": note,
-    }
-
-
-def finalize_presentation_payload(
-    query: str,
-    query_type: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-    existing_presentation: dict | None = None,
-) -> dict | None:
-    if existing_presentation:
-        return existing_presentation
-    if query_type == "calculation":
-        calc_presentation = _build_calculation_steps_presentation(
-            query=query,
-            final_answer=final_answer,
-            chunks=chunks,
-            citations_text=citations_text,
-        )
-        if calc_presentation:
-            return calc_presentation
-    return _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
-
-
-def _clean_markdown_noise(text: str) -> str:
-    text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.MULTILINE)
-    text = text.replace("**", "").replace("```", "")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
-
-
-def _extract_section(answer: str, tag: str) -> str:
-    pattern = rf"{re.escape(tag)}\s*(.*?)(?=\n\s*(?:【[^】]+】|参考索引[:：]|$))"
-    match = re.search(pattern, answer, flags=re.DOTALL)
-    return match.group(1).strip() if match else ""
-
-
-def _normalize_reference_section(citations_text: str) -> str:
-    refs = (citations_text or "").strip()
-    if not refs:
-        refs = "参考索引：\n[1] 暂无可用来源"
-    refs = refs.replace("【参考索引】", "参考索引：")
-    return refs
-
-
-def _normalize_final_answer(
-    query: str,
-    answer: str,
-    chunks: list,
-    citations_text: str,
-    query_type: str = "semantic",
-) -> str:
-    answer = _clean_markdown_noise(_strip_think_tags(answer))
-    refs = _normalize_reference_section(citations_text)
-    # Strip any LLM-generated reference section
-    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", answer, maxsplit=1)[0].strip()
-    answer_without_refs = re.sub(r"(?m)^\s*第[一二三四五六七八九十]段[:：]\s*", "", answer_without_refs)
-    answer_without_refs = re.sub(r"(?m)^\s*参考索引[:：]\s*\[1\]\s*暂无可用来源[。.]?\s*$", "", answer_without_refs)
-    answer_without_refs = answer_without_refs.strip()
-
-    # Detect and convert old five-section format
-    has_old_tags = all(tag in answer_without_refs for tag in ["【问题】", "【论据】", "【分析】", "【结论】"])
-    if has_old_tags:
-        conclusion = _extract_section(answer_without_refs, "【结论】")
-        analysis = _extract_section(answer_without_refs, "【分析】")
-        evidence = _extract_section(answer_without_refs, "【论据】")
-        direct_answer = conclusion or (analysis.splitlines()[0].strip() if analysis else "")
-        if not direct_answer:
-            direct_answer = "现有检索结果不足，暂时无法给出可靠结论。"
-        analysis_text = analysis or evidence or _build_evidence_block(chunks)
-        return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
-
-    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
-
-    return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
-
-
 def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
     """从工具返回的 JSON 字符串中提取 chunks，去重后追加"""
     try:
@@ -951,6 +221,255 @@ def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
     except Exception:
         pass
     return existing_chunks
+
+
+_SECTION_ID_RE = re.compile(r"^\d{1,2}(?:\.\d{1,2})+$")
+_REFUSAL_RE = re.compile(
+    r"无法直接回答|无法回答|无法确认|无法给出可靠结论|暂时无法给出可靠结论|"
+    r"知识库中未检索到相关信息|未检索到可用原文|未检索到直接依据|未检索到直接价格依据|"
+    r"现有检索结果不足|暂无可用来源"
+)
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _looks_like_refusal_answer(answer: str) -> bool:
+    return bool(_REFUSAL_RE.search(_compact_text(answer)))
+
+
+def _is_catalog_evidence(chunk: dict) -> bool:
+    metadata = chunk.get("metadata") or {}
+    return metadata.get("evidence_kind") == "pdf_catalog_chunk"
+
+
+def _has_substantive_evidence(chunks: list[dict]) -> bool:
+    return any(
+        chunk.get("source_db") != "concept_search" and not _is_catalog_evidence(chunk)
+        for chunk in chunks
+    )
+
+
+def _build_answer_evaluation(query_type: str, final_answer: str, chunks: list[dict]) -> dict:
+    catalog_hits = sum(1 for chunk in chunks if _is_catalog_evidence(chunk))
+    usable_hits = sum(
+        1
+        for chunk in chunks
+        if chunk.get("source_db") != "concept_search" and not _is_catalog_evidence(chunk)
+    )
+    refusal = _looks_like_refusal_answer(final_answer)
+    only_catalog = catalog_hits > 0 and usable_hits == 0
+    source_count = len(
+        {
+            chunk.get("doc_filename") or chunk.get("source") or chunk.get("doc_id")
+            for chunk in chunks
+            if chunk.get("doc_filename") or chunk.get("source") or chunk.get("doc_id")
+        }
+    )
+
+    if refusal and only_catalog:
+        confidence = 0.2
+        passed = False
+        feedback = "catalog_only_refusal"
+    elif query_type == "standard_ref" and only_catalog:
+        confidence = 0.32
+        passed = False
+        feedback = "catalog_only_insufficient"
+    elif refusal and usable_hits == 0:
+        confidence = 0.25
+        passed = False
+        feedback = "refusal_without_evidence"
+    else:
+        confidence = 0.35 if usable_hits == 0 else min(0.93, 0.56 + usable_hits * 0.08 + min(0.12, max(0, source_count - 1) * 0.04))
+        passed = usable_hits > 0 and not refusal
+        feedback = "ok" if passed else "insufficient_evidence"
+        if refusal:
+            confidence = min(confidence, 0.45)
+            passed = False
+            feedback = "refusal_with_evidence"
+
+    completeness = min(1.0, usable_hits / 4) if usable_hits else (0.2 if catalog_hits else 0.0)
+    coverage_estimate = min(1.0, (usable_hits + min(catalog_hits, 1)) / 4) if chunks else 0.0
+    source_diversity = min(1.0, source_count / 3) if source_count else 0.0
+
+    return {
+        "passed": passed,
+        "confidence": round(confidence, 3),
+        "completeness": round(completeness, 3),
+        "consistency": 0.9 if usable_hits else 0.45,
+        "information_gain": round(min(1.0, usable_hits / 3), 3),
+        "source_diversity": round(source_diversity, 3),
+        "fact_consistency": 0.88 if usable_hits else 0.4,
+        "coverage_estimate": round(coverage_estimate, 3),
+        "feedback": feedback,
+        "catalog_hits": catalog_hits,
+        "usable_hits": usable_hits,
+    }
+
+
+def _build_rule_clause_search_query(query: str) -> str:
+    if is_fill_requirement_query(query):
+        fill_field = extract_fill_requirement_search_term(query)
+        if fill_field:
+            return fill_field
+    if is_appendix_standard_query(query):
+        standard_title = extract_appendix_standard_title(query)
+        clause_terms = extract_appendix_standard_terms(query)
+        appendix_query = " ".join([standard_title, *clause_terms]).strip()
+        if appendix_query:
+            return appendix_query
+    if is_fee_formula_query(query):
+        fee_query = extract_fee_formula_search_term(query).replace("计算公式", "").strip()
+        if fee_query:
+            return fee_query
+    quota_term = extract_quota_search_term(query)
+    return quota_term or query.strip()
+
+
+def _extract_catalog_entries(content: str) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    pending_section = ""
+    for raw_line in content.splitlines():
+        line = _compact_text(raw_line)
+        if not line:
+            continue
+
+        direct_match = re.match(
+            r"(?P<section>\d{1,2}(?:\.\d{1,2})+)(?P<title>.*?)(?:[.·…]{2,})?(?P<page>\d{1,4})$",
+            line,
+        )
+        if direct_match:
+            entries.append((direct_match.group("section"), int(direct_match.group("page"))))
+            pending_section = ""
+            continue
+
+        section_match = re.match(r"(?P<section>\d{1,2}(?:\.\d{1,2})+)(?P<title>.+)$", line)
+        if section_match:
+            pending_section = section_match.group("section")
+            continue
+
+        digits = re.sub(r"[^0-9]", "", line)
+        if pending_section and digits and len(digits) <= 4:
+            entries.append((pending_section, int(digits)))
+            pending_section = ""
+
+    return entries
+
+
+def _resolve_catalog_page_window(content: str, section: str, fallback_page: int) -> tuple[int, int]:
+    if not section:
+        return fallback_page, fallback_page + 6 if fallback_page else 0
+
+    entries = _extract_catalog_entries(content)
+    anchor_page = 0
+    next_page = 0
+    for index, (entry_section, page) in enumerate(entries):
+        if entry_section != section:
+            continue
+        anchor_page = page
+        if index + 1 < len(entries):
+            next_page = entries[index + 1][1] - 1
+        break
+
+    if anchor_page <= 0:
+        anchor_page = fallback_page
+    if next_page <= 0 or next_page < anchor_page:
+        next_page = anchor_page + 6 if anchor_page else 0
+    return anchor_page, next_page
+
+
+def _resolve_chapter_scope(query: str, chunks: list[dict]) -> dict | None:
+    if not chunks:
+        return None
+
+    core_query = _compact_text(_build_rule_clause_search_query(query))
+    best_scope: dict | None = None
+    best_score: tuple[int, int, int, int, int, int, float] | None = None
+
+    for chunk in _enrich_chunks_with_filename(list(chunks)):
+        content = str(chunk.get("content") or "")
+        compact_content = _compact_text(content)
+        section = str(chunk.get("section") or "").strip()
+        if section and not _SECTION_ID_RE.match(section):
+            section = ""
+        page_number = int(chunk.get("page_number") or 0)
+        exact_term_hit = bool(core_query and core_query in compact_content)
+        exact_section_hit = bool(section and compact_content.startswith(section))
+        page_start, page_end = _resolve_catalog_page_window(content, section, page_number)
+        score = (
+            1 if exact_term_hit else 0,
+            1 if exact_section_hit else 0,
+            1 if page_start > 20 else 0,
+            section.count(".") if section else 0,
+            1 if chunk.get("doc_filename") else 0,
+            page_start,
+            float(chunk.get("score") or 0.0),
+        )
+        if best_score is not None and score <= best_score:
+            continue
+        best_score = score
+        best_scope = {
+            "target_doc_id": str(chunk.get("doc_id") or ""),
+            "target_doc_filename": str(chunk.get("doc_filename") or ""),
+            "target_section": section,
+            "target_page_start": page_start,
+            "target_page_end": page_end,
+        }
+
+    return best_scope
+
+
+def _build_scope_hint(state: RAGAgentState) -> str:
+    doc_name = str(state.get("target_doc_filename") or "")
+    section = str(state.get("target_section") or "")
+    page_start = int(state.get("target_page_start") or 0)
+    page_end = int(state.get("target_page_end") or 0)
+    parts = []
+    if doc_name:
+        parts.append(doc_name)
+    if section:
+        parts.append(f"section={section}")
+    if page_start > 0:
+        if page_end > 0 and page_end >= page_start:
+            parts.append(f"pages={page_start}-{page_end}")
+        else:
+            parts.append(f"page={page_start}")
+    return ", ".join(parts)
+
+
+def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
+    if not state.get("force_clause_drilldown"):
+        return None
+
+    doc_id = str(state.get("target_doc_id") or "")
+    doc_filename = str(state.get("target_doc_filename") or "")
+    if not doc_id and not doc_filename:
+        return None
+
+    query = _build_rule_clause_search_query(state["query"])
+    section = str(state.get("target_section") or "")
+    page_start = int(state.get("target_page_start") or 0)
+    page_end = int(state.get("target_page_end") or 0)
+    if page_start > 0 and page_end <= 0:
+        page_end = page_start + 6
+
+    args = {
+        "query": query,
+        "doc_id": doc_id,
+        "doc_filename": doc_filename,
+        "section": section,
+        "page_start": page_start,
+        "page_end": page_end,
+        "top_k": 6,
+    }
+    tool_hash = hashlib.md5(json.dumps(args, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return {
+        "id": f"forced_rule_clause_{tool_hash}",
+        "name": "rule_clause_search",
+        "args": args,
+        "type": "tool_call",
+    }
 
 
 def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semantic") -> str:
@@ -1008,6 +527,13 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
             + "\n".join(f"   - {n}" for n in fallback_notices) + "\n"
         )
 
+    catalog_only_hint = ""
+    if query_type == "standard_ref" and chunks and not _has_substantive_evidence(chunks) and any(_is_catalog_evidence(c) for c in chunks):
+        catalog_only_hint = (
+            "\n5. 当前只有目录/索引命中，没有条文正文。必须明确说明无法确认具体条文内容，"
+            "不能把目录标题或目录页内容当作最终规则答案。\n"
+        )
+
     return (
         f"用户问题：{query}\n\n"
         f"知识库检索结果（共 {len(chunks)} 条，已按相关度排序）\n"
@@ -1018,6 +544,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
         f"3. {query_type_hint}\n"
         f"{fallback_hint}\n"
+        f"{catalog_only_hint}"
         "格式要求（必须遵守）\n"
         "1. 第一段直接回答用户问题，不写\"【问题】\"\"【结论】\"等标签。\n"
         "2. 第二段以\"简要分析：\"开头，只保留关键依据、对比逻辑或必要计算过程，不要展开冗长思维记录。\n"
@@ -1091,6 +618,46 @@ _PRICE_COMPARE_RE = re.compile(
     r"(\d{4}[年\-/]\d{1,2}月?).*?(?:和|与|vs|对比|比较).*?(\d{4}[年\-/]\d{1,2}月?).*?价格",
     re.DOTALL
 )
+
+
+def _looks_like_annual_price_query(query: str, entities: dict) -> bool:
+    """检测是否为全年/某年度价格查询（year_month 仅含年份，或查询中明确提到'全年'/'年度'）。"""
+    year_month = str(entities.get("year_month") or "")
+    # year-only pattern e.g. "2025" or "2025年"
+    if re.fullmatch(r"\d{4}年?", year_month.strip()):
+        return True
+    if any(kw in query for kw in ("全年", "年度", "当年", "整年")):
+        return True
+    return False
+
+
+def _looks_like_multi_material_price_change_query(query: str, entities: dict) -> bool:
+    """检测是否为多材料价格变化查询（material_names 有多项，或查询含'变化/涨跌/幅度'等）。"""
+    material_names = entities.get("material_names") or []
+    if isinstance(material_names, list) and len(material_names) >= 2:
+        return True
+    change_keywords = ("变化", "涨跌", "幅度", "涨幅", "跌幅", "价格变化", "价格涨", "价格跌", "较上月", "环比")
+    return any(kw in query for kw in change_keywords)
+
+
+def _previous_month(year_month: str) -> str:
+    """返回给定月份的上一个月，格式与输入一致 (YYYY-MM 或 YYYY年MM月)。"""
+    if not year_month:
+        return ""
+    try:
+        m = re.search(r"(\d{4})[年\-/](\d{1,2})", year_month)
+        if not m:
+            return year_month
+        year, month = int(m.group(1)), int(m.group(2))
+        if month == 1:
+            year, month = year - 1, 12
+        else:
+            month -= 1
+        sep = "年" if "年" in year_month else "-"
+        end = "月" if "月" in year_month else ""
+        return f"{year}{sep}{month:02d}{end}"
+    except Exception:
+        return year_month
 
 
 def query_analysis_node(state: RAGAgentState) -> dict:
@@ -1277,6 +844,12 @@ def planner_node(state: RAGAgentState) -> dict:
         "current_step": 0,
         "thought_process": [],
         "category_hints": [],
+        "target_doc_id": "",
+        "target_doc_filename": "",
+        "target_section": "",
+        "target_page_start": 0,
+        "target_page_end": 0,
+        "force_clause_drilldown": False,
         "fallback_mode": False,
         "llm_runtime": runtime,
     }
@@ -1318,9 +891,34 @@ def executor_node(state: RAGAgentState) -> dict:
     step_hint = plan[current_step] if current_step < len(plan) else plan[-1]
     progress = f"{current_step + 1}/{len(plan)}"
 
+    forced_tool_call = _build_forced_rule_clause_tool_call(state)
+    if forced_tool_call is not None:
+        scope_hint = _build_scope_hint(state)
+        forced_step_hint = f"强制调用 rule_clause_search 下钻条文正文（{scope_hint}）" if scope_hint else "强制调用 rule_clause_search 下钻条文正文"
+        thought_process.append(f"步骤{current_step+1}：{forced_step_hint}")
+        step_msg = HumanMessage(content=f"[当前进度 {progress}] {forced_step_hint}")
+        forced_response = AIMessage(content="", tool_calls=[forced_tool_call])
+        logger.info(f"[executor] forced rule_clause_search: {forced_tool_call['args']}")
+        return {
+            "messages": [step_msg, forced_response],
+            "iterations": iteration + 1,
+            "current_step": current_step,
+            "thought_process": thought_process,
+            "has_tool_calls": True,
+            "pending_tool_calls": [forced_tool_call],
+            "step_number": current_step + 1,
+            "total_steps": len(plan),
+            "step_hint": forced_step_hint,
+            "force_clause_drilldown": False,
+            "llm_runtime": state.get("llm_runtime") or {},
+        }
+
     # 如果有章节定位提示，注入到步骤消息中帮助 LLM 精准检索
     category_hints = state.get("category_hints") or []
-    if category_hints:
+    scope_hint = _build_scope_hint(state)
+    if scope_hint:
+        step_content = f"[已锁定检索范围：{scope_hint}]\n[当前进度 {progress}] 请执行：{step_hint}"
+    elif category_hints:
         hints_str = "；".join(category_hints[:3])
         step_content = f"[章节定位参考：{hints_str}]\n[当前进度 {progress}] 请执行：{step_hint}"
     else:
@@ -1428,13 +1026,6 @@ def tool_node(state: RAGAgentState) -> dict:
                         if hint_str not in category_hints:
                             category_hints.append(hint_str)
                         continue
-                    sec = item.get("section", "")
-                    page = item.get("page_number", "")
-                    snippet = item.get("content", "")[:60]
-                    if sec or snippet:
-                        hint_str = f"{sec} P{page}: {snippet}" if sec else snippet
-                        if hint_str not in category_hints:
-                            category_hints.append(hint_str)
         except Exception:
             pass
 
@@ -1525,6 +1116,39 @@ def tool_node(state: RAGAgentState) -> dict:
     }
 
 
+def chapter_resolver_node(state: RAGAgentState) -> dict:
+    if state.get("query_type") != "standard_ref":
+        return {}
+
+    retrieved_chunks = _enrich_chunks_with_filename(list(state.get("retrieved_chunks") or []))
+    if any((chunk.get("metadata") or {}).get("evidence_kind") == "rule_clause_chunk" for chunk in retrieved_chunks):
+        return {
+            "retrieved_chunks": retrieved_chunks,
+            "force_clause_drilldown": False,
+        }
+
+    catalog_chunks = [chunk for chunk in retrieved_chunks if _is_catalog_evidence(chunk)]
+    if not catalog_chunks:
+        return {"retrieved_chunks": retrieved_chunks}
+
+    resolved_scope = _resolve_chapter_scope(state["query"], catalog_chunks)
+    if not resolved_scope:
+        return {"retrieved_chunks": retrieved_chunks}
+
+    logger.info(
+        "[chapter_resolver] doc=%s section=%s pages=%s-%s",
+        resolved_scope.get("target_doc_filename") or resolved_scope.get("target_doc_id"),
+        resolved_scope.get("target_section"),
+        resolved_scope.get("target_page_start"),
+        resolved_scope.get("target_page_end"),
+    )
+    return {
+        "retrieved_chunks": retrieved_chunks,
+        **resolved_scope,
+        "force_clause_drilldown": True,
+    }
+
+
 def synthesize_node(state: RAGAgentState) -> dict:
     """
     合成节点：用 messages channel 中积累的全部 chunks 生成最终答案。
@@ -1543,20 +1167,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     citations_text = _format_citations(all_chunks)
     presentation = _build_presentation_payload(query, query_type, all_chunks)
 
-    # 简单置信度估算（供 SSE eval_scores 事件用）
-    n = len(all_chunks)
-    confidence = min(0.95, 0.5 + n * 0.05) if n > 0 else 0.3
-    evaluation = {
-        "passed": True,
-        "confidence": confidence,
-        "completeness": min(1.0, n / 8),
-        "consistency": 0.85,
-        "information_gain": 0.8,
-        "source_diversity": min(1.0, len({c.get("source", "") for c in all_chunks}) / 3),
-        "fact_consistency": 0.85,
-        "coverage_estimate": min(1.0, n / 5),
-        "feedback": "ok",
-    }
+    evaluation = _build_answer_evaluation(query_type, "", all_chunks)
 
     if state.get("stream_response"):
         runtime = state.get("llm_runtime") or {}
@@ -1587,6 +1198,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     from app.rag_pipeline import _strip_latex
     citations_text = refine_citations_for_answer(final_answer, all_chunks, citations_text)
     final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text, query_type)
+    evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks)
     presentation = finalize_presentation_payload(
         query=query,
         query_type=query_type,
@@ -1654,7 +1266,9 @@ def build_agent_graph(checkpointer=None):
     Thought-Plan-Act graph:
 
     query_analysis → planner_node → executor_node ↔ tool_node  (plan steps loop)
-                                         ↓ (all steps done or max iter)
+                                 ↓ chapter_resolver
+                             chapter_resolver → executor_node
+                                 ↓ (all steps done or max iter)
                                     synthesize_node → END
     """
     g = StateGraph(RAGAgentState)
@@ -1663,6 +1277,7 @@ def build_agent_graph(checkpointer=None):
     g.add_node("planner_node", planner_node)
     g.add_node("executor_node", executor_node)
     g.add_node("tool_node", tool_node)
+    g.add_node("chapter_resolver", chapter_resolver_node)
     g.add_node("synthesize_node", synthesize_node)
 
     g.set_entry_point("query_analysis")
@@ -1685,7 +1300,8 @@ def build_agent_graph(checkpointer=None):
         },
     )
 
-    g.add_edge("tool_node", "executor_node")
+    g.add_edge("tool_node", "chapter_resolver")
+    g.add_edge("chapter_resolver", "executor_node")
     g.add_edge("synthesize_node", END)
 
     return g.compile(checkpointer=checkpointer)
