@@ -365,6 +365,7 @@ _STRUCTURED_TABLE_QUERY_HINTS = (
     "费率",
     "推荐费率",
     "推荐系数",
+    "推荐比例",
     "费率标准",
     "企业管理费",
     "利润率",
@@ -372,6 +373,9 @@ _STRUCTURED_TABLE_QUERY_HINTS = (
     "赶工措施费",
     "总包管理服务费",
     "计算基数",
+    "优质优价奖励费",
+    "夜间施工增加费",
+    "履约担保手续费",
 )
 
 _FEE_FORMULA_HINT_RE = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
@@ -386,9 +390,60 @@ _concept_analyzer = QueryAnalyzer()
 
 
 def _should_include_structured_tables(query: str) -> bool:
+    """Return True if the query is likely about fee-rate structured data.
+
+    Strategy (rerank-first, keyword fallback):
+    1. ANN gate   — embed the query, pull top-5 fee_rates candidates from pgvector.
+    2. Rerank gate — BGE-reranker-v2-m3 scores each (query, fee_name + source_text)
+                     pair as a cross-encoder.  Cross-encoder scores are trained
+                     relevance signals; score > 0 reliably indicates a relevant pair.
+                     No manually tuned threshold needed.
+    3. Keyword gate — cheap fallback when embedding/reranker/DB is unavailable.
+    """
     normalized = (query or "").strip()
     if not normalized:
         return False
+
+    # --- ANN + rerank gate ---
+    try:
+        query_vec = _get_embedding(normalized)
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT fee_name, COALESCE(NULLIF(TRIM(applicable_scope),''), source_text, '') AS doc_text
+                    FROM   fee_rates
+                    WHERE  embedding IS NOT NULL
+                    ORDER  BY embedding <=> %s::vector
+                    LIMIT  5
+                    """,
+                    (query_vec,),
+                )
+                rows = cur.fetchall()
+        finally:
+            _put_pg_conn(conn)
+
+        if rows:
+            from infrastructure.reranker_service import get_reranker_service
+            reranker = get_reranker_service()
+            docs = [f"{r[0]} {r[1]}"[:512] for r in rows]
+            scores = reranker.rerank(normalized, docs)
+            best = max(scores) if scores else -999
+            logger.debug(
+                "[structured_table_gate] reranker best=%.3f query=%r",
+                best,
+                normalized[:60],
+            )
+            # sigmoid > 0.5 is the model's natural boundary (logit > 0 = relevant).
+            # This is not an arbitrary threshold — it's the trained decision boundary.
+            if best > 0.5:
+                return True
+
+    except Exception as exc:
+        logger.warning("[structured_table_gate] rerank gate failed (%s), using keyword fallback", exc)
+
+    # --- Keyword gate (fallback) ---
     return any(hint in normalized for hint in _STRUCTURED_TABLE_QUERY_HINTS)
 
 
