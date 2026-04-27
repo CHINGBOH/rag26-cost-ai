@@ -655,6 +655,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                 eval_result = node_output.get("evaluation") or {}
                 runtime = node_output.get("llm_runtime") or current_runtime
                 citations_text = node_output.get("citations_text", "")
+                from app.agent.graph import refine_citations_for_answer, finalize_presentation_payload
                 presentation = node_output.get("presentation")
                 if presentation:
                     current_presentation = presentation
@@ -663,7 +664,6 @@ async def agent_query_stream(request: AgentStreamRequest):
                 if prompt:
                     try:
                         from app.agent.prompts import stream_llm_response
-                        from app.agent.graph import refine_citations_for_answer, finalize_presentation_payload
 
                         async for stream_event in stream_llm_response(
                             [HumanMessage(content=prompt)],
@@ -740,6 +740,15 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "max_iterations": request.max_iterations,
                     }
                     yield _sse_event("loop_state", loop_data)
+
+            elif node_name == "presentation_policy_node":
+                presentation = node_output.get("presentation")
+                if presentation:
+                    if presentation != current_presentation:
+                        current_presentation = presentation
+                        yield _sse_event("presentation", presentation)
+                    else:
+                        current_presentation = presentation
 
     return StreamingResponse(
         event_generator(),
