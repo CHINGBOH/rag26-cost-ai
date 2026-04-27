@@ -103,6 +103,7 @@ export interface PresentationPayload {
   type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps';
   query_type?: string;
   title: string;
+  support_kicker?: string;
   unit?: string;
   points?: PresentationPoint[];
   delta?: number | null;

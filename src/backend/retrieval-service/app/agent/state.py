@@ -40,3 +40,4 @@ class RAGAgentState(TypedDict):
     pending_tool_calls: list[dict]      # tool calls selected by executor for SSE start events
     step_summary: str                   # summary text when a step finishes without more tool calls
     presentation: dict | None           # structured UI payload for charts/cards
+    presentation_policy: dict | None    # state-decided presentation strategy (labels/kicker/tone)

@@ -1427,6 +1427,7 @@ _INTENT_TYPES = {"price", "semantic", "calculation", "comparison", "trend_chart"
 _FEE_RULE_QUERY_RE = re.compile(
     r"费率标准|企业管理费|利润率?|推荐费率|推荐系数|计算基数|计算公式|按\s*20\d{2}\s*版|如果.*为0"
 )
+_PRESENTATION_FORMULA_QUERY_RE = re.compile(r"计算公式|计算基数|如果.*为0|边界|代入")
 
 
 def query_analysis_node(state: RAGAgentState) -> dict:
@@ -1558,6 +1559,197 @@ def intent_guard_node(state: RAGAgentState) -> dict:
     return {
         "query_type": guarded_intent,
         "llm_runtime": runtime,
+    }
+
+
+def _default_presentation_policy(query: str, query_type: str, presentation: dict | None) -> dict:
+    normalized_query = _compact_text(query)
+    policy = {
+        "support_kicker": "补充说明",
+        "section_labels": {"analysis": "核心说明", "detail": "补充说明"},
+        "highlight_labels": {"default": "关键信息", "rule": "关键信息", "detail": "关键信息"},
+    }
+
+    if query_type == "standard_ref":
+        policy = {
+            "support_kicker": "条文依据",
+            "section_labels": {"analysis": "依据说明", "detail": "补充说明"},
+            "highlight_labels": {"default": "规则要点", "rule": "规则要点", "detail": "关键信息"},
+        }
+        if _PRESENTATION_FORMULA_QUERY_RE.search(normalized_query):
+            policy = {
+                "support_kicker": "公式依据",
+                "section_labels": {"analysis": "公式依据", "detail": "边界推导"},
+                "highlight_labels": {
+                    "default": "关键要点",
+                    "rule": "公式要点",
+                    "metric": "关键代入",
+                    "detail": "推导细节",
+                },
+            }
+    elif query_type == "comparison":
+        policy = {
+            "support_kicker": "对比说明",
+            "section_labels": {"analysis": "对比结论", "detail": "差异说明"},
+            "highlight_labels": {"default": "对比要点", "rule": "对比结论", "detail": "差异细节"},
+        }
+    elif query_type in {"price", "trend_chart"}:
+        policy = {
+            "support_kicker": "数据说明",
+            "section_labels": {"analysis": "数据解读", "detail": "补充说明"},
+            "highlight_labels": {"default": "关键信息", "metric": "关键数值", "detail": "数据细节"},
+        }
+
+    if (presentation or {}).get("type") == "calculation_steps":
+        policy["support_kicker"] = "计算过程"
+        policy["section_labels"] = {"analysis": "计算思路", "detail": "补充说明"}
+        policy["highlight_labels"] = {"default": "计算要点", "metric": "关键数值", "detail": "推导细节"}
+
+    return policy
+
+
+def _sanitize_policy_text(value: object, max_len: int = 12) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > max_len:
+        return text[:max_len]
+    return text
+
+
+def _resolve_presentation_policy(
+    query: str,
+    query_type: str,
+    final_answer: str,
+    presentation: dict | None,
+    llm_config: dict,
+    *,
+    allow_llm: bool,
+) -> dict:
+    policy = _default_presentation_policy(query, query_type, presentation)
+    if not allow_llm or not presentation:
+        return policy
+
+    summary = str((presentation.get("summary") if isinstance(presentation, dict) else "") or "")
+    if not summary:
+        summary = re.split(r"\n+", final_answer or "", maxsplit=1)[0].strip()
+
+    try:
+        system_prompt = (
+            "你是对话呈现策略器。任务：为回答卡片决定展示文案标签。"
+            "输出严格 JSON，不要输出其他内容。"
+            "可输出字段：support_kicker, section_labels, highlight_labels。"
+            "字段要求：每个标签 2-8 个字，语义自然，不要机械化模板。"
+            "JSON 示例："
+            '{"support_kicker":"公式依据","section_labels":{"analysis":"公式依据","detail":"边界推导"},'
+            '"highlight_labels":{"rule":"公式要点","metric":"关键代入","detail":"推导细节","default":"关键要点"}}'
+        )
+        user_prompt = (
+            f"query={query}\n"
+            f"query_type={query_type}\n"
+            f"presentation_type={presentation.get('type') if isinstance(presentation, dict) else ''}\n"
+            f"summary={summary}\n"
+            f"default_policy={json.dumps(policy, ensure_ascii=False)}"
+        )
+        response, _ = invoke_llm(
+            [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+            thinking=False,
+            prefer_strong=False,
+            llm_config=llm_config,
+        )
+        candidate = _extract_json_object(response.content or "")
+    except Exception as exc:
+        logger.warning(f"[presentation_policy] LLM failed, using default policy: {exc}")
+        return policy
+
+    support_kicker = _sanitize_policy_text(candidate.get("support_kicker"))
+    if support_kicker:
+        policy["support_kicker"] = support_kicker
+
+    section_labels = candidate.get("section_labels")
+    if isinstance(section_labels, dict):
+        sanitized_section_labels = {}
+        for key in ("analysis", "detail"):
+            value = _sanitize_policy_text(section_labels.get(key))
+            if value:
+                sanitized_section_labels[key] = value
+        if sanitized_section_labels:
+            policy["section_labels"] = {**policy.get("section_labels", {}), **sanitized_section_labels}
+
+    highlight_labels = candidate.get("highlight_labels")
+    if isinstance(highlight_labels, dict):
+        sanitized_highlight_labels = {}
+        for key in ("default", "rule", "detail", "metric", "scope", "method", "hint"):
+            value = _sanitize_policy_text(highlight_labels.get(key))
+            if value:
+                sanitized_highlight_labels[key] = value
+        if sanitized_highlight_labels:
+            policy["highlight_labels"] = {**policy.get("highlight_labels", {}), **sanitized_highlight_labels}
+
+    return policy
+
+
+def _apply_presentation_policy(presentation: dict | None, policy: dict | None) -> dict | None:
+    if not presentation or not policy:
+        return presentation
+
+    updated = dict(presentation)
+    support_kicker = _sanitize_policy_text(policy.get("support_kicker"))
+    if support_kicker:
+        updated["support_kicker"] = support_kicker
+
+    highlight_labels = policy.get("highlight_labels") if isinstance(policy.get("highlight_labels"), dict) else {}
+    section_labels = policy.get("section_labels") if isinstance(policy.get("section_labels"), dict) else {}
+
+    if isinstance(updated.get("highlights"), list):
+        normalized_highlights = []
+        for highlight in updated.get("highlights") or []:
+            item = dict(highlight)
+            if not item.get("label"):
+                kind = str(item.get("kind") or "")
+                if kind and kind in highlight_labels:
+                    item["label"] = highlight_labels[kind]
+                elif highlight_labels.get("default"):
+                    item["label"] = highlight_labels["default"]
+            normalized_highlights.append(item)
+        updated["highlights"] = normalized_highlights
+
+    if updated.get("type") == "answer_sections" and isinstance(updated.get("sections"), list):
+        normalized_sections = []
+        for index, section in enumerate(updated.get("sections") or []):
+            item = dict(section)
+            if not item.get("label"):
+                kind = str(item.get("kind") or ("analysis" if index == 0 else "detail"))
+                label = section_labels.get(kind) or section_labels.get("detail")
+                if label:
+                    item["label"] = label
+            normalized_sections.append(item)
+        updated["sections"] = normalized_sections
+
+    return updated
+
+
+def presentation_policy_node(state: RAGAgentState) -> dict:
+    presentation = state.get("presentation")
+    if not presentation:
+        return {"presentation_policy": None}
+
+    query = state.get("query", "")
+    query_type = state.get("query_type", "semantic")
+    final_answer = state.get("final_answer", "")
+    llm_config = state.get("llm_config") or {}
+    stream_response = bool(state.get("stream_response"))
+    policy = _resolve_presentation_policy(
+        query=query,
+        query_type=query_type,
+        final_answer=final_answer,
+        presentation=presentation,
+        llm_config=llm_config,
+        allow_llm=not stream_response,
+    )
+    return {
+        "presentation": _apply_presentation_policy(presentation, policy),
+        "presentation_policy": policy,
     }
 
 
@@ -2078,6 +2270,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "llm_runtime": runtime,
             "retrieved_chunks": all_chunks,
             "presentation": presentation,
+            "presentation_policy": state.get("presentation_policy"),
         }
 
     try:
@@ -2117,6 +2310,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "llm_runtime": runtime,
         "retrieved_chunks": all_chunks,
         "presentation": presentation,
+        "presentation_policy": state.get("presentation_policy"),
     }
 
 
@@ -2125,6 +2319,10 @@ def synthesize_node(state: RAGAgentState) -> dict:
 def after_query_analysis(state: RAGAgentState) -> str:
     qt = state.get("query_type", "")
     return END if qt in ("irrelevant", "chitchat") else "intent_guard_node"
+
+
+def after_synthesize(state: RAGAgentState) -> str:
+    return "presentation_policy_node"
 
 
 def after_executor(state: RAGAgentState) -> str:
@@ -2167,9 +2365,9 @@ def build_agent_graph(checkpointer=None):
 
     query_analysis → intent_guard_node → planner_node → executor_node ↔ tool_node  (plan steps loop)
                                  ↓ chapter_resolver
-                              chapter_resolver → executor_node
-                                 ↓ (all steps done or max iter)
-                                    synthesize_node → END
+                               chapter_resolver → executor_node
+                                  ↓ (all steps done or max iter)
+                                     synthesize_node → presentation_policy_node → END
     """
     g = StateGraph(RAGAgentState)
 
@@ -2180,6 +2378,7 @@ def build_agent_graph(checkpointer=None):
     g.add_node("tool_node", tool_node)
     g.add_node("chapter_resolver", chapter_resolver_node)
     g.add_node("synthesize_node", synthesize_node)
+    g.add_node("presentation_policy_node", presentation_policy_node)
 
     g.set_entry_point("query_analysis")
 
@@ -2204,7 +2403,12 @@ def build_agent_graph(checkpointer=None):
 
     g.add_edge("tool_node", "chapter_resolver")
     g.add_edge("chapter_resolver", "executor_node")
-    g.add_edge("synthesize_node", END)
+    g.add_conditional_edges(
+        "synthesize_node",
+        after_synthesize,
+        {"presentation_policy_node": "presentation_policy_node"},
+    )
+    g.add_edge("presentation_policy_node", END)
 
     return g.compile(checkpointer=checkpointer)
 

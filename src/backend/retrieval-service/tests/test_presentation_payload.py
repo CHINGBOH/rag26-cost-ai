@@ -1,4 +1,5 @@
 from app.agent.graph import (
+    _apply_presentation_policy,
     _build_presentation_payload,
     _prune_chunks_for_query,
     finalize_presentation_payload,
@@ -215,3 +216,28 @@ def test_prune_chunks_for_annual_price_query_drops_irrelevant_evidence():
     )
 
     assert pruned == []
+
+
+def test_apply_presentation_policy_overrides_labels_and_support_kicker() -> None:
+    presentation = {
+        "type": "answer_sections",
+        "query_type": "standard_ref",
+        "title": "规则说明",
+        "summary": "结论",
+        "highlights": [{"kind": "rule", "value": "规则A"}],
+        "sections": [{"kind": "analysis", "body": "说明A"}, {"kind": "detail", "body": "说明B"}],
+        "sources": [],
+    }
+    policy = {
+        "support_kicker": "公式依据",
+        "highlight_labels": {"rule": "公式要点", "default": "关键要点"},
+        "section_labels": {"analysis": "公式依据", "detail": "边界推导"},
+    }
+
+    patched = _apply_presentation_policy(presentation, policy)
+
+    assert patched is not None
+    assert patched["support_kicker"] == "公式依据"
+    assert patched["highlights"][0]["label"] == "公式要点"
+    assert patched["sections"][0]["label"] == "公式依据"
+    assert patched["sections"][1]["label"] == "边界推导"

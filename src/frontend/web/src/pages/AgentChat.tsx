@@ -317,9 +317,11 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
 
         {(presentation.highlights && presentation.highlights.length > 0) ||
         (presentation.sections && presentation.sections.length > 0) ||
-        (presentation.sources && presentation.sources.length > 0) ? (
+            (presentation.sources && presentation.sources.length > 0) ? (
           <div className="presentation-support-block">
-            <div className="presentation-support-kicker">补充说明</div>
+            <div className="presentation-support-kicker">
+              {presentation.support_kicker || '补充说明'}
+            </div>
 
             {presentation.highlights && presentation.highlights.length > 0 && (
               <div className="answer-highlight-grid">
