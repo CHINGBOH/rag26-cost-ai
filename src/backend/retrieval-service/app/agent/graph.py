@@ -1205,6 +1205,45 @@ def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
     }
 
 
+def _build_executor_fallback_tool_call(state: RAGAgentState) -> dict | None:
+    query = state["query"].strip()
+    query_type = str(state.get("query_type") or "semantic").strip().lower()
+    entities = state.get("query_entities") or {}
+
+    if query_type == "standard_ref":
+        if _FEE_RULE_QUERY_RE.search(query):
+            search_query = extract_fee_formula_search_term(query)
+        else:
+            search_query = _build_rule_clause_search_query(query)
+        args = {"query": search_query, "top_k": 8}
+        tool_name = "text_search"
+    elif query_type == "price":
+        material = str(entities.get("material_name") or "").strip()
+        year_month = str(entities.get("year_month") or "").strip()
+        if material:
+            args = {"material_name": material, "year_month": year_month, "top_k": 8}
+            tool_name = "price_query"
+        else:
+            args = {"query": query, "top_k": 8}
+            tool_name = "keyword_search"
+    elif query_type == "comparison":
+        args = {"query": query, "top_k": 8}
+        tool_name = "hybrid_search"
+    else:
+        args = {"query": query, "top_k": 8}
+        tool_name = "text_search"
+
+    call_hash = hashlib.md5(
+        f"{tool_name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
+    ).hexdigest()[:12]
+    return {
+        "id": f"fallback_tool_{call_hash}",
+        "name": tool_name,
+        "args": args,
+        "type": "tool_call",
+    }
+
+
 def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semantic") -> str:
     """把检索结果拼成 prompt，让 LLM 生成答案"""
     if not chunks:
@@ -1352,6 +1391,11 @@ _PRICE_COMPARE_RE = re.compile(
     re.DOTALL
 )
 
+_INTENT_TYPES = {"price", "semantic", "calculation", "comparison", "trend_chart", "standard_ref"}
+_FEE_RULE_QUERY_RE = re.compile(
+    r"费率标准|企业管理费|利润率?|推荐费率|推荐系数|计算基数|计算公式|按\s*20\d{2}\s*版|如果.*为0"
+)
+
 
 def query_analysis_node(state: RAGAgentState) -> dict:
     """
@@ -1381,6 +1425,107 @@ def query_analysis_node(state: RAGAgentState) -> dict:
         "query_type": analysis["intent"],
         "query_entities": analysis["entities"],
         "sub_queries": analysis["sub_queries"],
+    }
+
+
+def _extract_json_object(text: str) -> dict:
+    candidate = (text or "").strip()
+    if not candidate:
+        return {}
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", candidate, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_guarded_intent(
+    query: str,
+    current_intent: str,
+    decision: dict,
+) -> str:
+    candidate = str(decision.get("intent") or "").strip().lower()
+    confidence_raw = decision.get("confidence", 0)
+    try:
+        confidence = float(confidence_raw)
+    except Exception:
+        confidence = 0.0
+
+    if candidate not in _INTENT_TYPES:
+        candidate = current_intent
+
+    if candidate == current_intent:
+        return current_intent
+
+    if confidence >= 0.55:
+        return candidate
+
+    # LLM confidence is often conservative on boundary-rule questions.
+    if current_intent == "price" and candidate == "standard_ref" and _FEE_RULE_QUERY_RE.search(query):
+        return "standard_ref"
+
+    return current_intent
+
+
+def intent_guard_node(state: RAGAgentState) -> dict:
+    query = state["query"].strip()
+    current_intent = str(state.get("query_type") or "semantic").strip().lower()
+    if current_intent in {"chitchat", "irrelevant"}:
+        return {}
+
+    entities = state.get("query_entities") or {}
+    llm_config = state.get("llm_config") or {}
+    runtime = state.get("llm_runtime") or {}
+    decision: dict = {}
+
+    try:
+        guard_system = (
+            "你是工程造价问题路由器。任务：只判断该查询应进入哪类检索路由。"
+            "必须输出 JSON，不要输出其它文本。"
+            "可选 intent: price, standard_ref, calculation, comparison, trend_chart, semantic。"
+            "优先规则：凡是“费率标准/计算基数/计算公式/如果X为0时如何计取”等条文解释问题，"
+            "应优先判为 standard_ref，而不是 price。"
+            "JSON 格式："
+            '{"intent":"standard_ref","confidence":0.0,"reason":"..."}'
+        )
+        guard_user = (
+            f"query={query}\n"
+            f"current_intent={current_intent}\n"
+            f"entities={json.dumps(entities, ensure_ascii=False)}"
+        )
+        response, runtime = invoke_llm(
+            [SystemMessage(content=guard_system), HumanMessage(content=guard_user)],
+            thinking=False,
+            prefer_strong=True,
+            llm_config=llm_config,
+        )
+        decision = _extract_json_object(response.content or "")
+    except Exception as exc:
+        logger.warning(f"[intent_guard] LLM failed, fallback to rule guard: {exc}")
+
+    guarded_intent = _resolve_guarded_intent(query, current_intent, decision)
+    if guarded_intent != current_intent:
+        logger.info(
+            "[intent_guard] intent corrected: %s -> %s (decision=%s)",
+            current_intent,
+            guarded_intent,
+            decision,
+        )
+    elif current_intent == "price" and _FEE_RULE_QUERY_RE.search(query):
+        guarded_intent = "standard_ref"
+        logger.info("[intent_guard] fallback corrected: price -> standard_ref")
+
+    return {
+        "query_type": guarded_intent,
+        "llm_runtime": runtime,
     }
 
 
@@ -1460,6 +1605,13 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
         ]
         logger.info(f"[planner] fee formula query override, core='{core_term}'")
+    elif state.get("query_type") == "standard_ref" and _FEE_RULE_QUERY_RE.search(query):
+        core_term = extract_fee_formula_search_term(query)
+        steps = [
+            f"使用 text_search 检索『{core_term}』原文公式与计算基数",
+            f"如需补充条文上下文，再使用 keyword_search 检索『{core_term.replace('计算公式', '计算基数')}』",
+        ]
+        logger.info(f"[planner] fee rule query override, core='{core_term}'")
 
     if is_fee_standard_comparison_query(query):
         comparison_queries = extract_fee_standard_comparison_queries(query)
@@ -1644,8 +1796,29 @@ def executor_node(state: RAGAgentState) -> dict:
         )
     except Exception as e:
         logger.error(f"[executor] LLM failed: {e}")
-        response = AIMessage(content="")
         runtime = state.get("llm_runtime") or {}
+        fallback_tool_call = _build_executor_fallback_tool_call(state)
+        if fallback_tool_call is not None:
+            fallback_note = f"步骤{current_step+1}：LLM不可用，自动执行兜底检索 {fallback_tool_call['name']}"
+            thought_process.append(fallback_note)
+            logger.info(
+                "[executor] fallback tool call: %s args=%s",
+                fallback_tool_call["name"],
+                fallback_tool_call["args"],
+            )
+            return {
+                "messages": [step_msg, AIMessage(content="", tool_calls=[fallback_tool_call])],
+                "iterations": iteration + 1,
+                "current_step": current_step,
+                "thought_process": thought_process,
+                "has_tool_calls": True,
+                "step_number": current_step + 1,
+                "total_steps": len(plan),
+                "step_hint": step_hint,
+                "pending_tool_calls": [fallback_tool_call],
+                "llm_runtime": runtime,
+            }
+        response = AIMessage(content="")
 
     if response.tool_calls:
         logger.info(f"[executor] tool calls: {[tc['name'] for tc in response.tool_calls]}")
@@ -1917,7 +2090,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
 
 def after_query_analysis(state: RAGAgentState) -> str:
     qt = state.get("query_type", "")
-    return END if qt in ("irrelevant", "chitchat") else "planner_node"
+    return END if qt in ("irrelevant", "chitchat") else "intent_guard_node"
 
 
 def after_executor(state: RAGAgentState) -> str:
@@ -1958,19 +2131,20 @@ def build_agent_graph(checkpointer=None):
     """
     Thought-Plan-Act graph:
 
-    query_analysis → planner_node → executor_node ↔ tool_node  (plan steps loop)
+    query_analysis → intent_guard_node → planner_node → executor_node ↔ tool_node  (plan steps loop)
                                  ↓ chapter_resolver
-                             chapter_resolver → executor_node
+                              chapter_resolver → executor_node
                                  ↓ (all steps done or max iter)
                                     synthesize_node → END
     """
     g = StateGraph(RAGAgentState)
 
     g.add_node("query_analysis", query_analysis_node)
+    g.add_node("intent_guard_node", intent_guard_node)
     g.add_node("planner_node", planner_node)
     g.add_node("executor_node", executor_node)
     g.add_node("tool_node", tool_node)
-        g.add_node("chapter_resolver", chapter_resolver_node)
+    g.add_node("chapter_resolver", chapter_resolver_node)
     g.add_node("synthesize_node", synthesize_node)
 
     g.set_entry_point("query_analysis")
@@ -1978,9 +2152,10 @@ def build_agent_graph(checkpointer=None):
     g.add_conditional_edges(
         "query_analysis",
         after_query_analysis,
-        {"planner_node": "planner_node", END: END},
+        {"intent_guard_node": "intent_guard_node", END: END},
     )
 
+    g.add_edge("intent_guard_node", "planner_node")
     g.add_edge("planner_node", "executor_node")
 
     g.add_conditional_edges(

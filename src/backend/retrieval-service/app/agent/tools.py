@@ -2903,6 +2903,116 @@ def pdf_page_search(query: str, top_k: int = 8) -> str:
             _put_pg_conn(conn)
 
 
+@tool
+def rule_clause_search(
+    query: str,
+    doc_id: str = "",
+    doc_filename: str = "",
+    section: str = "",
+    page_start: int = 0,
+    page_end: int = 0,
+    top_k: int = 8,
+) -> str:
+    """在限定文档/章节/页码范围内检索条文正文，适合目录命中后的二跳下钻。"""
+    if not query.strip():
+        return json.dumps([])
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+
+        cleaned_doc_filename = (
+            (doc_filename or "").strip().replace("《", "").replace("》", "")
+        )
+        terms = [query.strip()]
+        section_term = (section or "").strip()
+        if section_term and section_term not in terms:
+            terms.append(section_term)
+
+        where_clauses = ["1=1"]
+        params: list = []
+        if doc_id.strip():
+            where_clauses.append("doc_id = %s")
+            params.append(doc_id.strip())
+        if cleaned_doc_filename:
+            where_clauses.append("file_name ILIKE %s")
+            params.append(f"%{cleaned_doc_filename}%")
+        if int(page_start or 0) > 0:
+            where_clauses.append("page_number >= %s")
+            params.append(int(page_start))
+        if int(page_end or 0) > 0:
+            where_clauses.append("page_number <= %s")
+            params.append(int(page_end))
+
+        term_clauses = []
+        for term in terms:
+            term_clauses.append("content ILIKE %s")
+            params.append(f"%{term}%")
+        if term_clauses:
+            where_clauses.append(f"({' OR '.join(term_clauses)})")
+
+        sql = f"""
+            SELECT id, doc_id, file_name, page_number, content
+            FROM text_chunks
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY
+                CASE WHEN content ILIKE %s THEN 0 ELSE 1 END,
+                page_number ASC,
+                length(content) ASC
+            LIMIT %s
+        """
+        params.extend((f"%{query.strip()}%", int(top_k)))
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        results: list[dict] = []
+        for index, row in enumerate(rows):
+            score = max(0.75, 0.98 - index * 0.03)
+            results.append(
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"rule_clause_{row[0]}",
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[3] or 1,
+                        "source_db": "rule_clause",
+                        "content": row[4] or "",
+                        "score": round(score, 4),
+                        "metadata": {
+                            "file_name": row[2] or "",
+                            "target_doc_id": doc_id or "",
+                            "target_doc_filename": cleaned_doc_filename,
+                            "target_section": section_term,
+                            "target_page_start": int(page_start or 0),
+                            "target_page_end": int(page_end or 0),
+                        },
+                    },
+                    RETRIEVAL_PATH_PDF_PAGE,
+                    evidence_kind="rule_clause_chunk",
+                    route_stage="scoped",
+                )
+            )
+
+        logger.info(
+            "[rule_clause_search] query='%s' doc_id='%s' file='%s' section='%s' pages=%s-%s hits=%s",
+            query,
+            doc_id,
+            cleaned_doc_filename,
+            section_term,
+            page_start,
+            page_end,
+            len(results),
+        )
+        return json.dumps(results[:top_k], ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[rule_clause_search] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
 # ── price_query（PG SQL 精确查询，保留）──────────────────────────────────────
 
 
