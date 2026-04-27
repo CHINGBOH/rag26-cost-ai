@@ -61,6 +61,7 @@ from app.agent.tools import (
     category_search,
     price_trend,
     rule_clause_search,
+    get_catalog_map,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 
@@ -71,17 +72,18 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, calculator, python_eval]
+REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, get_catalog_map, calculator, python_eval]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
 
 工具说明：
 - concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
+- get_catalog_map(query, top_k=12)：**章节目录检索**，查询与关键词相关的章节ID和路径（path）；在调用 text_search/hybrid_search 前先调用此工具确定 path_constraint，避免跨册检索噪声。返回 [{chapter_id, path, title, file_name}]
 - category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
 - rule_clause_search(query, doc_id='', doc_filename='', section='', page_start=0, page_end=0, top_k=8)：在已锁定文档和页段范围内二跳检索条文正文，目录命中后优先使用
-- text_search(query, top_k=10)：全文+语义混合检索，适合费率标准、定额规范等文档；自动检索 fee_rates 结构化表
-- hybrid_search(query, top_k=10)：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
+- text_search(query, top_k=10, path_constraint='')：全文+语义混合检索，适合费率标准、定额规范等文档；path_constraint 可锁定章节路径（如 '第二册电气设备安装工程/10.%'）；自动检索 fee_rates 结构化表
+- hybrid_search(query, top_k=10, path_constraint='')：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；path_constraint 可锁定章节范围；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
 - pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
 - price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
 - price_trend(material_name, start_month=None, end_month=None)：时序价格走势查询，返回某材料在时间范围内的月度均价列表（走势/趋势分析必用此工具）
@@ -145,6 +147,13 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
   调用 category_search 确认材料/工艺所在章节编号
 - 第二步再用 text_search 带章节号检索具体子目数值
 - 材料名与位置词（楼梯/墙面/地面）要分离，category_search 只传材料名
+
+章节路径约束规则（重要，当 Human 消息包含"章节路径地图"时）：
+- Navigator 节点已识别出查询匹配的章节路径，Human 消息中有"章节路径地图"段落
+- 规划 text_search 或 hybrid_search 步骤时，必须在步骤描述中包含对应的 path_constraint 参数
+- 例：若路径为 '第二册电气设备安装工程/%'，则步骤为：
+  text_search(query='送配电装置系统调试', path_constraint='第二册电气设备安装工程/%')
+- 如有多条路径，只取最相关的前 2 条用于约束
 
 输出格式（纯 JSON，不含 markdown 代码块）：
 {"steps": ["步骤1", "步骤2", ...]}
@@ -1779,6 +1788,52 @@ def _parse_plan(content: str) -> list[str]:
     return steps[:4] if steps else [state["query"] if False else ""]
 
 
+def navigator_node(state: RAGAgentState) -> dict:
+    """
+    导航节点：在 planner 之前运行，用 get_catalog_map 扫描目录索引，
+    确定与查询相关的章节路径，写入 state.roadmap。
+    后续 planner/executor 可从 state.roadmap 中获取 path_constraint 来约束检索范围。
+    """
+    query = state["query"]
+    query_type = state.get("query_type", "")
+
+    # 只对工程标准/定额查询运行 Navigator；价格/趋势查询不需要章节路径
+    if query_type in {"price", "trend_chart"}:
+        return {"roadmap": [], "workspace": []}
+
+    logger.info(f"[navigator] scanning catalog for query='{query[:60]}'")
+    try:
+        catalog_result = get_catalog_map.invoke({"query": query, "top_k": 8})
+        hits = json.loads(catalog_result) if catalog_result else []
+    except Exception as e:
+        logger.error(f"[navigator] get_catalog_map failed: {e}")
+        hits = []
+
+    # Build roadmap: keep top distinct file_name/path entries
+    seen_paths: set[str] = set()
+    roadmap = []
+    for h in hits:
+        p = h.get("path", "")
+        # Use file-level prefix as path_constraint (e.g. '第二册电气设备安装工程/%')
+        file_prefix = p.split("/")[0] + "/%" if "/" in p else p
+        if file_prefix not in seen_paths:
+            seen_paths.add(file_prefix)
+            roadmap.append({
+                "chapter_id": h.get("chapter_id", ""),
+                "path":       file_prefix,          # use as path_constraint in tool calls
+                "file_name":  h.get("file_name", ""),
+                "title":      h.get("title", ""),
+                "reason":     "catalog_match",
+            })
+
+    if roadmap:
+        logger.info(f"[navigator] roadmap: {[r['path'] for r in roadmap]}")
+    else:
+        logger.info("[navigator] no catalog matches, proceeding without path constraint")
+
+    return {"roadmap": roadmap, "workspace": []}
+
+
 def planner_node(state: RAGAgentState) -> dict:
     """
     规划节点：用强模型将用户问题拆分为 1~4 个执行步骤，写入 plan + current_step。
@@ -1787,13 +1842,28 @@ def planner_node(state: RAGAgentState) -> dict:
     query = state["query"]
     entities = state.get("query_entities") or {}
     llm_config = state.get("llm_config") or {}
-    logger.info(f"[planner] query='{query[:60]}'")
+    roadmap = state.get("roadmap") or []
+    logger.info(f"[planner] query='{query[:60]}' roadmap_entries={len(roadmap)}")
+
+    # Build roadmap hint for planner: if Navigator found relevant chapters, instruct
+    # the planner to use path_constraint when calling text_search/hybrid_search
+    roadmap_hint = ""
+    if roadmap:
+        path_lines = "\n".join(
+            f"  - path='{r['path']}' ({r['file_name']}) → {r['title'][:40]}"
+            for r in roadmap[:4]
+        )
+        roadmap_hint = (
+            f"\n\n章节路径地图（Navigator已识别，请在 text_search/hybrid_search 调用中使用 path_constraint 参数）：\n"
+            f"{path_lines}\n"
+            f"示例：text_search(query='送配电调试', path_constraint='{roadmap[0]['path']}')"
+        )
 
     try:
         response, runtime = invoke_llm(
             [
                 SystemMessage(content=_PLANNER_SYSTEM),
-                HumanMessage(content=f"用户问题：{query}"),
+                HumanMessage(content=f"用户问题：{query}{roadmap_hint}"),
             ],
             thinking=False,
             prefer_strong=True,
@@ -2363,7 +2433,7 @@ def build_agent_graph(checkpointer=None):
     """
     Thought-Plan-Act graph:
 
-    query_analysis → intent_guard_node → planner_node → executor_node ↔ tool_node  (plan steps loop)
+    query_analysis → intent_guard_node → navigator_node → planner_node → executor_node ↔ tool_node  (plan steps loop)
                                  ↓ chapter_resolver
                                chapter_resolver → executor_node
                                   ↓ (all steps done or max iter)
@@ -2373,6 +2443,7 @@ def build_agent_graph(checkpointer=None):
 
     g.add_node("query_analysis", query_analysis_node)
     g.add_node("intent_guard_node", intent_guard_node)
+    g.add_node("navigator_node", navigator_node)
     g.add_node("planner_node", planner_node)
     g.add_node("executor_node", executor_node)
     g.add_node("tool_node", tool_node)
@@ -2388,7 +2459,8 @@ def build_agent_graph(checkpointer=None):
         {"intent_guard_node": "intent_guard_node", END: END},
     )
 
-    g.add_edge("intent_guard_node", "planner_node")
+    g.add_edge("intent_guard_node", "navigator_node")
+    g.add_edge("navigator_node", "planner_node")
     g.add_edge("planner_node", "executor_node")
 
     g.add_conditional_edges(

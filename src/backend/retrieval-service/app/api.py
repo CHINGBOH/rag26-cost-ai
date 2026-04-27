@@ -397,8 +397,9 @@ async def agent_query(request: AgentRequest):
             "step_summary": "",
             "presentation": None,
             "presentation_policy": None,
-        }
-        result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
+            "roadmap": [],
+            "workspace": [],
+        }        result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
             "session_id": thread_id,
             "query": result["query"],
@@ -503,6 +504,8 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "step_summary": "",
                     "presentation": None,
                     "presentation_policy": None,
+                    "roadmap": [],
+                    "workspace": [],
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
