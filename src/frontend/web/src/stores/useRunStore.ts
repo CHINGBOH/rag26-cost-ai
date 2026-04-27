@@ -113,6 +113,7 @@ export interface PresentationPayload {
   sections?: PresentationSection[];
   steps?: PresentationCalculationStep[];
   sources?: PresentationSource[];
+  support_label?: string;
 }
 
 export interface RunState {

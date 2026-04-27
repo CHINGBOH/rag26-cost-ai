@@ -130,7 +130,14 @@ function getHighlightBaseLabel(kind?: string, queryType?: string): string {
 
 function getSectionBaseLabel(kind?: string, queryType?: string): string {
   if (kind === 'analysis') {
-    return queryType === 'standard_ref' ? '依据说明' : '核心说明';
+    const labels: Record<string, string> = {
+      standard_ref: '依据说明',
+      price: '价格解析',
+      fee_rate: '费率解析',
+      formula: '公式推导',
+      comparison: '对比分析',
+    };
+    return (queryType && labels[queryType]) || '核心说明';
   }
   return '补充说明';
 }
@@ -319,7 +326,7 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
         (presentation.sections && presentation.sections.length > 0) ||
         (presentation.sources && presentation.sources.length > 0) ? (
           <div className="presentation-support-block">
-            <div className="presentation-support-kicker">补充说明</div>
+            <div className="presentation-support-kicker">{presentation.support_label ?? '补充说明'}</div>
 
             {presentation.highlights && presentation.highlights.length > 0 && (
               <div className="answer-highlight-grid">
