@@ -3,7 +3,7 @@
 Run full OCR JSON -> pgvector embedding pipeline.
 
 Pipeline:
-1. Import OCR JSON into structured tables/text chunks.
+1. Import OCR JSON into text chunks and structured tables.
 2. Backfill chart page summaries and recovered prices.
 3. Build parent/multi-vector views.
 4. Build concept graph and concept-evidence links.
@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument("--llama-url", default="", help="llama.cpp URL when embedding-backend=llama_cpp")
     parser.add_argument("--batch", type=int, default=64, help="Embedding backfill batch size")
     parser.add_argument("--skip-fee-import", action="store_true", help="Skip import_fee_rates.py")
+    parser.add_argument("--skip-text-import", action="store_true", help="Skip ocr_text_to_pg.py")
+    parser.add_argument("--skip-price-import", action="store_true", help="Skip ocr_json_to_pg.py")
     parser.add_argument("--skip-verify", action="store_true", help="Skip verify.py")
     parser.add_argument("--skip-metrics", action="store_true", help="Skip evaluate_retrieval_layers.py")
     parser.add_argument("--strict-metrics", action="store_true", help="Fail pipeline if metrics acceptance fails")
@@ -67,11 +69,19 @@ def main() -> None:
             env,
         )
 
-    run_step(
-        "Import OCR JSON into PostgreSQL",
-        [sys.executable, "src/backend/python-legacy/tools/ocr_json_to_pg.py"],
-        env,
-    )
+    if not args.skip_text_import:
+        run_step(
+            "Import OCR text chunks into PostgreSQL",
+            [sys.executable, "src/backend/python-legacy/tools/ocr_text_to_pg.py"],
+            env,
+        )
+
+    if not args.skip_price_import:
+        run_step(
+            "Import OCR structured tables into PostgreSQL",
+            [sys.executable, "src/backend/python-legacy/tools/ocr_json_to_pg.py"],
+            env,
+        )
 
     run_step(
         "Backfill chart summaries",

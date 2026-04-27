@@ -21,8 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-KNOWLEDGE_BASE_DIR = "/home/l/rag-dashboard/data/knowledge_base"
+OCR_OUTPUT_DIR = os.environ.get("OCR_OUTPUT_DIR", "/home/l/rag-dashboard/data/ocr_outputs")
+KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "/home/l/rag-dashboard/data/knowledge_base")
 
 class OCRKnowledgeBaseImporter:
     """OCR数据知识库导入器"""
@@ -46,8 +46,17 @@ class OCRKnowledgeBaseImporter:
         ocr_dir = Path(OCR_OUTPUT_DIR)
 
         ocr_files = []
-        for file in ocr_dir.glob("*_ocr.json"):
-            if "chunk" not in file.name:
+        for file in sorted(ocr_dir.rglob("*.json")):
+            if file.name in {"processing_summary.json", "_scan_state.json"}:
+                continue
+            if "chunk" in file.name.lower():
+                continue
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    ocr_data = json.load(f)
+            except Exception:
+                continue
+            if isinstance(ocr_data.get("pages"), list):
                 ocr_files.append(file)
 
         logger.info(f"找到 {len(ocr_files)} 个OCR文件")

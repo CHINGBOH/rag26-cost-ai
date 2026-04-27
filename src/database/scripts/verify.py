@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 """
 数据库健康检查与冒烟测试
-验证：连接 / 扩展 / 表存在 / 数据量 / embedding 覆盖率 / fee_rates 查询 / pgvector
+验证：连接 / 扩展 / 表存在 / 数据量 / embedding 覆盖率 / fee_rates 查询 / pgvector / OCR 覆盖率
 """
+import json
 import os
+import re
 import sys
+from pathlib import Path
+
 import psycopg2
 from psycopg2 import sql as pgsql
 from psycopg2.extras import RealDictCursor
+
+
+ROOT = Path(__file__).resolve().parents[3]
+OCR_OUTPUT_DIR = Path(os.environ.get("OCR_OUTPUT_DIR", ROOT / "data" / "ocr_outputs"))
+_PERIOD_RE = re.compile(r"(20\d{2})[-年](\d{1,2})")
+_SKIP_OCR_FILENAMES = {
+    "processing_summary.json",
+    "processed_documents.log",
+    "_scan_state.json",
+}
 
 PG_CONFIG = {
     "host":     os.environ.get("PG_HOST", "localhost"),
@@ -39,6 +53,135 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     status = PASS if ok else FAIL
     print(f"  {status}  {label}" + (f"  — {detail}" if detail else ""))
     return ok
+
+
+def extract_period(name: str) -> str | None:
+    match = _PERIOD_RE.search(name)
+    if not match:
+        return None
+    return f"{match.group(1)}-{int(match.group(2)):02d}"
+
+
+def normalize_document_label(value: str) -> str:
+    return re.sub(r"\s+", "", (value or "")).strip()
+
+
+def score_ocr_source_candidate(path: Path, data: dict[str, object]) -> tuple[int, int, int, int, str]:
+    pages = data.get("pages")
+    page_count = len(pages) if isinstance(pages, list) else 0
+    table_count = 0
+    text_len = 0
+    if isinstance(pages, list):
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            tables = page.get("tables")
+            if isinstance(tables, list):
+                table_count += len(tables)
+            text = page.get("text")
+            if isinstance(text, str):
+                text_len += len(text)
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        file_size = 0
+    return (page_count, table_count, text_len, file_size, str(path))
+
+
+def has_column(cur, table_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s AND column_name = %s
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    )
+    return cur.fetchone() is not None
+
+
+def get_registry_key_column(cur) -> str | None:
+    for candidate in ("doc_id", "doc_code"):
+        if has_column(cur, "document_registry", candidate):
+            return candidate
+    return None
+
+
+def collect_ocr_source_docs() -> list[dict[str, object]]:
+    if not OCR_OUTPUT_DIR.exists():
+        return []
+
+    docs: dict[str, tuple[tuple[int, int, int, int, str], dict[str, object]]] = {}
+    for path in sorted(OCR_OUTPUT_DIR.rglob("*.json")):
+        if path.name in _SKIP_OCR_FILENAMES or "chunk" in path.name.lower():
+            continue
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue
+
+        pages = data.get("pages")
+        if not isinstance(pages, list):
+            continue
+
+        doc_id = str(data.get("document_id") or path.stem)
+        file_name = str(data.get("file_name") or path.name)
+        normalized_file_name = normalize_document_label(file_name) or normalize_document_label(path.stem) or str(path)
+        candidate = (
+            score_ocr_source_candidate(path, data),
+            {
+                "doc_id": doc_id,
+                "file_name": file_name,
+                "normalized_file_name": normalized_file_name,
+                "source_path": str(path),
+                "is_price_doc": bool(extract_period(file_name)),
+            },
+        )
+        current = docs.get(normalized_file_name)
+        if current is None or candidate[0] > current[0]:
+            docs[normalized_file_name] = candidate
+
+    return sorted((item[1] for item in docs.values()), key=lambda item: str(item["file_name"]))
+
+
+def load_grouped_counts(cur, table_name: str) -> dict[str, int]:
+    cur.execute(
+        pgsql.SQL(
+            "SELECT doc_id, COUNT(*) AS n FROM {} WHERE doc_id IS NOT NULL GROUP BY doc_id"
+        ).format(pgsql.Identifier(table_name))
+    )
+    return {str(row["doc_id"]): int(row["n"]) for row in cur.fetchall()}
+
+
+def load_normalized_file_name_counts(cur, table_name: str) -> dict[str, int]:
+    if not has_column(cur, table_name, "file_name"):
+        return {}
+
+    cur.execute(
+        pgsql.SQL(
+            """
+            SELECT regexp_replace(COALESCE(file_name, ''), '\\s+', '', 'g') AS normalized_file_name,
+                   COUNT(*) AS n
+            FROM {}
+            WHERE COALESCE(file_name, '') <> ''
+            GROUP BY normalized_file_name
+            """
+        ).format(pgsql.Identifier(table_name))
+    )
+    return {
+        str(row["normalized_file_name"]): int(row["n"])
+        for row in cur.fetchall()
+        if row["normalized_file_name"]
+    }
+
+
+def print_missing_docs(label: str, docs: list[dict[str, object]]) -> None:
+    print(f"       {label}: {len(docs)}")
+    for doc in docs[:10]:
+        print(f"         - {doc['file_name']} | {doc['source_path']}")
 
 
 def run():
@@ -117,14 +260,27 @@ def run():
         # ── 6. Hybrid retrieval infra checks ──────────────────────────────
         print("\n[6] Hybrid infra checks")
         required_indexes = [
-            "idx_tc_embedding",
-            "idx_tc_tsv",
-            "idx_tc_content",
-            "idx_pr_embedding",
-            "idx_pr_name_trgm",
-            "idx_fr_embedding",
-            "idx_fr_name_trgm",
+            ("index: idx_tc_embedding", {"idx_tc_embedding"}),
+            ("index: idx_tc_content", {"idx_tc_content"}),
+            ("index: idx_pr_embedding", {"idx_pr_embedding"}),
+            ("index: idx_pr_name_trgm", {"idx_pr_name_trgm"}),
+            ("index: idx_fr_embedding", {"idx_fr_embedding"}),
+            ("index: idx_fr_name_trgm", {"idx_fr_name_trgm"}),
         ]
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'text_chunks'
+              AND column_name = 'tsv'
+            """
+        )
+        has_text_chunks_tsv = cur.fetchone() is not None
+        if has_text_chunks_tsv:
+            required_indexes.append(
+                ("index: idx_tc_tsv", {"idx_tc_tsv", "idx_text_chunks_tsv_chinese"})
+            )
         cur.execute(
             """
             SELECT indexname
@@ -133,9 +289,11 @@ def run():
             """
         )
         existing_indexes = {r["indexname"] for r in cur.fetchall()}
-        for idx in required_indexes:
-            if not check(f"index: {idx}", idx in existing_indexes):
+        for label, acceptable_names in required_indexes:
+            if not check(label, any(name in existing_indexes for name in acceptable_names)):
                 errors += 1
+        if not has_text_chunks_tsv:
+            print(f"  {WARN} index: idx_tc_tsv  — skipped (text_chunks.tsv missing)")
 
         # ── 7. Vector column dimensions ─────────────────────────────────
         print("\n[7] Vector column dimensions")
@@ -287,6 +445,90 @@ def run():
             for r in cur.fetchall():
                 src = (r["src"] or "NULL")[:55]
                 print(f"       {r['n']:>7,}  {src}")
+
+        # ── 13. OCR 源文档覆盖审计 ─────────────────────────────────────
+        print("\n[13] OCR source coverage audit")
+        if not OCR_OUTPUT_DIR.exists():
+            print(f"  {WARN} OCR output dir missing: {OCR_OUTPUT_DIR}")
+        else:
+            source_docs = collect_ocr_source_docs()
+            if not source_docs:
+                print(f"  {WARN} no OCR source documents discovered under {OCR_OUTPUT_DIR}")
+            else:
+                registry_key_column = get_registry_key_column(cur)
+                if not registry_key_column:
+                    print(f"  {WARN} document_registry missing doc_id/doc_code, skipping source coverage audit")
+                    registry_key_column = None
+                if not registry_key_column:
+                    pass
+                else:
+                    cur.execute(
+                        pgsql.SQL(
+                            "SELECT {} AS doc_key, COALESCE(MAX(file_name), {}::text) AS file_name "
+                            "FROM document_registry WHERE {} IS NOT NULL GROUP BY {}"
+                        ).format(
+                            pgsql.Identifier(registry_key_column),
+                            pgsql.Identifier(registry_key_column),
+                            pgsql.Identifier(registry_key_column),
+                            pgsql.Identifier(registry_key_column),
+                        )
+                    )
+                    registry_rows = cur.fetchall()
+                    registry_doc_keys = {str(row["doc_key"]) for row in registry_rows}
+                    registry_file_keys = {
+                        normalize_document_label(str(row["file_name"]))
+                        for row in registry_rows
+                        if row["file_name"]
+                    }
+                    text_counts = load_grouped_counts(cur, "text_chunks")
+                    text_file_counts = load_normalized_file_name_counts(cur, "text_chunks")
+                    price_counts = load_grouped_counts(cur, "price_records")
+                    price_file_counts = load_normalized_file_name_counts(cur, "price_records")
+
+                    missing_registry = [
+                        doc
+                        for doc in source_docs
+                        if str(doc["doc_id"]) not in registry_doc_keys
+                        and str(doc["normalized_file_name"]) not in registry_file_keys
+                    ]
+                    missing_text = [
+                        doc
+                        for doc in source_docs
+                        if text_counts.get(str(doc["doc_id"]), 0) == 0
+                        and text_file_counts.get(str(doc["normalized_file_name"]), 0) == 0
+                    ]
+                    price_docs = [doc for doc in source_docs if bool(doc["is_price_doc"])]
+                    missing_price = [
+                        doc
+                        for doc in price_docs
+                        if price_counts.get(str(doc["doc_id"]), 0) == 0
+                        and price_file_counts.get(str(doc["normalized_file_name"]), 0) == 0
+                    ]
+
+                    if not check(
+                        "OCR docs registered in document_registry",
+                        len(missing_registry) == 0,
+                        f"missing={len(missing_registry)} of {len(source_docs)}",
+                    ):
+                        errors += 1
+                        print_missing_docs("missing registry docs", missing_registry)
+
+                    if not check(
+                        "OCR docs imported into text_chunks",
+                        len(missing_text) == 0,
+                        f"missing={len(missing_text)} of {len(source_docs)}",
+                    ):
+                        errors += 1
+                        print_missing_docs("missing text docs", missing_text)
+
+                    if price_docs:
+                        if not check(
+                            "Price OCR docs imported into price_records",
+                            len(missing_price) == 0,
+                            f"missing={len(missing_price)} of {len(price_docs)}",
+                        ):
+                            errors += 1
+                            print_missing_docs("missing price docs", missing_price)
 
     finally:
         conn.close()

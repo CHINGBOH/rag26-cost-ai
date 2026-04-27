@@ -18,9 +18,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import psycopg2
+from psycopg2.extras import execute_batch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -113,11 +114,20 @@ def _build_concept_text(row: tuple) -> str:
 
 
 def _build_chunk_view_text(row: tuple) -> str:
-    _, view_type, view_text = row
+    view_type = row[1]
+    view_text = row[2]
     return _join_non_empty((view_type, (view_text or "")[:1200]))
 
 
-TABLE_CONFIG: dict[str, dict[str, str | Callable[[tuple], str]]] = {
+def _default_update_params(row: tuple, embedding: list[float]) -> tuple[object, ...]:
+    return (embedding, row[0])
+
+
+def _default_row_units(row: tuple) -> int:
+    return 1
+
+
+TABLE_CONFIG: dict[str, dict[str, Any]] = {
     "text_chunks": {
         "select": "SELECT id, content FROM text_chunks WHERE embedding IS NULL ORDER BY id LIMIT %s",
         "update": "UPDATE text_chunks SET embedding = %s::vector WHERE id = %s",
@@ -150,11 +160,18 @@ TABLE_CONFIG: dict[str, dict[str, str | Callable[[tuple], str]]] = {
     },
     "chunk_vector_views": {
         "select": (
-            "SELECT id, view_type, view_text "
-            "FROM chunk_vector_views WHERE embedding IS NULL ORDER BY id LIMIT %s"
+            "SELECT MIN(id) AS id, view_type, view_text, COUNT(*) AS group_size "
+            "FROM chunk_vector_views WHERE embedding IS NULL "
+            "GROUP BY view_type, view_text "
+            "ORDER BY MIN(id) LIMIT %s"
         ),
-        "update": "UPDATE chunk_vector_views SET embedding = %s::vector WHERE id = %s",
+        "update": (
+            "UPDATE chunk_vector_views SET embedding = %s::vector "
+            "WHERE embedding IS NULL AND view_type = %s AND view_text = %s"
+        ),
         "text_fn": _build_chunk_view_text,
+        "update_params_fn": lambda row, embedding: (embedding, row[1], row[2]),
+        "row_units_fn": lambda row: int(row[3]),
     },
 }
 
@@ -390,6 +407,8 @@ def backfill(
 ) -> None:
     _check_table(table)
     cfg = TABLE_CONFIG[table]
+    update_params_fn = cfg.get("update_params_fn", _default_update_params)
+    row_units_fn = cfg.get("row_units_fn", _default_row_units)
     print(f"=== {table} embedding 补全 ===\n")
 
     conn = get_pg_conn()
@@ -416,6 +435,8 @@ def backfill(
         skipped_ids: list[int] = []
         t0 = time.time()
 
+        adaptive_encode_batch_size = batch_size
+
         while done < to_process:
             fetch_n = min(batch_size, to_process - done)
             with conn.cursor() as cur:
@@ -426,28 +447,77 @@ def backfill(
                 break
 
             ids = [row[0] for row in rows]
+            row_units = [int(row_units_fn(row)) for row in rows]
             texts = [cfg["text_fn"](row) for row in rows]  # type: ignore[index]
+            unique_texts: list[str] = []
+            text_to_pos: dict[str, int] = {}
+            text_positions: list[int] = []
+            for text in texts:
+                pos = text_to_pos.get(text)
+                if pos is None:
+                    pos = len(unique_texts)
+                    text_to_pos[text] = pos
+                    unique_texts.append(text)
+                text_positions.append(pos)
 
-            try:
-                embeddings = backend.encode(texts, batch_size=batch_size)
-            except Exception as exc:
-                print(f"  ✗ encode error (ids {ids[0]}~{ids[-1]}): {exc}")
-                errors += len(rows)
-                skipped_ids.extend(ids)
-                done += len(rows)
+            encode_batch_size = min(adaptive_encode_batch_size, len(unique_texts))
+            while True:
+                try:
+                    unique_embeddings = backend.encode(unique_texts, batch_size=encode_batch_size)
+                    adaptive_encode_batch_size = encode_batch_size
+                    break
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    is_oom = "out of memory" in msg
+                    if is_oom and encode_batch_size > 1:
+                        encode_batch_size = max(1, encode_batch_size // 2)
+                        adaptive_encode_batch_size = encode_batch_size
+                        if hasattr(backend, "_torch") and getattr(backend, "device", "") == "cuda":
+                            backend._torch.cuda.empty_cache()
+                        print(
+                            f"  ⚠ encode OOM (ids {ids[0]}~{ids[-1]}), retry batch_size={encode_batch_size}"
+                        )
+                        continue
+                    print(f"  ✗ encode error (ids {ids[0]}~{ids[-1]}): {exc}")
+                    errors += sum(row_units)
+                    skipped_ids.extend(ids)
+                    done += sum(row_units)
+                    unique_embeddings = None
+                    break
+
+            if unique_embeddings is None:
                 continue
 
-            with conn.cursor() as cur:
-                for row_id, embedding in zip(ids, embeddings):
-                    try:
-                        cur.execute(str(cfg["update"]), (embedding, row_id))
-                    except Exception as exc:
-                        errors += 1
-                        skipped_ids.append(row_id)
-                        print(f"  ✗ update error id={row_id}: {exc}")
-            conn.commit()
+            params = [
+                update_params_fn(row, unique_embeddings[pos])
+                for row, pos in zip(rows, text_positions)
+            ]
+            batch_units = sum(row_units)
+            try:
+                with conn.cursor() as cur:
+                    execute_batch(
+                        cur,
+                        str(cfg["update"]),
+                        params,
+                        page_size=max(1, min(batch_size, len(params))),
+                    )
+                conn.commit()
+                done += batch_units
+            except Exception:
+                conn.rollback()
+                successful_units = 0
+                with conn.cursor() as cur:
+                    for row, param, row_unit in zip(rows, params, row_units):
+                        try:
+                            cur.execute(str(cfg["update"]), param)
+                            successful_units += row_unit
+                        except Exception as exc:
+                            errors += row_unit
+                            skipped_ids.append(row[0])
+                            print(f"  ✗ update error id={row[0]}: {exc}")
+                conn.commit()
+                done += successful_units
 
-            done += len(rows)
             elapsed = time.time() - t0
             rate = done / elapsed if elapsed > 0 else 0.0
             eta = (to_process - done) / rate if rate > 0 else 0.0

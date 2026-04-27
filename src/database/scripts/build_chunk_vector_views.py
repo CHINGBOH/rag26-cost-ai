@@ -36,11 +36,15 @@ def _truncate_text(text: str, max_len: int = 1400) -> str:
     return normalized[:max_len]
 
 
-def _load_chunks(conn) -> list[tuple[int, str, int, str]]:
+def _load_chunks(conn) -> list[tuple[int, str, int, str, list[float] | None]]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, doc_id, COALESCE(page_number, 0) AS page_number, COALESCE(content, '')
+            SELECT id,
+                   doc_id,
+                   COALESCE(page_number, 0) AS page_number,
+                   COALESCE(content, ''),
+                   embedding
             FROM text_chunks
             ORDER BY id
             """
@@ -97,7 +101,7 @@ def build_views() -> dict[str, int]:
             return {"raw_chunk": 0, "parent_page_summary": 0, "semantic_terms": 0}
 
         page_chunks: dict[tuple[str, int], list[str]] = defaultdict(list)
-        for _, doc_id, page_number, content in chunks:
+        for _, doc_id, page_number, content, _ in chunks:
             page_chunks[(doc_id or "", int(page_number or 0))].append(content or "")
 
         page_summaries = {
@@ -106,9 +110,9 @@ def build_views() -> dict[str, int]:
         }
         page_terms = _load_page_semantic_terms(conn)
 
-        rows: list[tuple[int, str, str, str]] = []
+        rows: list[tuple[int, str, str, str, list[float] | None]] = []
         counts = {"raw_chunk": 0, "parent_page_summary": 0, "semantic_terms": 0}
-        for chunk_id, doc_id, page_number, content in chunks:
+        for chunk_id, doc_id, page_number, content, source_embedding in chunks:
             page_key = (doc_id or "", int(page_number or 0))
             raw_text = _truncate_text(content or "", max_len=1200)
             if raw_text:
@@ -118,6 +122,7 @@ def build_views() -> dict[str, int]:
                         "raw_chunk",
                         raw_text,
                         json.dumps({"source": "text_chunks.content"}, ensure_ascii=False),
+                        source_embedding,
                     )
                 )
                 counts["raw_chunk"] += 1
@@ -133,6 +138,7 @@ def build_views() -> dict[str, int]:
                             {"source": "page_aggregate", "doc_id": doc_id or "", "page_number": page_number or 0},
                             ensure_ascii=False,
                         ),
+                        None,
                     )
                 )
                 counts["parent_page_summary"] += 1
@@ -148,6 +154,7 @@ def build_views() -> dict[str, int]:
                             {"source": "structured_alignment", "doc_id": doc_id or "", "page_number": page_number or 0},
                             ensure_ascii=False,
                         ),
+                        None,
                     )
                 )
                 counts["semantic_terms"] += 1
@@ -156,19 +163,21 @@ def build_views() -> dict[str, int]:
             execute_values(
                 cur,
                 """
-                INSERT INTO chunk_vector_views (chunk_id, view_type, view_text, metadata)
+                INSERT INTO chunk_vector_views (chunk_id, view_type, view_text, metadata, embedding)
                 VALUES %s
                 ON CONFLICT (chunk_id, view_type) DO UPDATE SET
                     view_text = EXCLUDED.view_text,
                     metadata = EXCLUDED.metadata,
                     embedding = CASE
+                        WHEN EXCLUDED.embedding IS NOT NULL
+                        THEN EXCLUDED.embedding
                         WHEN chunk_vector_views.view_text = EXCLUDED.view_text
                         THEN chunk_vector_views.embedding
                         ELSE NULL
                     END
                 """,
                 rows,
-                template="(%s, %s, %s, %s::jsonb)",
+                template="(%s, %s, %s, %s::jsonb, %s::vector)",
                 page_size=500,
             )
         conn.commit()

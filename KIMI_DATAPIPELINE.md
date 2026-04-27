@@ -171,7 +171,7 @@ curl -s "http://localhost:8001/ocr/pdf/async/$JOB_ID" | jq .status
 
 # 完成后下载结果
 curl -s "http://localhost:8001/ocr/pdf/async/$JOB_ID" | jq .result \
-  > /home/l/rag-dashboard/data/ocr_outputs/《深圳建设工程价格信息》2026年1月_ocr.json
+  > /home/l/rag-dashboard/data/ocr_outputs/深圳建设工程价格信息_2026年1月_OCR.json
 ```
 
 ### 1.2 自查
@@ -179,7 +179,7 @@ curl -s "http://localhost:8001/ocr/pdf/async/$JOB_ID" | jq .result \
 ```bash
 python3 -c "
 import json
-with open('data/ocr_outputs/《深圳建设工程价格信息》2026年1月_ocr.json') as f:
+with open('data/ocr_outputs/深圳建设工程价格信息_2026年1月_OCR.json') as f:
     data = json.load(f)
 pages = data.get('pages', [])
 print(f'总页数: {len(pages)}')
@@ -208,7 +208,7 @@ curl -s "http://localhost:8001/ocr/status/$JOB_ID" | jq .
 
 # 完成后下载结果
 curl -s "http://localhost:8001/ocr/result/$JOB_ID" \
-  -o /home/l/rag-dashboard/data/ocr_outputs/《深圳建设工程价格信息》2026年1月_ocr.json
+  -o /home/l/rag-dashboard/data/ocr_outputs/深圳建设工程价格信息_2026年1月_OCR.json
 ```
 
 ### 1.2 自查
@@ -217,7 +217,7 @@ curl -s "http://localhost:8001/ocr/result/$JOB_ID" \
 # 验证 OCR 结果包含水泥价格
 python3 -c "
 import json
-with open('data/ocr_outputs/《深圳建设工程价格信息》2026年1月_ocr.json') as f:
+with open('data/ocr_outputs/深圳建设工程价格信息_2026年1月_OCR.json') as f:
     data = json.load(f)
 pages = data.get('pages', [])
 print(f'总页数: {len(pages)}')
@@ -545,8 +545,8 @@ def check_period_extraction():
     
     test_cases_filename = [
         ("《深圳建设工程价格信息》2026年1月.pdf", "2026-01"),
-        ("《深圳建设工程价格信息》2026年2月_ocr.json", "2026-02"),
-        ("2025-12_ocr.json", "2025-12"),
+        ("《深圳建设工程价格信息》2026年2月.json", "2026-02"),
+        ("2025-12.json", "2025-12"),
         ("费率标准（2025）.pdf", ""),  # 无月份，应返回空
         ("2023-12_merged.json", "2023-12"),
     ]
@@ -945,7 +945,7 @@ def check_phase_0():
 def check_phase_1():
     """验证 OCR 数据"""
     print("\n🔍 Phase 1: OCR 数据检查")
-    ocr_file = Path("data/ocr_outputs/《深圳建设工程价格信息》2026年1月_ocr.json")
+    ocr_file = Path("data/ocr_outputs/深圳建设工程价格信息_2026年1月_OCR.json")
     if not ocr_file.exists():
         print("  ❌ OCR 文件不存在")
         return False

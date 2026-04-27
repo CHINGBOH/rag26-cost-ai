@@ -95,6 +95,22 @@ def normalize_material_name(material_name: str) -> str:
     return normalized
 
 
+def material_search_aliases(material_name: str) -> list[str]:
+    normalized = normalize_material_name(material_name)
+    aliases = [material_name, normalized]
+    if normalized == "柴油0号":
+        aliases.extend(["柴油 0号", "柴油0#", "柴油(0号)", "柴油（0号）", "柴油"])
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        if not alias or alias in seen:
+            continue
+        seen.add(alias)
+        deduped.append(alias)
+    return deduped
+
+
 def extract_chart_materials(content: str) -> list[str]:
     materials: list[str] = []
     for raw_line in content.splitlines():
@@ -128,33 +144,34 @@ def is_chart_page_content(content: str) -> bool:
 
 
 def extract_material_price(content: str, material_name: str) -> tuple[str, str] | None:
-    if material_name not in content:
-        compact_content = re.sub(r"\s+", "", content).replace("～", "~").replace("㎡", "m²")
-        compact_material = re.sub(r"\s+", "", material_name).replace("～", "~").replace("㎡", "m²")
-        start = compact_content.find(compact_material)
-        if start < 0:
-            return None
-        remainder = compact_content[start + len(compact_material): start + len(compact_material) + 80]
-        match = re.search(r"(?P<unit>m³|m²|m|t|kg|个|套|组|台|块|片)(?P<price>\d+\.\d{2})", remainder)
-        if match:
-            price = match.group("price")
-            if float(price) > 5000 and len(price) > 4:
-                trimmed = price[1:]
-                if re.fullmatch(r"\d+\.\d{2}", trimmed):
-                    price = trimmed
-            return normalize_material_unit(material_name, match.group("unit")), price
-        return None
+    compact_content = re.sub(r"\s+", "", content).replace("～", "~").replace("㎡", "m²")
+    for alias in material_search_aliases(material_name):
+        if alias not in content:
+            compact_material = re.sub(r"\s+", "", alias).replace("～", "~").replace("㎡", "m²")
+            start = compact_content.find(compact_material)
+            if start < 0:
+                continue
+            remainder = compact_content[start + len(compact_material): start + len(compact_material) + 80]
+            match = re.search(r"(?P<unit>m³|m²|m|t|kg|个|套|组|台|块|片)(?P<price>\d+\.\d{2})", remainder)
+            if match:
+                price = match.group("price")
+                if float(price) > 5000 and len(price) > 4:
+                    trimmed = price[1:]
+                    if re.fullmatch(r"\d+\.\d{2}", trimmed):
+                        price = trimmed
+                return normalize_material_unit(material_name, match.group("unit")), price
+            continue
 
-    escaped = re.escape(material_name)
-    patterns = [
-        rf"{escaped}\s*\n(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s*\n(?P<price>\d+\.\d{{2}})",
-        rf"{escaped}(?:\s*\n[^\n]{{1,40}})?\s*\n(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s*\n(?P<price>\d+\.\d{{2}})",
-        rf"{escaped}\s+(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s+(?P<price>\d+\.\d{{2}})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, content)
-        if match:
-            return normalize_material_unit(material_name, match.group("unit")), match.group("price")
+        escaped = re.escape(alias)
+        patterns = [
+            rf"{escaped}\s*\n(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s*\n(?P<price>\d+\.\d{{2}})",
+            rf"{escaped}(?:\s*\n[^\n]{{1,40}})?\s*\n(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s*\n(?P<price>\d+\.\d{{2}})",
+            rf"{escaped}\s+(?P<unit>m³|m²|㎡|m|t|kg|个|套|组|台|块|片)\s+(?P<price>\d+\.\d{{2}})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, content)
+            if match:
+                return normalize_material_unit(material_name, match.group("unit")), match.group("price")
     return None
 
 
