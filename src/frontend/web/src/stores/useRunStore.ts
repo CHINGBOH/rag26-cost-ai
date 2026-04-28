@@ -99,6 +99,15 @@ export interface PresentationSource {
   page: string;
 }
 
+export type PresentationBlockHint = 'paragraph' | 'list' | 'callout' | 'inline' | 'table';
+
+export interface PresentationBlock {
+  id: string;
+  title: string;
+  body: string;
+  hint?: PresentationBlockHint;
+}
+
 export interface PresentationPayload {
   type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps';
   query_type?: string;
@@ -112,6 +121,7 @@ export interface PresentationPayload {
   summary?: string;
   highlights?: PresentationHighlight[];
   sections?: PresentationSection[];
+  layout?: PresentationBlock[];
   steps?: PresentationCalculationStep[];
   sources?: PresentationSource[];
 }
