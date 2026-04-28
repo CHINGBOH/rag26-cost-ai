@@ -8,6 +8,7 @@ import logging
 import json
 import re
 import time
+import uuid
 import asyncio
 import threading as _threading
 from typing import List
@@ -3399,9 +3400,20 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
     if not query.strip():
         return json.dumps([])
 
+    # ── tracking number: every text_search call gets a short ID so log lines
+    # for FTS / vector / structured can be correlated with this exact invocation.
+    trace_id = uuid.uuid4().hex[:8]
+    logger.info(
+        f"[text_search][{trace_id}] query={query!r} top_k={top_k} "
+        f"path_constraint={path_constraint!r}"
+    )
+
     results = []
     seen_ids = set()
     conn = None
+    fts_count = 0
+    vec_count = 0
+    structured_count = 0
     # Build optional path filter clause (parameterized, injection-safe)
     path_filter_sql = "AND path LIKE %s" if path_constraint else ""
     path_filter_params: tuple = (path_constraint,) if path_constraint else ()
@@ -3424,6 +3436,7 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                 for row in cur.fetchall():
                     if row[0] not in seen_ids:
                         seen_ids.add(row[0])
+                        fts_count += 1
                         results.append(
                             _with_retrieval_path(
                                 {
@@ -3462,6 +3475,7 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                     for row in cur.fetchall():
                         if row[0] not in seen_ids:
                             seen_ids.add(row[0])
+                            vec_count += 1
                             results.append(
                                 _with_retrieval_path(
                                     {
@@ -3518,7 +3532,13 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
             _put_pg_conn(conn)
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return json.dumps(results[:top_k], ensure_ascii=False)
+    final = results[:top_k]
+    top_ids = [c.get("chunk_id") for c in final[:5]]
+    logger.info(
+        f"[text_search][{trace_id}] done fts={fts_count} vector={vec_count} "
+        f"total_unique={len(results)} returned={len(final)} top_ids={top_ids}"
+    )
+    return json.dumps(final, ensure_ascii=False)
 
 
 @tool

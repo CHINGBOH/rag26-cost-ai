@@ -7,8 +7,24 @@ Agent 16 题验证脚本 — 深圳工程造价知识库
 import re
 import time
 import requests
+from pathlib import Path
+from datetime import datetime
 
 BASE_URL = "http://localhost:8002"
+QUESTION_FILE = Path(__file__).resolve().parents[4] / "data" / "knowledge_base" / "智能体问答.md"
+RUN_ID = datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def _load_questions() -> list[str]:
+    questions: list[str] = []
+    for line in QUESTION_FILE.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        parts = [part.strip() for part in line.split("|")[1:-1]]
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        questions.append(parts[2])
+    return questions
 
 # ── 测试用例（query + 语义验证规则）────────────────────────────────────────
 # query_type: price | calculation | comparison | fact | trend
@@ -45,11 +61,10 @@ TEST_CASES = [
         "forbidden_pattern": None,
     },
     {
-        # 钛合金门窗在深圳信息价数据库中无记录，正确答案是"未找到"。
-        "query": "2025 年深圳信息价中钛合金门窗的价格是多少",
+        "query": "",
         "query_type": "price",
-        "expected_keywords": ["钛合金", "门窗"],
-        "required_pattern": None,
+        "expected_keywords": ["铝合金门窗", "工日", "元", "371"],
+        "required_pattern": r"\d+\.?\d*",
         "forbidden_pattern": None,
     },
     {
@@ -155,6 +170,10 @@ def semantic_pass(answer: str, case: dict) -> tuple[bool, list[str]]:
     return len(failures) == 0, failures
 
 
+for index, question in enumerate(_load_questions()):
+    TEST_CASES[index]["query"] = question
+
+
 def test_case(case: dict, idx: int) -> dict:
     """测试单题"""
     query = case["query"]
@@ -162,7 +181,7 @@ def test_case(case: dict, idx: int) -> dict:
     try:
         resp = requests.post(
             f"{BASE_URL}/api/v1/agent",
-            json={"query": query, "session_id": f"eval-{idx}"},
+            json={"query": query, "session_id": f"eval-{RUN_ID}-{idx}"},
             timeout=300,
         )
         if resp.status_code != 200:
@@ -180,6 +199,7 @@ def test_case(case: dict, idx: int) -> dict:
         struct_checks = {
             "answer_non_empty": bool(answer and len(answer) > 10),
             "chunks_present": len(chunks) > 0,
+            "evaluation_passed": bool(evaluation.get("passed", False)),
         }
         struct_ok = all(struct_checks.values())
 

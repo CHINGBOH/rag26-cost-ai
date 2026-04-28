@@ -337,7 +337,7 @@ def _normalize_chunk(c: dict) -> dict:
 class AgentRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
-    max_iterations: int = 5
+    max_iterations: int = 3
     llm_route: str = "deepseek"
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None

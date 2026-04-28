@@ -173,8 +173,9 @@ _FEE_COMPARISON_HINT_PATTERN = re.compile(r"参考范围|推荐费率|是否一�
 _FEE_ITEM_PATTERN = re.compile(
     r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
-    r"暂列金额|优质优价奖励费|利润"
+    r"暂列金额|优质优价奖励费|赶工措施费|赶工费|产业工人职业训练专项经费|利润"
 )
+_FEE_TARGET_HINT_PATTERN = re.compile(r"推荐系数|参考范围|系数是多少|系数为多少|推荐费率")
 _FILL_REQUIREMENT_HINT_PATTERN = re.compile(r"填写|怎么填|填报|按什么要求|应按什么")
 _FILL_REQUIREMENT_PREFIX_PATTERN = re.compile(r"^(?:工程项目中|项目中|工程概况表中|工程概况中|表中|其中)?")
 _FILL_REQUIREMENT_SUFFIX_PATTERN = re.compile(r"(?:要)?(?:按照什么要求填写|按什么要求填写|应按什么要求填写|应如何填写|如何填写|怎么填写|填写要求)[？?]?$")
@@ -478,12 +479,25 @@ def extract_fee_formula_search_term(query: str) -> str:
     item_match = _FEE_ITEM_PATTERN.search(normalized)
     item = item_match.group(0) if item_match else ""
 
+    # Choose target keyword based on what the question is asking for.
+    target_match = _FEE_TARGET_HINT_PATTERN.search(normalized)
+    if target_match:
+        hit = target_match.group(0)
+        if "参考范围" in hit:
+            target = "参考范围"
+        elif "推荐费率" in hit:
+            target = "推荐费率"
+        else:
+            target = "推荐系数"
+    else:
+        target = "计算公式"
+
     if year and item:
-        return f"{year} {item} 计算公式"
+        return f"{year} {item} {target}"
     if year:
-        return f"{year} 费率标准 计算公式"
+        return f"{year} 费率标准 {target}"
     if item:
-        return f"{item} 计算公式"
+        return f"{item} {target}"
     return normalized
 
 
@@ -551,13 +565,18 @@ def extract_appendix_standard_terms(query: str) -> list[str]:
 
     cleaned = re.sub(
         r"[？?，,。；;：:“”\"'‘’（）()\[\]【】]|适用于|适用|大于多少|多少|什么|是否|如何|怎么|请问|"
-        r"模块化建筑|工程|定额|标准|通知|规定|办法|以上|以下|部分|单体|栋|建筑",
+        r"模块化建筑|工程|定额|标准|通知|规定|办法|以上|以下|部分|单体|栋|建筑|"
+        r"的工程量计算规则|工程量计算规则|的计算规则|计算规则",
         " ",
         remainder,
     )
     for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9\.±]{3,}", cleaned):
         token = token.strip()
-        if token and token not in candidates:
+        # Strip leading conjunctive particles ("中"/"对"/"关于"/...) and trailing copula
+        # so 'extract_appendix_standard_terms' yields clean noun phrases for FTS.
+        token = re.sub(r"^(?:中|对于|对|关于|按照|按|根据)", "", token)
+        token = re.sub(r"(?:是|为)$", "", token)
+        if len(token) >= 3 and token not in candidates:
             candidates.append(token)
 
     return candidates[:4]
