@@ -69,3 +69,21 @@ def test_query_analyzer_detects_appendix_standard_query() -> None:
     query = "《深圳市装配式建筑评价标准》适用范围是什么？"
 
     assert is_appendix_standard_query(query) is True
+
+
+def test_query_analyzer_ignores_question_prefix_and_extracts_cable_spec() -> None:
+    analysis = QueryAnalyzer().analyze(
+        "03. 对比深圳市2025年12月和2023年12月工程建设信息价中，电力电缆规格型号为0.6/1KV YJV 5×120的价格差异"
+    )
+
+    assert analysis["intent"] == "comparison"
+    assert analysis["entities"]["material_name"] == "电力电缆"
+    assert analysis["entities"]["specification"] == "0.6/1KV YJV 5×120"
+
+
+def test_query_analyzer_extracts_compound_trend_material_and_shorthand_year() -> None:
+    analysis = QueryAnalyzer().analyze("04. 根据深圳信息价分析下从25年开始至今的装配式混凝土预制构件价格走势")
+
+    assert analysis["intent"] == "trend_chart"
+    assert analysis["entities"]["year_month"] == "2025"
+    assert analysis["entities"]["material_name"] == "装配式混凝土预制构件"

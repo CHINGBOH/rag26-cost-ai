@@ -1,14 +1,15 @@
 /**
- * 文档检索页
- * 走 /api/v1/search — 支持四种检索模式
+ * 文档检索页 — 在知识库中检索文档片段
+ * 走 /api/v1/search
  */
 
 import { useState } from 'react';
+import { PageHeader } from '../components/common/PageHeader';
 import './SearchPage.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
-type SearchMode = 'hybrid' | 'vector' | 'keyword' | 'graph';
+type SearchMode = 'hybrid' | 'vector' | 'keyword';
 
 interface SearchResult {
   chunk_id: string;
@@ -18,11 +19,10 @@ interface SearchResult {
   metadata: Record<string, any>;
 }
 
-const MODES: { value: SearchMode; label: string; icon: string }[] = [
-  { value: 'hybrid', label: '混合', icon: '🔄' },
-  { value: 'vector', label: '向量', icon: '📐' },
-  { value: 'keyword', label: '关键词', icon: '🔤' },
-  { value: 'graph', label: '图谱', icon: '🕸️' },
+const MODES: { value: SearchMode; label: string }[] = [
+  { value: 'hybrid', label: '混合' },
+  { value: 'vector', label: '向量' },
+  { value: 'keyword', label: '关键词' },
 ];
 
 export const SearchPage: React.FC = () => {
@@ -62,29 +62,25 @@ export const SearchPage: React.FC = () => {
 
   return (
     <div className="search-page">
-      <div className="search-header">
-        <h1>文档检索</h1>
-        <p className="search-subtitle">在四库中搜索文档片段</p>
-      </div>
+      <PageHeader title="文档检索" subtitle="在知识库中检索文档片段" />
 
-      {/* 搜索栏 */}
       <div className="search-bar">
         <input
           className="search-input"
           type="text"
           value={query}
-          onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSearch()}
-          placeholder="输入检索关键词..."
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          placeholder="输入检索关键词…"
         />
         <div className="mode-selector">
-          {MODES.map(m => (
+          {MODES.map((m) => (
             <button
               key={m.value}
               className={`mode-btn ${mode === m.value ? 'active' : ''}`}
               onClick={() => setMode(m.value)}
             >
-              {m.icon} {m.label}
+              {m.label}
             </button>
           ))}
         </div>
@@ -93,20 +89,18 @@ export const SearchPage: React.FC = () => {
           onClick={handleSearch}
           disabled={loading || !query.trim()}
         >
-          {loading ? '检索中...' : '🔍 检索'}
+          {loading ? '检索中…' : '检索'}
         </button>
       </div>
 
-      {/* 统计 */}
       {latency > 0 && !loading && (
         <div className="search-stats">
-          找到 <strong>{results.length}</strong> 个结果，耗时 <strong>{latency}ms</strong>
+          找到 <strong>{results.length}</strong> 个结果 · 耗时 <strong>{latency}ms</strong>
         </div>
       )}
 
-      {error && <div className="search-error">❌ {error}</div>}
+      {error && <div className="search-error">{error}</div>}
 
-      {/* 结果列表 */}
       <div className="results-list">
         {results.map((r, i) => (
           <div key={r.chunk_id || i} className="result-card">
@@ -116,7 +110,7 @@ export const SearchPage: React.FC = () => {
             </div>
             <div className="result-body">{r.content}</div>
             <div className="result-footer">
-              <span>📄 {r.doc_id}</span>
+              <span>{r.doc_id}</span>
               {r.metadata?.page_number && <span>p.{r.metadata.page_number}</span>}
             </div>
           </div>

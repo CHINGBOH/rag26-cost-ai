@@ -26,13 +26,13 @@ import './App.css';
 import './styles/theme.css';
 
 const NAV_ITEMS = [
-  { path: '/', label: 'Agent', icon: '⚡' },
-  { path: '/search', label: '检索', icon: '🔍' },
-  { path: '/pipeline', label: '管道', icon: '🔧' },
-  { path: '/ops', label: '运维', icon: '📊' },
-  { path: '/system', label: '系统', icon: '🏥' },
-  { path: '/learning', label: '学习', icon: '🧠' },
-  { path: '/agents', label: 'Agents', icon: '🤖' },
+  { path: '/', label: 'Agent' },
+  { path: '/search', label: '检索' },
+  { path: '/pipeline', label: '管道' },
+  { path: '/ops', label: '运维' },
+  { path: '/system', label: '系统' },
+  { path: '/learning', label: '学习' },
+  { path: '/agents', label: 'Agents' },
 ] as const;
 
 function Navigation() {
@@ -41,18 +41,17 @@ function Navigation() {
   return (
     <header className="app-nav">
       <div className="nav-brand">
-        <span className="nav-logo">🧠</span>
+        <span className="nav-mark">R</span>
         <span className="nav-title">RAG Dashboard</span>
       </div>
 
       <nav className="nav-links">
-        {NAV_ITEMS.map(({ path, label, icon }) => (
+        {NAV_ITEMS.map(({ path, label }) => (
           <Link
             key={path}
             to={path}
             className={`nav-link ${location.pathname === path ? 'active' : ''}`}
           >
-            <span className="nav-icon">{icon}</span>
             {label}
           </Link>
         ))}

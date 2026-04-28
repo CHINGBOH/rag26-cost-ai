@@ -1,169 +1,90 @@
 .learning-page {
-  max-width: 1000px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: 32px 40px;
+  padding: 0 24px 40px;
 }
 
-.learning-page h1 {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 6px;
-}
-
-.page-subtitle {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin-bottom: 24px;
-}
-
-/* ── Stats grid ───────────────────── */
-
-.learn-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-@media (max-width: 640px) {
-  .learn-stats-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
-.learn-stat-card {
-  background: var(--bg-surface);
+.learn-placeholder-card {
   border: 1px solid var(--border-default);
+  background: var(--bg-surface);
   border-radius: 12px;
-  padding: 16px;
-  text-align: center;
+  padding: 32px;
 }
 
-.learn-stat-icon { font-size: 22px; display: block; margin-bottom: 8px; }
-
-.learn-stat-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--color-primary);
-  line-height: 1;
-  margin-bottom: 4px;
-}
-
-.learn-stat-label {
+.learn-placeholder-tag {
+  display: inline-block;
   font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
   color: var(--text-muted);
-}
-
-/* ── Charts row ───────────────────── */
-
-.learn-charts-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-@media (max-width: 640px) {
-  .learn-charts-row { grid-template-columns: 1fr; }
-}
-
-.learn-chart-card {
-  background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 12px;
-  padding: 20px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  margin-bottom: 14px;
 }
 
-.learn-chart-card h3 {
-  font-size: 13px;
+.learn-placeholder-title {
+  font-size: 18px;
   font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+  margin: 0 0 6px;
+}
+
+.learn-placeholder-desc {
+  font-size: 13px;
+  line-height: 1.7;
   color: var(--text-secondary);
-  margin-bottom: 16px;
+  margin: 0 0 22px;
+  max-width: 620px;
 }
 
-.learn-empty-chart {
+.learn-pipeline-outline {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+
+@media (max-width: 720px) {
+  .learn-pipeline-outline { grid-template-columns: 1fr; }
+}
+
+.learn-pipeline-step {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 140px;
-  gap: 8px;
-  color: var(--text-muted);
-}
-
-.learn-empty-icon { font-size: 32px; }
-
-.learn-empty-chart p {
-  font-size: 12px;
-  text-align: center;
-}
-
-/* ── Card ─────────────────────────── */
-
-.learn-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 16px;
-}
-
-.learn-card-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.learn-card-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.learn-badge {
-  font-size: 11px;
-  padding: 2px 8px;
+  gap: 14px;
+  padding: 14px 16px;
   background: var(--bg-primary);
   border: 1px solid var(--border-default);
   border-radius: 10px;
-  color: var(--text-muted);
 }
 
-.learn-empty-state {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 20px;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-/* ── Info box ─────────────────────── */
-
-.learn-info-box {
-  background: rgba(59, 130, 246, 0.06);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  border-radius: 12px;
-  padding: 20px;
-}
-
-.learn-info-box h4 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-primary);
-  margin-bottom: 12px;
-}
-
-.learn-pipeline-steps {
-  list-style: decimal;
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.learn-pipeline-steps li {
-  font-size: 13px;
+.learn-step-index {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
   color: var(--text-secondary);
-  line-height: 1.5;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.learn-step-text { flex: 1; }
+
+.learn-step-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.learn-step-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.55;
 }

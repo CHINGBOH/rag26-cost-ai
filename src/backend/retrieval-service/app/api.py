@@ -337,7 +337,7 @@ def _normalize_chunk(c: dict) -> dict:
 class AgentRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
-    max_iterations: int = 5
+    max_iterations: int = 3
     llm_route: str = "deepseek"
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
@@ -396,6 +396,18 @@ async def agent_query(request: AgentRequest):
             "pending_tool_calls": [],
             "step_summary": "",
             "presentation": None,
+            "presentation_policy": None,
+            "roadmap": [],
+            "workspace": [],
+            # Iterative convergence / outer-loop contract verification
+            "contract_results": [],
+            "outer_iteration": 0,
+            "max_outer_iterations": 3,
+            "quality_converged": False,
+            "corrective_actions": [],
+            "root_cause_node": "",
+            "tool_fallback_level": 0,
+            "used_tool_categories": [],
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
@@ -501,6 +513,18 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "pending_tool_calls": [],
                     "step_summary": "",
                     "presentation": None,
+                    "presentation_policy": None,
+                    "roadmap": [],
+                    "workspace": [],
+                    # Iterative convergence / outer-loop contract verification
+                    "contract_results": [],
+                    "outer_iteration": 0,
+                    "max_outer_iterations": 3,
+                    "quality_converged": False,
+                    "corrective_actions": [],
+                    "root_cause_node": "",
+                    "tool_fallback_level": 0,
+                    "used_tool_categories": [],
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -653,6 +677,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                 eval_result = node_output.get("evaluation") or {}
                 runtime = node_output.get("llm_runtime") or current_runtime
                 citations_text = node_output.get("citations_text", "")
+                from app.agent.graph import refine_citations_for_answer, finalize_presentation_payload
                 presentation = node_output.get("presentation")
                 if presentation:
                     current_presentation = presentation
@@ -661,7 +686,6 @@ async def agent_query_stream(request: AgentStreamRequest):
                 if prompt:
                     try:
                         from app.agent.prompts import stream_llm_response
-                        from app.agent.graph import refine_citations_for_answer, finalize_presentation_payload
 
                         async for stream_event in stream_llm_response(
                             [HumanMessage(content=prompt)],
@@ -738,6 +762,15 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "max_iterations": request.max_iterations,
                     }
                     yield _sse_event("loop_state", loop_data)
+
+            elif node_name == "presentation_policy_node":
+                presentation = node_output.get("presentation")
+                if presentation:
+                    if presentation != current_presentation:
+                        current_presentation = presentation
+                        yield _sse_event("presentation", presentation)
+                    else:
+                        current_presentation = presentation
 
     return StreamingResponse(
         event_generator(),

@@ -22,6 +22,7 @@ def test_concept_search_returns_drilldown_concepts(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
     monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(tools, "_expand_concept_hits", lambda conn, query, concept_hits, top_k=3: [])
     monkeypatch.setattr(
         tools,
         "_load_concept_hits",

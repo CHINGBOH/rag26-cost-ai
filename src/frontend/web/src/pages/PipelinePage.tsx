@@ -1,13 +1,25 @@
 /**
- * 数据管道页
- * 文档上传 + 四库状态
+ * 数据管道页 — 文档上传 + 知识库运行状态
+ * 仅渲染 health 接口实际返回的服务，不再硬编码 Elasticsearch / Neo4j
  */
 
 import { useState, useRef, useEffect } from 'react';
 import { checkHealth, HealthResponse } from '../services/agentApi';
+import { PageHeader } from '../components/common/PageHeader';
+import { StatusDot } from '../components/common/StatusDot';
 import './PipelinePage.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+
+const SERVICE_LABELS: Record<string, string> = {
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  qdrant: 'Qdrant 向量库',
+  cache: '缓存',
+  redis: 'Redis',
+  vector: '向量索引',
+  keyword: '全文索引',
+};
 
 export const PipelinePage: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -16,7 +28,6 @@ export const PipelinePage: React.FC = () => {
   const [uploadResult, setUploadResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // 定时刷新健康状态
   useEffect(() => {
     const fetchHealth = async () => {
       try {
@@ -53,95 +64,79 @@ export const PipelinePage: React.FC = () => {
     }
   };
 
-  const statusIcon = (s: string) =>
-    s === 'healthy' || s === 'ok' ? '🟢' :
-    s === 'degraded' ? '🟡' : '🔴';
+  const services = health?.services
+    ? Object.entries(health.services).map(([k, v]) => ({
+        key: k,
+        label: SERVICE_LABELS[k] || k,
+        status: typeof v === 'string' ? v : 'unknown',
+      }))
+    : [];
 
   return (
     <div className="pipeline-page">
-      <h1>数据管道</h1>
-      <p className="page-subtitle">文档上传与四库运行状态</p>
+      <PageHeader title="数据管道" subtitle="文档上传与知识库运行状态" />
 
       <div className="pipeline-grid">
-        {/* 四库状态 */}
         <section className="pipeline-card">
-          <h2>四库状态</h2>
+          <h2>知识库连通性</h2>
           {health ? (
             <div className="health-grid">
-              <div className="health-item">
-                <span className="health-icon">{statusIcon(health.services?.qdrant || health.services?.vector || 'unknown')}</span>
-                <span className="health-label">Qdrant</span>
-                <span className="health-status">{health.services?.qdrant || health.services?.vector || '—'}</span>
-              </div>
-              <div className="health-item">
-                <span className="health-icon">{statusIcon(health.services?.elasticsearch || health.services?.keyword || 'unknown')}</span>
-                <span className="health-label">Elasticsearch</span>
-                <span className="health-status">{health.services?.elasticsearch || health.services?.keyword || '—'}</span>
-              </div>
-              <div className="health-item">
-                <span className="health-icon">{statusIcon(health.services?.neo4j || health.services?.graph || 'unknown')}</span>
-                <span className="health-label">Neo4j</span>
-                <span className="health-status">{health.services?.neo4j || health.services?.graph || '—'}</span>
-              </div>
-              <div className="health-item">
-                <span className="health-icon">{statusIcon(health.services?.redis || health.services?.cache || 'unknown')}</span>
-                <span className="health-label">Redis</span>
-                <span className="health-status">{health.services?.redis || health.services?.cache || '—'}</span>
-              </div>
+              {services.map((s) => (
+                <div key={s.key} className="health-item">
+                  <StatusDot status={s.status} />
+                  <span className="health-label">{s.label}</span>
+                  <span className="health-status">{s.status}</span>
+                </div>
+              ))}
             </div>
           ) : (
-            <p className="loading-text">加载中...</p>
+            <p className="loading-text">加载中…</p>
           )}
           {health && (
             <div className="health-footer">
-              整体: <strong>{health.status}</strong>
-              <span className="health-time">更新于 {new Date(health.timestamp).toLocaleTimeString()}</span>
+              整体 <strong>{health.status}</strong>
+              <span className="health-time">
+                更新于 {new Date(health.timestamp).toLocaleTimeString()}
+              </span>
             </div>
           )}
         </section>
 
-        {/* 文档上传 */}
         <section className="pipeline-card">
           <h2>文档上传</h2>
-          <div
-            className="upload-zone"
-            onClick={() => fileRef.current?.click()}
-          >
+          <div className="upload-zone" onClick={() => fileRef.current?.click()}>
             <input
               ref={fileRef}
               type="file"
               accept=".pdf,.png,.jpg,.jpeg,.docx"
-              onChange={e => { setFile(e.target.files?.[0] || null); setUploadResult(null); }}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] || null);
+                setUploadResult(null);
+              }}
               hidden
             />
             {file ? (
               <div className="file-info">
-                <span className="file-icon">📄</span>
-                <span>{file.name}</span>
-                <span className="file-size">({(file.size / 1024).toFixed(0)} KB)</span>
+                <span className="file-name">{file.name}</span>
+                <span className="file-size">{(file.size / 1024).toFixed(0)} KB</span>
               </div>
             ) : (
               <div className="upload-hint">
-                <span>📁</span>
                 <span>点击选择文件</span>
-                <span className="hint-formats">PDF / PNG / JPG / DOCX</span>
+                <span className="hint-formats">PDF · PNG · JPG · DOCX</span>
               </div>
             )}
           </div>
 
           {file && (
-            <button
-              className="upload-btn"
-              onClick={handleUpload}
-              disabled={uploading}
-            >
-              {uploading ? '处理中...' : '⬆️ 上传并处理'}
+            <button className="upload-btn" onClick={handleUpload} disabled={uploading}>
+              {uploading ? '处理中…' : '上传并处理'}
             </button>
           )}
 
           {uploadResult && (
             <div className={`upload-result ${uploadResult.ok ? 'success' : 'error'}`}>
-              {uploadResult.ok ? '✅' : '❌'} {uploadResult.msg}
+              {uploadResult.msg}
             </div>
           )}
         </section>

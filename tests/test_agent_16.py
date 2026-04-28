@@ -14,14 +14,31 @@ import json
 import time
 import requests
 from datetime import datetime
+from pathlib import Path
 
 BASE_URL = "http://localhost:8002"
+QUESTION_FILE = Path(__file__).resolve().parents[1] / "data" / "knowledge_base" / "智能体问答.md"
+RUN_ID = datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def _load_questions() -> list[str]:
+    questions: list[str] = []
+    for line in QUESTION_FILE.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        parts = [part.strip() for part in line.split("|")[1:-1]]
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        questions.append(parts[2])
+    return questions
 
 # 拒绝回答模式 —— answer 包含任意一个即视为 FAIL
 REFUSAL_PATTERNS = [
     "无法直接回答", "无法回答", "无法提供", "无法分析",
     "无法对比", "无法计算", "不足以回答", "均显示为N/A",
-    "无相关数据", "未包含", "无法得出", "无法给出",
+    "无相关数据", "无法得出", "无法给出",
+    # "未包含" 已移除：该词常出现于"其他来源未包含XX但已从来源Y取得答案"
+    # 这类上下文说明不代表拒绝回答，保留会造成 Q8 假阳性
 ]
 
 # 每题期望答案必须包含的关键词（任意一个命中即可）
@@ -51,8 +68,8 @@ EXPECTED_KEYWORDS = [
     ["模块化", "预制箱体", "比例", "%"],
     # Q12 利润率对比
     ["利润率", "2023", "2025", "一致", "不一致"],
-    # Q13 企业管理费率计算
-    ["企业管理费", "费率", "%", "25"],
+    # Q13 利润计算
+    ["利润", "20.44%", "5%", "万"],
     # Q14 机械费为0时计算基数
     ["人工费", "计算基数", "机械费"],
     # Q15 中砂价格
@@ -61,24 +78,7 @@ EXPECTED_KEYWORDS = [
     ["电线", "电缆", "变化", "上月", "%", "元"],
 ]
 
-QUESTIONS = [
-    "01. 安装工程消耗量标准中送配电装置系统调试的计算规则是什么？",
-    "02. 25版装饰工程消耗量标准中，楼梯面层中玻璃地板的人工费是多少？",
-    "03. 对比深圳市2025年12月和2023年12月工程建设信息价中，电力电缆规格型号为0.6/1KV YJV 5×120的价格差异",
-    "04. 根据深圳信息价分析下从25年开始至今的装配式混凝土预制构件价格走势",
-    "05. 2026年1月深圳信息价中，铝合金门窗工的人工价格是多少？",
-    "06. 详细说明深圳市工程建设地方标准中，关于安全文明施工费的组成内容、计算基数以及计取规定",
-    "07. 工程项目中施工地点要按照什么要求填写",
-    "08. 2025版费率标准中，房建工程赶工措施费的推荐系数是多少？",
-    "09. 一般计税方法下，税前工程造价中的费用是否包含进项税额？",
-    "10. 总包管理服务费的计算基数是什么？",
-    "11. 模块化建筑工程施工工期定额适用于单体预制箱体应用比例大于多少的±0.00以上工程？",
-    "12. 2023版与2025版费率标准中，利润率的参考范围是否一致？",
-    "13. 某工程人工费100万、材料费200万、机械费50万、企业管理费25万，企业管理费率是多少？",
-    "14. 按2025版标准，如果机械费为0，企业管理费的计算基数是什么",
-    "15. 2026年1月，中砂的价格是多少元/m³？",
-    "16. 2026年1月，电线、电缆价格较上月的变化幅度是多少？",
-]
+QUESTIONS = _load_questions()
 
 
 def _is_refused(answer: str) -> tuple[bool, str]:
@@ -103,7 +103,7 @@ def test_one(idx: int, query: str) -> dict:
     try:
         resp = requests.post(
             f"{BASE_URL}/api/v1/agent",
-            json={"query": query, "session_id": f"test-{idx:02d}", "max_iterations": 3},
+            json={"query": query, "session_id": f"test-{RUN_ID}-{idx:02d}", "max_iterations": 3},
             timeout=300,
         )
         if resp.status_code != 200:
@@ -116,6 +116,7 @@ def test_one(idx: int, query: str) -> dict:
         chunks = data.get("chunks", [])
         evaluation = data.get("evaluation") or {}
         iterations = data.get("iterations", 0)
+        api_passed = bool(evaluation.get("passed", False))
 
         llm_unconfigured = "[检索结果摘要，未配置 LLM]" in answer or "[Agent 执行错误" in answer
 
@@ -124,13 +125,15 @@ def test_one(idx: int, query: str) -> dict:
         refused, refusal_pat = _is_refused(answer)
         kw_found, matched_kw = _has_expected_keyword(answer, expected_kws)
 
-        real_passed = has_chunks and not refused and kw_found and not llm_unconfigured
+        real_passed = has_chunks and not refused and kw_found and api_passed and not llm_unconfigured
 
         fail_reason = ""
         if not has_chunks:
             fail_reason = "no_chunks"
         elif refused:
             fail_reason = f"refused({refusal_pat})"
+        elif not api_passed:
+            fail_reason = f"api_failed({evaluation.get('feedback', 'unknown')})"
         elif not kw_found:
             fail_reason = f"missing_keyword(expected_one_of={expected_kws[:3]}...)"
 
@@ -144,7 +147,7 @@ def test_one(idx: int, query: str) -> dict:
             "passed": real_passed,
             "fail_reason": fail_reason,
             "matched_keyword": matched_kw,
-            "api_passed": evaluation.get("passed", False),
+            "api_passed": api_passed,
             "iterations": iterations,
             "llm_unconfigured": llm_unconfigured,
             "evaluation": evaluation,

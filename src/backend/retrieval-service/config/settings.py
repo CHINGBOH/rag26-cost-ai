@@ -26,11 +26,25 @@ class VectorStoreConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="forbid")
 
-    type: Literal["qdrant", "chroma", "memory"] = "qdrant"
+    type: Literal["qdrant", "chroma", "memory", "milvus"] = "qdrant"
     host: str = "localhost"
     port: int = Field(default=6333, ge=1, le=65535)
+    uri: str = "http://localhost:19530"
+    username: str = ""
+    password: SecretStr | None = None
+    database: str = "default"
+    secure: bool = False
     collection_name: str = "document_chunks"
     vector_size: int = Field(default=1024, ge=1)
+    metric_type: Literal["COSINE", "IP", "L2"] = "COSINE"
+    consistency_level: Literal["Strong", "Session", "Bounded", "Eventually"] = "Bounded"
+
+    @property
+    def endpoint(self) -> str:
+        """返回当前向量后端的主要连接目标。"""
+        if self.type == "milvus":
+            return self.uri
+        return f"{self.host}:{self.port}"
 
     @field_validator("vector_size")
     @classmethod
@@ -39,6 +53,14 @@ class VectorStoreConfig(BaseSettings):
         valid_sizes = [768, 1024, 1536]  # bge-m3=1024, bge-large=1024, openai=1536
         if v not in valid_sizes:
             raise ValueError(f"vector_size must be one of {valid_sizes}")
+        return v
+
+    @field_validator("uri")
+    @classmethod
+    def validate_vector_store_uri(cls, v: str) -> str:
+        """验证可选URI格式"""
+        if v and "://" not in v:
+            raise ValueError("uri must include a scheme such as http:// or https://")
         return v
 
 
@@ -70,7 +92,6 @@ class GraphStoreConfig(BaseSettings):
         if not v.startswith(("bolt://", "neo4j://")):
             raise ValueError("URI must start with bolt:// or neo4j://")
         return v
-
 
 class EmbeddingModelConfig(BaseSettings):
     """Embedding模型配置"""
@@ -330,14 +351,12 @@ if __name__ == "__main__":
     print(f"\n默认配置:")
     print(f"  环境: {config.env}")
     print(f"  Debug: {config.debug}")
-    print(
-        f"  向量存储: {config.vector_store.type} ({config.vector_store.host}:{config.vector_store.port})"
-    )
+    print(f"  向量存储: {config.vector_store.type} ({config.vector_store.endpoint})")
     print(f"  Embedding模型: {config.models.embedding.name}")
     print(f"  Rerank模型: {config.models.rerank.name}")
 
     # 保存到文件
-    config.to_yaml("/tmp/test_config.yaml")
+    config.to_yaml(Path("/tmp/test_config.yaml"))
     print(f"\n已保存到: /tmp/test_config.yaml")
 
     # 从文件加载

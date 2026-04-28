@@ -9,6 +9,10 @@ from typing import TypedDict
 
 logger = logging.getLogger(__name__)
 
+
+def _strip_question_prefix(query: str) -> str:
+    return re.sub(r"^\s*\d+\s*[.．、]\s*", "", query or "").strip()
+
 PRICE_KEYWORDS = [
     "价格", "多少钱", "元/", "含税", "除税", "信息价", "造价", "单价", "费率",
     "材料费", "人工费", "机械费", "设备费", "租赁费", "一吨", "一方", "一平米",
@@ -45,26 +49,27 @@ STANDARD_REF_KEYWORDS = [
 # ---------------------------------------------------------------------------
 # 行业别名规范化：alias -> canonical material_name（对应 price_records 实际字段值）
 # 用于 _normalize_material() 把同义词查询词映射为 DB 中存储的规范名称
+# 与 tools.py _ABBREV_EXPAND 保持同步（两份副本，统一修改）
 # ---------------------------------------------------------------------------
 _MATERIAL_NORMALIZE: dict[str, str] = {
-    # 混凝土 / 砼 系列
+    # ── 混凝土 / 砼 ──
     "防渗混凝土": "防水混凝土",
     "抗渗混凝土": "防水混凝土",
     "防渗砼": "防水混凝土",
     "抗渗砼": "防水混凝土",
     "防水砼": "防水混凝土",
     "豆石砼": "豆石混凝土",
-    "细石砼": "混凝土",
+    "细石砼": "细石混凝土",
     "砼": "混凝土",
     "钢砼": "钢筋混凝土",
-    # 沥青 系列
+    # ── 沥青 ──
     "热拌沥青混合料": "沥青混凝土",
     "沥青混合料": "沥青混凝土",
     "AC混合料": "沥青混凝土",
     "沥青砼": "沥青混凝土",
     "沥青路面料": "沥青混凝土",
     "热拌料": "沥青混凝土",
-    # 电线电缆 系列
+    # ── 电线电缆 ──
     "绝缘导线": "绝缘电线",
     "BV导线": "绝缘电线",
     "铜芯绝缘线": "绝缘电线",
@@ -74,7 +79,7 @@ _MATERIAL_NORMALIZE: dict[str, str] = {
     "动力电缆": "电力电缆",
     "弱电线缆": "控制电缆",
     "仪表电缆": "控制电缆",
-    # 模板 系列
+    # ── 模板 ──
     "模板工": "模板制安",
     "木工": "木模板",
     "模板支拆": "模板制安",
@@ -85,6 +90,9 @@ _MATERIAL_NORMALIZE: dict[str, str] = {
 # 常见材料列表（按长度降序匹配，优先长词）
 # 含行业常用别名和省略形式，方便从用户查询中抽取材料名
 MATERIAL_LIST = [
+    '装配式混凝土预制构件', '预制混凝土楼板', '预制叠合楼板', '预制外墙板', '预制楼梯',
+    '预制混凝土墙板', '预制混凝土梁', '预制混凝土柱', '预制混凝土阳台', '预制内墙条板',
+    '电力电缆',
     '加气混凝土砌块', '普通混凝土多排孔空心砌块', '普通混凝土空心砌块', '普通混凝土实心砖',
     '普通混凝土门套砖', '普通混凝土实心配套砖', '机制混凝土人行道路面砖', '机制混凝土路面环保砖',
     '机制混凝土路面透水砖', '覆膜建筑模板', '脚手架钢管', '松杂木脚手板', '阻燃型A级密目式安全立网',
@@ -161,12 +169,21 @@ _QUOTA_LOCATION_PATTERN = re.compile(
 )
 _FEE_STANDARD_HINT_PATTERN = re.compile(r"费率标准|推荐费率|企业管理费|利润|安全文明施工费|履约担保手续费|夜间施工增加费|总包管理服务费|暂列金额|优质优价奖励费")
 _FORMULA_EXPLAIN_PATTERN = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
+# Detect numeric-input calculation problems: e.g. "人工费100万、材料费200万、机械费50万 ... 利润为多少"
+# Pattern: at least two cost items with explicit numeric values, plus a formulaic target (利润/管理费/总价).
+_NUMERIC_CALC_INPUT_PATTERN = re.compile(
+    r"(?:人工费|材料费|机械费|设备费|工料机|管理费)\s*[为是＝=]?\s*\d+(?:\.\d+)?\s*(?:万|元|亿)?"
+)
+_NUMERIC_CALC_TARGET_PATTERN = re.compile(
+    r"(?:利润|企业管理费|管理费|总造价|工程造价|总价|合计|为多少|是多少)"
+)
 _FEE_COMPARISON_HINT_PATTERN = re.compile(r"参考范围|推荐费率|是否一致|一致吗|是否相同|相同吗|一样吗|有无差异|差异|区别|不同")
 _FEE_ITEM_PATTERN = re.compile(
     r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
     r"总包管理服务费及发包人供应材料（设备）保管费|总包管理服务费|发包人供应材料（设备）保管费|"
-    r"暂列金额|优质优价奖励费|利润"
+    r"暂列金额|优质优价奖励费|赶工措施费|赶工费|产业工人职业训练专项经费|利润"
 )
+_FEE_TARGET_HINT_PATTERN = re.compile(r"推荐系数|参考范围|系数是多少|系数为多少|推荐费率")
 _FILL_REQUIREMENT_HINT_PATTERN = re.compile(r"填写|怎么填|填报|按什么要求|应按什么")
 _FILL_REQUIREMENT_PREFIX_PATTERN = re.compile(r"^(?:工程项目中|项目中|工程概况表中|工程概况中|表中|其中)?")
 _FILL_REQUIREMENT_SUFFIX_PATTERN = re.compile(r"(?:要)?(?:按照什么要求填写|按什么要求填写|应按什么要求填写|应如何填写|如何填写|怎么填写|填写要求)[？?]?$")
@@ -191,24 +208,33 @@ class QueryAnalysis(TypedDict):
 
 
 def _classify_intent(query: str) -> str:
-    q = query.lower()
+    cleaned_query = _strip_question_prefix(query)
+    q = cleaned_query.lower()
+    period_mentions = re.findall(r"(20\d{2}\s*年\s*\d{1,2}\s*月|20\d{2}-\d{1,2})", cleaned_query)
     # trend_chart: 走势分析（含时间序列）
     if any(re.search(kw, q) is not None if '.' in kw else kw in q for kw in TREND_KEYWORDS):
         return "trend_chart"
     if is_fee_standard_comparison_query(query):
         return "comparison"
+    if any(kw in q for kw in COMPARISON_KEYWORDS) and len(period_mentions) >= 2:
+        return "comparison"
     # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
-    if _FEE_STANDARD_HINT_PATTERN.search(query) and _FORMULA_EXPLAIN_PATTERN.search(query):
+    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
         return "standard_ref"
+    # numeric calculation problem: query supplies cost values and asks for a derived figure
+    # e.g. "人工费100万、材料费200万、机械费50万 ... 利润为多少？"
+    numeric_inputs = _NUMERIC_CALC_INPUT_PATTERN.findall(cleaned_query)
+    if len(numeric_inputs) >= 2 and _NUMERIC_CALC_TARGET_PATTERN.search(cleaned_query):
+        return "calculation"
     has_price_keyword = any(kw in q for kw in PRICE_KEYWORDS)
     has_calc_keyword = any(kw in q for kw in CALC_KEYWORDS)
     if has_price_keyword:
-        material = _extract_material(query)
-        year_month = _extract_year_month(query)
+        material = _extract_material(cleaned_query)
+        year_month = _extract_year_month(cleaned_query)
         explicit_calc = any(kw in q for kw in ("乘以", "除", "加", "减", "合计", "汇总", "百分比"))
-        if explicit_calc and (material or "信息价" in query):
+        if explicit_calc and (material or "信息价" in cleaned_query):
             return "calculation"
-        if material or "信息价" in query or year_month:
+        if material or "信息价" in cleaned_query or year_month:
             return "price"
     # calculation: 明确有公式或数值计算
     if has_calc_keyword and has_price_keyword:
@@ -228,30 +254,70 @@ def _classify_intent(query: str) -> str:
 
 
 def _extract_year_month(query: str) -> str:
+    cleaned = _strip_question_prefix(query)
     # 20XX年X月
-    m = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", query)
+    m = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月", cleaned)
     if m:
         return f"{m.group(1)}-{m.group(2).zfill(2)}"
     # 20XX-X 或 20XX-XX
-    m = re.search(r"(20\d{2})-(\d{1,2})", query)
+    m = re.search(r"(20\d{2})-(\d{1,2})", cleaned)
     if m:
         return f"{m.group(1)}-{m.group(2).zfill(2)}"
+    # 省略世纪的年份（如“从25年开始”）
+    m = re.search(r"(?<!\d)(2\d)\s*年", cleaned)
+    if m:
+        return f"20{m.group(1)}"
     # 20XX年 / 20XX版 / 20XX
-    m = re.search(r"(20\d{2})\s*年", query)
+    m = re.search(r"(20\d{2})\s*年", cleaned)
     if m:
         return m.group(1)
-    m = re.search(r"(20\d{2})\s*版", query)
+    m = re.search(r"(20\d{2})\s*版", cleaned)
     if m:
         return m.group(1)
-    m = re.search(r"\b(20\d{2})\b", query)
+    m = re.search(r"\b(20\d{2})\b", cleaned)
     if m:
         return m.group(1)
     return ""
 
 
+_cc_aliases_loaded = False
+
+
+def _load_cc_aliases() -> None:
+    """从 canonical_concepts 表补充别名到 _MATERIAL_NORMALIZE（启动时调用一次）"""
+    global _cc_aliases_loaded
+    if _cc_aliases_loaded:
+        return
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT aliases, normalized_name FROM canonical_concepts "
+                    "WHERE aliases IS NOT NULL AND array_length(aliases, 1) > 0"
+                )
+                rows = cur.fetchall()
+        finally:
+            _put_pg_conn(conn)
+        for row in rows:
+            aliases = row[0] or []
+            canonical = (row[1] or "").strip()
+            if not canonical:
+                continue
+            for alias in aliases:
+                alias = alias.strip()
+                if alias and alias != canonical and alias not in _MATERIAL_NORMALIZE:
+                    _MATERIAL_NORMALIZE[alias] = canonical
+        _cc_aliases_loaded = True
+    except Exception:
+        _cc_aliases_loaded = True  # 失败也不重试
+
+
 def _normalize_material(name: str) -> str:
     """Map alias/abbreviation to canonical material name used in price_records.
     Returns original name if no mapping found."""
+    _load_cc_aliases()
     # Exact alias match first
     if name in _MATERIAL_NORMALIZE:
         return _MATERIAL_NORMALIZE[name]
@@ -347,8 +413,16 @@ def _extract_materials(query: str) -> list[str]:
 
 def _extract_specification(query: str) -> str:
     # 先去掉年份，避免 "2024" 被误识别为规格
-    cleaned = re.sub(r"20\d{2}\s*年\s*\d{1,2}\s*月", "", query)
+    cleaned = _strip_question_prefix(query)
+    cleaned = re.sub(r"20\d{2}\s*年\s*\d{1,2}\s*月", "", cleaned)
     cleaned = re.sub(r"20\d{2}-\d{1,2}", "", cleaned)
+    cable_pattern = re.compile(
+        r"(0\.\s*6/\s*1\s*[Kk][Vv]\s*[A-Za-z]{2,}\s*"
+        r"\d+\s*[×xX*]\s*\d+(?:\s*\+\s*\d+\s*[×xX*]\s*\d+)?)"
+    )
+    cable_match = cable_pattern.search(cleaned)
+    if cable_match:
+        return re.sub(r"\s+", " ", cable_match.group(1)).strip()
     for pat in SPEC_PATTERNS:
         m = re.search(pat, cleaned)
         if m:
@@ -418,12 +492,25 @@ def extract_fee_formula_search_term(query: str) -> str:
     item_match = _FEE_ITEM_PATTERN.search(normalized)
     item = item_match.group(0) if item_match else ""
 
+    # Choose target keyword based on what the question is asking for.
+    target_match = _FEE_TARGET_HINT_PATTERN.search(normalized)
+    if target_match:
+        hit = target_match.group(0)
+        if "参考范围" in hit:
+            target = "参考范围"
+        elif "推荐费率" in hit:
+            target = "推荐费率"
+        else:
+            target = "推荐系数"
+    else:
+        target = "计算公式"
+
     if year and item:
-        return f"{year} {item} 计算公式"
+        return f"{year} {item} {target}"
     if year:
-        return f"{year} 费率标准 计算公式"
+        return f"{year} 费率标准 {target}"
     if item:
-        return f"{item} 计算公式"
+        return f"{item} {target}"
     return normalized
 
 
@@ -491,13 +578,18 @@ def extract_appendix_standard_terms(query: str) -> list[str]:
 
     cleaned = re.sub(
         r"[？?，,。；;：:“”\"'‘’（）()\[\]【】]|适用于|适用|大于多少|多少|什么|是否|如何|怎么|请问|"
-        r"模块化建筑|工程|定额|标准|通知|规定|办法|以上|以下|部分|单体|栋|建筑",
+        r"模块化建筑|工程|定额|标准|通知|规定|办法|以上|以下|部分|单体|栋|建筑|"
+        r"的工程量计算规则|工程量计算规则|的计算规则|计算规则",
         " ",
         remainder,
     )
     for token in re.findall(r"[\u4e00-\u9fa5A-Za-z0-9\.±]{3,}", cleaned):
         token = token.strip()
-        if token and token not in candidates:
+        # Strip leading conjunctive particles ("中"/"对"/"关于"/...) and trailing copula
+        # so 'extract_appendix_standard_terms' yields clean noun phrases for FTS.
+        token = re.sub(r"^(?:中|对于|对|关于|按照|按|根据)", "", token)
+        token = re.sub(r"(?:是|为)$", "", token)
+        if len(token) >= 3 and token not in candidates:
             candidates.append(token)
 
     return candidates[:4]
@@ -587,16 +679,17 @@ class QueryAnalyzer:
     """
 
     def analyze(self, query: str) -> QueryAnalysis:
-        intent = _classify_intent(query)
-        materials = _extract_materials(query)
+        normalized_query = _strip_question_prefix(query)
+        intent = _classify_intent(normalized_query)
+        materials = _extract_materials(normalized_query)
         entities = {
-            "year_month": _extract_year_month(query),
-            "material_name": materials[0] if materials else _extract_material(query),
+            "year_month": _extract_year_month(normalized_query),
+            "material_name": materials[0] if materials else _extract_material(normalized_query),
             "material_names": materials,
-            "specification": _extract_specification(query),
-            "unit": _extract_unit(query),
+            "specification": _extract_specification(normalized_query),
+            "unit": _extract_unit(normalized_query),
         }
-        sub_queries = _decompose(query, intent)
+        sub_queries = _decompose(normalized_query, intent)
         analysis = QueryAnalysis(intent=intent, entities=entities, sub_queries=sub_queries)
-        logger.info(f"[analyzer] query='{query[:50]}' intent={intent} sub_queries={sub_queries}")
+        logger.info(f"[analyzer] query='{normalized_query[:50]}' intent={intent} sub_queries={sub_queries}")
         return analysis

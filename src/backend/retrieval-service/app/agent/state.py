@@ -4,6 +4,22 @@ from typing_extensions import TypedDict
 from langchain_core.messages import BaseMessage
 
 
+class ContractResult(TypedDict):
+    """Post-condition check for a single graph node."""
+    node: str                           # e.g. 'query_analysis', 'navigator'
+    passed: bool                        # True if all node post-conditions hold
+    violations: list[tuple[str, str]]   # [(code, detail), ...]
+
+
+class RoadmapItem(TypedDict):
+    """Single chapter entry in the Navigator's roadmap."""
+    chapter_id: str   # e.g. '10.2.6'
+    path:       str   # e.g. '第二册电气设备安装工程/10.1/10.1.7'
+    file_name:  str   # e.g. '第二册电气设备安装工程.pdf'
+    title:      str   # e.g. '10.1.7 送配电装置系统调试'
+    reason:     str   # why this chapter is relevant
+
+
 class RAGAgentState(TypedDict):
     messages: Annotated[list[BaseMessage], operator.add]  # Channel: append-only
     query: str
@@ -40,3 +56,17 @@ class RAGAgentState(TypedDict):
     pending_tool_calls: list[dict]      # tool calls selected by executor for SSE start events
     step_summary: str                   # summary text when a step finishes without more tool calls
     presentation: dict | None           # structured UI payload for charts/cards
+    presentation_policy: dict | None    # state-decided presentation strategy (labels/kicker/tone)
+    # ── Navigator / workspace additions ─────────────────────────────────────────
+    roadmap: list[RoadmapItem]          # Navigator写入：相关章节地图，Planner/React据此约束搜索
+    workspace: list[dict]               # 跨章节证据池：所有检索到的evidence，防止context washout
+
+    # ── Iterative convergence / outer-loop contract verification ────────────────
+    contract_results: list[ContractResult]   # 每轮合约验证结果
+    outer_iteration: int                     # 外循环迭代计数，default 0
+    max_outer_iterations: int                # 外循环上限，default 3
+    quality_converged: bool                  # True 时合约全部通过或强制输出
+    corrective_actions: list[str]            # 已执行精炼动作，防重复
+    root_cause_node: str                     # 重放目标节点，由 trace_root_cause 设定
+    tool_fallback_level: int                 # 工具降级深度，default 0
+    used_tool_categories: list[str]          # 已尝试工具类别，防重复

@@ -1,13 +1,7 @@
 .system-page {
-  max-width: 900px;
+  max-width: 960px;
   margin: 0 auto;
-  padding: 40px 24px;
-}
-
-.system-page h1 {
-  font-size: 24px;
-  font-weight: 700;
-  margin-bottom: 6px;
+  padding: 0 24px 40px;
 }
 
 .system-grid {
@@ -39,7 +33,7 @@
   color: var(--text-primary);
 }
 
-/* ── 四库状态 ─────────────────────── */
+/* ── 知识库状态 ─────────────────────── */
 
 .sys-health-list {
   display: flex;
@@ -208,6 +202,15 @@
   font-size: 11px;
   white-space: nowrap;
 }
+
+.record-status {
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+}
+
+.record-status.pass { color: #16a34a; }
+.record-status.fail { color: #dc2626; }
 
 /* ── Agent 参数 ───────────────────── */
 

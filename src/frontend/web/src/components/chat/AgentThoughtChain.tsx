@@ -1,16 +1,24 @@
 /**
- * AgentThoughtChain — 使用 Ant Design X 的 Think + ThoughtChain
+ * AgentThoughtChain — 轻量本地渲染，不依赖 Ant Design X
  * 将 RAG Agent 执行步骤可视化展示在对话框中
  */
 
 import React, { useMemo } from 'react';
-import { Think, ThoughtChain } from '@ant-design/x';
-import type { ThoughtChainItemType } from '@ant-design/x/es/thought-chain/index';
 import type { RagProcessStep } from '@rag/shared';
 
 interface AgentThoughtChainProps {
   steps: RagProcessStep[];
   isStreaming?: boolean;
+}
+
+type ThoughtChainStatus = 'loading' | 'success' | 'error' | undefined;
+
+interface ThoughtChainItemType {
+  key: string;
+  title: string;
+  status?: ThoughtChainStatus;
+  description?: string;
+  content?: React.ReactNode;
 }
 
 const STEP_TITLES: Record<string, string> = {
@@ -67,13 +75,43 @@ const AgentThoughtChain: React.FC<AgentThoughtChainProps> = ({ steps, isStreamin
 
   if (!steps.length) return null;
 
+  const statusDot = (status?: ThoughtChainStatus) => {
+    if (status === 'loading') return '⏳';
+    if (status === 'success') return '✅';
+    if (status === 'error') return '❌';
+    return '•';
+  };
+
   return (
-    <Think
-      loading={!!isStreaming}
-      defaultExpanded
+    <div
+      style={{
+        border: '1px solid #e5e7eb',
+        borderRadius: 8,
+        padding: 12,
+        marginTop: 8,
+        background: '#fff',
+      }}
     >
-      <ThoughtChain items={items} />
-    </Think>
+      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
+        {isStreaming ? '推理中…' : '推理过程'}
+      </div>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {items.map((item) => (
+          <div key={item.key} style={{ border: '1px solid #f1f5f9', borderRadius: 6, padding: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ fontSize: 13 }}>
+                <span style={{ marginRight: 6 }}>{statusDot(item.status)}</span>
+                {item.title}
+              </div>
+              {item.description && (
+                <div style={{ fontSize: 12, color: '#6b7280' }}>{item.description}</div>
+              )}
+            </div>
+            {item.content && <div style={{ marginTop: 6, fontSize: 13 }}>{item.content}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };
 

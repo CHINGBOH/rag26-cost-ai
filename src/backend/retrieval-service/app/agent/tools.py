@@ -8,9 +8,13 @@ import logging
 import json
 import re
 import time
+import uuid
+import asyncio
 import threading as _threading
 from typing import List
 from pathlib import Path
+
+import numpy as np
 
 from app.agent.query_analyzer import (
     QueryAnalyzer,
@@ -24,10 +28,15 @@ from app.agent.query_analyzer import (
 )
 
 from langchain_core.tools import tool
+from config.settings import AppConfig
+from infrastructure.vector_store import create_vector_store_adapter
 
 logger = logging.getLogger(__name__)
 
 RETRIEVAL_PATH_DATABASE = "database"
+RETRIEVAL_PATH_VECTOR = "vector"
+RETRIEVAL_PATH_GRAPH = "graph"
+RETRIEVAL_PATH_TOPOLOGY = "topology"
 RETRIEVAL_PATH_OCR_JSON = "ocr_json"
 RETRIEVAL_PATH_PDF_PAGE = "pdf_page"
 
@@ -90,8 +99,14 @@ _TSV_CONFIG_LOCK = _threading.Lock()
 # 砼 (tóng) is the construction industry shorthand for 混凝土 (concrete).
 # Expanding before BM25/trgm search closes the character-level vocabulary gap.
 # ---------------------------------------------------------------------------
+# ── 统一建筑行业别名映射 ──────────────────────────────────────────────────
+# 权威来源：canonical_concepts 表 aliases 字段（启动时可增量加载）。
+# 两个文件中的副本需保持同步：
+#   - 本文件 _ABBREV_EXPAND（BM25/trgm 查询扩展）
+#   - query_analyzer.py _MATERIAL_NORMALIZE（实体抽取规范化）
+# ──────────────────────────────────────────────────────────────────────────
 _ABBREV_EXPAND: dict[str, str] = {
-    # 混凝土 / 砼
+    # ── 混凝土 / 砼 ──
     "砼": "混凝土",
     "钢砼": "钢筋混凝土",
     "防渗砼": "防水混凝土",
@@ -101,32 +116,262 @@ _ABBREV_EXPAND: dict[str, str] = {
     "抗渗混凝土": "防水混凝土",
     "豆石砼": "豆石混凝土",
     "细石砼": "细石混凝土",
-    # 沥青
+    # ── 沥青 ──
     "热拌沥青混合料": "沥青混凝土",
     "沥青混合料": "沥青混凝土",
     "沥青砼": "沥青混凝土",
-    # 电线电缆
+    "AC混合料": "沥青混凝土",
+    "沥青路面料": "沥青混凝土",
+    "热拌料": "沥青混凝土",
+    # ── 电线电缆 ──
     "绝缘导线": "绝缘电线",
     "BV导线": "绝缘电线",
     "铜芯绝缘线": "绝缘电线",
+    "铜芯塑料线": "绝缘电线",
     "高压导线": "电力电缆",
     "输电电缆": "电力电缆",
+    "动力电缆": "电力电缆",
     "弱电线缆": "控制电缆",
     "仪表电缆": "控制电缆",
-    # 模板
+    # ── 模板 ──
     "模板支拆": "模板制安",
     "木模安装": "模板制安",
     "模板工": "模板制安",
+    "木工": "木模板",
 }
+
+
+_canonical_aliases_loaded = False
+
+
+def _load_aliases_from_canonical_concepts() -> int:
+    """从 canonical_concepts 表加载别名到 _ABBREV_EXPAND（启动时调用）。
+    返回新加载的别名数量。"""
+    global _canonical_aliases_loaded
+    if _canonical_aliases_loaded:
+        return 0
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT aliases, normalized_name FROM canonical_concepts "
+                    "WHERE aliases IS NOT NULL AND array_length(aliases, 1) > 0"
+                )
+                rows = cur.fetchall()
+        finally:
+            _put_pg_conn(conn)
+        added = 0
+        for row in rows:
+            aliases = row[0] or []
+            canonical = (row[1] or "").strip()
+            if not canonical:
+                continue
+            for alias in aliases:
+                alias = alias.strip()
+                if alias and alias != canonical and alias not in _ABBREV_EXPAND:
+                    _ABBREV_EXPAND[alias] = canonical
+                    added += 1
+        _canonical_aliases_loaded = True
+        if added:
+            logger.info("[alias_loader] loaded %d aliases from canonical_concepts (total=%d)", added, len(_ABBREV_EXPAND))
+        return added
+    except Exception as e:
+        logger.warning("[alias_loader] failed to load canonical_concepts aliases: %s", e)
+        _canonical_aliases_loaded = True  # don't retry on failure
+        return 0
 
 
 def _expand_query_variants(query: str) -> list[str]:
     """Return [query] plus versions with industry abbreviations expanded."""
+    _load_aliases_from_canonical_concepts()
     variants = [query]
     for abbrev, full in _ABBREV_EXPAND.items():
         if abbrev in query:
             variants.append(query.replace(abbrev, full))
     return variants
+
+
+# ── 数据质量：垃圾材料名过滤 ─────────────────────────────────────────────
+# OCR 管道有时将表格标题、单位行、页脚等误识别为 material_name。
+# 这些模式匹配已知的噪声行，在 SQL 层面用 WHERE 子句排除。
+_GARBAGE_MATERIAL_PATTERNS = [
+    r"^\d+\.?\d*$",                  # pure number like "0.040", "0.030"
+    r"元$",                           # ends with 元 (monetary measure word)
+    r"^(kg|台班|t|m²|m³|m|套|个)$",   # bare units
+    r"^(机械费|材料费|人工费|管理费|利润|规费|税金|安全文明).*元$",  # fee line
+    r"^(一|二|三|四|五|六|七|八|九|十)\s*[一|\s]*$",  # Chinese numeral only
+    r"^[一二三四五六七八九十、.\s]+$",  # pure Chinese numerals
+]
+
+_GARBAGE_MATERIAL_RE = re.compile("|".join(_GARBAGE_MATERIAL_PATTERNS))
+
+_GARBAGE_SQL_CLAUSE = """
+    AND material_name !~ '^\\d+\\.?\\d*$'
+    AND material_name !~ '元$'
+    AND material_name !~ '^(kg|台班|t|m²|m³|m|套|个)$'
+    AND material_name !~ '^(机械费|材料费|人工费|管理费|利润|规费|税金|安全文明).*元$'
+"""
+
+
+def _is_garbage_material(name: str) -> bool:
+    """检查 material_name 是否是 OCR 噪声"""
+    return bool(_GARBAGE_MATERIAL_RE.match(name.strip())) if name else True
+
+
+# ── 标准查询接口（供合约验证和 corrective_action 使用）─────────────────
+
+def get_latest_year_month_for_material(material_name: str) -> str:
+    """返回某材料的最新有效数据期次。无结果返回空字符串。"""
+    if not material_name or _is_garbage_material(material_name):
+        return ""
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT year_month FROM price_records "
+                    "WHERE material_name ILIKE %s "
+                    "  AND price_tax_included IS NOT NULL "
+                    "  AND year_month IS NOT NULL AND year_month != '' "
+                    + _GARBAGE_SQL_CLAUSE +
+                    " ORDER BY year_month DESC LIMIT 1",
+                    (f"%{material_name}%",),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else ""
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.warning("[db] get_latest_year_month_for_material failed: %s", e)
+        return ""
+
+
+def get_most_common_spec(material_name: str, year_month: str = "") -> str:
+    """返回某材料最常用的规格。可选用期间过滤。无结果返回空字符串。"""
+    if not material_name or _is_garbage_material(material_name):
+        return ""
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                clauses = [
+                    "material_name ILIKE %s",
+                    "price_tax_included IS NOT NULL",
+                    "specification IS NOT NULL AND specification != ''",
+                ]
+                params: list = [f"%{material_name}%"]
+                if year_month:
+                    clauses.append("year_month = %s")
+                    params.append(year_month)
+                cur.execute(
+                    "SELECT specification, count(*) AS n FROM price_records "
+                    "WHERE " + " AND ".join(clauses) + " "
+                    + _GARBAGE_SQL_CLAUSE +
+                    " GROUP BY specification ORDER BY n DESC LIMIT 1",
+                    params,
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else ""
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.warning("[db] get_most_common_spec failed: %s", e)
+        return ""
+
+
+def get_price_cv(material_name: str, year_month: str) -> float | None:
+    """返回某材料某期多源价格的变异系数（CV=std/mean）。单源返回 None。"""
+    if not material_name or not year_month:
+        return None
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT price_tax_included FROM price_records "
+                    "WHERE material_name ILIKE %s AND year_month = %s "
+                    "  AND price_tax_included IS NOT NULL "
+                    + _GARBAGE_SQL_CLAUSE,
+                    (f"%{material_name}%", year_month),
+                )
+                prices = [float(r[0]) for r in cur.fetchall()]
+        finally:
+            _put_pg_conn(conn)
+        if len(prices) < 2:
+            return None
+        mean = sum(prices) / len(prices)
+        std = (sum((p - mean) ** 2 for p in prices) / len(prices)) ** 0.5
+        return float(std / mean) if mean > 0 else None
+    except Exception as e:
+        logger.warning("[db] get_price_cv failed: %s", e)
+        return None
+
+
+def get_material_price_range(material_name: str, year_month: str = "") -> dict:
+    """返回某材料的 min/mean/max 价格及来源数。"""
+    result = {"min": None, "mean": None, "max": None, "count": 0}
+    if not material_name:
+        return result
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                clauses = [
+                    "material_name ILIKE %s",
+                    "price_tax_included IS NOT NULL",
+                ]
+                params: list = [f"%{material_name}%"]
+                if year_month:
+                    clauses.append("year_month = %s")
+                    params.append(year_month)
+                cur.execute(
+                    "SELECT min(price_tax_included), avg(price_tax_included), "
+                    "max(price_tax_included), count(*) FROM price_records "
+                    "WHERE " + " AND ".join(clauses) + " "
+                    + _GARBAGE_SQL_CLAUSE,
+                    params,
+                )
+                row = cur.fetchone()
+        finally:
+            _put_pg_conn(conn)
+        if row and row[3] > 0:
+            return {
+                "min": float(row[0]) if row[0] else None,
+                "mean": round(float(row[1]), 2) if row[1] else None,
+                "max": float(row[2]) if row[2] else None,
+                "count": int(row[3]),
+            }
+        return result
+    except Exception as e:
+        logger.warning("[db] get_material_price_range failed: %s", e)
+        return result
+
+
+def count_valid_price_records(material_name: str) -> int:
+    """返回某材料的有效价格记录数（有价格+规格+期间）。"""
+    if not material_name:
+        return 0
+    try:
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM price_records "
+                    "WHERE material_name ILIKE %s "
+                    "  AND price_tax_included IS NOT NULL "
+                    "  AND specification IS NOT NULL AND specification != '' "
+                    "  AND year_month IS NOT NULL AND year_month != '' "
+                    + _GARBAGE_SQL_CLAUSE,
+                    (f"%{material_name}%",),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.warning("[db] count_valid_price_records failed: %s", e)
+        return 0
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -365,6 +610,7 @@ _STRUCTURED_TABLE_QUERY_HINTS = (
     "费率",
     "推荐费率",
     "推荐系数",
+    "推荐比例",
     "费率标准",
     "企业管理费",
     "利润率",
@@ -372,6 +618,9 @@ _STRUCTURED_TABLE_QUERY_HINTS = (
     "赶工措施费",
     "总包管理服务费",
     "计算基数",
+    "优质优价奖励费",
+    "夜间施工增加费",
+    "履约担保手续费",
 )
 
 _FEE_FORMULA_HINT_RE = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
@@ -386,9 +635,60 @@ _concept_analyzer = QueryAnalyzer()
 
 
 def _should_include_structured_tables(query: str) -> bool:
+    """Return True if the query is likely about fee-rate structured data.
+
+    Strategy (rerank-first, keyword fallback):
+    1. ANN gate   — embed the query, pull top-5 fee_rates candidates from pgvector.
+    2. Rerank gate — BGE-reranker-v2-m3 scores each (query, fee_name + source_text)
+                     pair as a cross-encoder.  Cross-encoder scores are trained
+                     relevance signals; score > 0 reliably indicates a relevant pair.
+                     No manually tuned threshold needed.
+    3. Keyword gate — cheap fallback when embedding/reranker/DB is unavailable.
+    """
     normalized = (query or "").strip()
     if not normalized:
         return False
+
+    # --- ANN + rerank gate ---
+    try:
+        query_vec = _get_embedding(normalized)
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT fee_name, COALESCE(NULLIF(TRIM(applicable_scope),''), source_text, '') AS doc_text
+                    FROM   fee_rates
+                    WHERE  embedding IS NOT NULL
+                    ORDER  BY embedding <=> %s::vector
+                    LIMIT  5
+                    """,
+                    (query_vec,),
+                )
+                rows = cur.fetchall()
+        finally:
+            _put_pg_conn(conn)
+
+        if rows:
+            from infrastructure.reranker_service import get_reranker_service
+            reranker = get_reranker_service()
+            docs = [f"{r[0]} {r[1]}"[:512] for r in rows]
+            scores = reranker.rerank(normalized, docs)
+            best = max(scores) if scores else -999
+            logger.debug(
+                "[structured_table_gate] reranker best=%.3f query=%r",
+                best,
+                normalized[:60],
+            )
+            # sigmoid > 0.5 is the model's natural boundary (logit > 0 = relevant).
+            # This is not an arbitrary threshold — it's the trained decision boundary.
+            if best > 0.5:
+                return True
+
+    except Exception as exc:
+        logger.warning("[structured_table_gate] rerank gate failed (%s), using keyword fallback", exc)
+
+    # --- Keyword gate (fallback) ---
     return any(hint in normalized for hint in _STRUCTURED_TABLE_QUERY_HINTS)
 
 
@@ -1001,11 +1301,20 @@ def _materialize_graph_evidence(conn, evidence_row: tuple) -> dict | None:
     )
 
 
-def _expand_concept_hits_from_graph(conn, concept_hits: list[dict], top_k: int = 2) -> list[dict]:
+def _expand_concept_hits_from_graph(
+    conn,
+    concept_hits: list[dict],
+    top_k: int = 2,
+    recursive_depth: int | None = None,
+) -> list[dict]:
     if not concept_hits:
         return []
 
-    recursive_depth = max(1, min(4, _env_int("CONCEPT_RECURSIVE_DEPTH", 2, minimum=1)))
+    recursive_depth = (
+        max(1, min(4, int(recursive_depth)))
+        if recursive_depth is not None
+        else max(1, min(4, _env_int("CONCEPT_RECURSIVE_DEPTH", 2, minimum=1)))
+    )
     per_concept_limit = max(2, top_k * 2)
     expanded: list[dict] = []
     seen_ids: set[str] = set()
@@ -1115,14 +1424,25 @@ def _expand_concept_hits_heuristic(conn, query: str, concept_hits: list[dict], t
     return expanded
 
 
-def _expand_concept_hits(conn, query: str, concept_hits: list[dict], top_k: int = 2) -> list[dict]:
+def _expand_concept_hits(
+    conn,
+    query: str,
+    concept_hits: list[dict],
+    top_k: int = 2,
+    recursive_depth: int | None = None,
+) -> list[dict]:
     if not concept_hits:
         return []
 
     has_graph_concept = any((hit.get("metadata") or {}).get("concept_id") for hit in concept_hits)
     if has_graph_concept and _graph_tables_available(conn):
         try:
-            graph_expanded = _expand_concept_hits_from_graph(conn, concept_hits, top_k=top_k)
+            graph_expanded = _expand_concept_hits_from_graph(
+                conn,
+                concept_hits,
+                top_k=top_k,
+                recursive_depth=recursive_depth,
+            )
             if graph_expanded:
                 return graph_expanded
         except Exception as exc:
@@ -1741,6 +2061,75 @@ def _query_material_text_fallback(
     return results
 
 
+def _query_material_page_fallback(
+    conn,
+    material_name: str,
+    year_month: str,
+    top_k: int = 3,
+) -> list[dict]:
+    period_label = _build_price_period_label(year_month)
+    year_month_norm = _normalize_year_month(year_month)
+    if not period_label or not material_name.strip() or not year_month_norm:
+        return []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+                SELECT DISTINCT doc_id, page_number
+                FROM text_chunks
+                WHERE content ILIKE %s
+                  AND content ILIKE %s
+                ORDER BY page_number
+                LIMIT %s
+            """,
+            (f"%{period_label}%", f"%{material_name}%", max(top_k * 4, 8)),
+        )
+        anchor_pages = cur.fetchall()
+
+    results: list[dict] = []
+    for doc_id, page_number in anchor_pages:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT id, content
+                    FROM text_chunks
+                    WHERE doc_id = %s AND page_number = %s
+                    ORDER BY id
+                """,
+                (doc_id, page_number),
+            )
+            page_rows = cur.fetchall()
+
+        combined_content = "\n".join((row[1] or "") for row in page_rows).strip()
+        if not combined_content:
+            continue
+        results.append(
+            _with_retrieval_path(
+                {
+                    "chunk_id": f"text_page_{doc_id}_{page_number}_{material_name}",
+                    "doc_id": doc_id or "",
+                    "page_number": page_number or 1,
+                    "source_db": "text_page_fallback",
+                    "content": (
+                        f"{material_name} 价格走势 期间:{year_month_norm} 证据页：\n"
+                        f"{combined_content[:1800]}"
+                    ),
+                    "score": 0.82,
+                    "metadata": {
+                        "year_month": year_month_norm,
+                    },
+                },
+                RETRIEVAL_PATH_PDF_PAGE,
+                evidence_kind="pdf_page_chunk",
+                route_stage="secondary",
+            )
+        )
+        if len(results) >= top_k:
+            break
+
+    return results
+
+
 def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[dict]:
     normalized = _normalize_year_month(year_month)
     if not normalized or not material_name.strip():
@@ -1799,6 +2188,42 @@ def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[di
             return results
 
     return results
+
+
+def _pick_consistent_spec_trend(raw_rows: list[tuple]) -> list[tuple]:
+    """Select the most prevalent (specification, unit) combo across months.
+
+    Groups raw rows by (spec, unit), picks the combo that spans the most
+    distinct months (ties broken by higher avg price), and returns only
+    rows matching that combo.  This prevents apples-to-oranges trend lines
+    where different products (e.g. per-unit cable vs per-metre cable) are
+    averaged together.
+    """
+    if not raw_rows:
+        return []
+
+    # Group rows by (spec_or_name, unit)
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[tuple]] = defaultdict(list)
+    for r in raw_rows:
+        year_month, avg_price, unit, spec_or_name, n = r
+        key = (spec_or_name or "", unit or "")
+        groups[key].append(r)
+
+    if not groups:
+        return []
+
+    def _combo_score(kv):
+        (spec_or_name, unit), group_rows = kv
+        distinct_months = len({r[0] for r in group_rows})
+        total_n = sum(r[4] for r in group_rows)
+        avg_p = sum(float(r[1] or 0) for r in group_rows) / max(len(group_rows), 1)
+        # Prefer combos with non-empty spec/unit
+        has_both = 1 if (spec_or_name and unit) else 0
+        return (distinct_months, has_both, total_n, avg_p)
+
+    best_key = max(groups.items(), key=_combo_score)[0]
+    return groups[best_key]
 
 
 def _build_price_period_label(year_month: str) -> str:
@@ -2048,15 +2473,19 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
                     rrec_s = f"{float(rrec):.4g}%" if rrec is not None else "—"
                     # Build clear content with calc_base so LLM knows what to multiply
                     calc_base_note = f"计算基数：{cbase}" if cbase else ""
-                    # When applicable_scope is empty, fall back to source_text which often
-                    # contains per-engineering-type breakdowns (e.g. 房建工程 vs 市政工程)
-                    scope_display = scope or (src or "").replace("\n", " ").strip()
+                    formula_display = formula or ""
+                    scope_display = scope or ""
+                    # When structured fields are missing, append source_text so LLM can parse raw data
+                    source_snippet = ""
+                    if (not formula_display or not scope_display or not cbase) and src:
+                        source_snippet = f"\n原文摘录：{src[:300]}"
                     content_text = (
                         f"【{yr}版费率标准】{fname}（{fcat}）\n"
                         f"费率参考范围：{rmin_s}～{rmax_s}，推荐费率：{rrec_s}（单位：%，使用时÷100）\n"
-                        f"{calc_base_note}\n"
-                        f"计算公式：{formula or ''}\n"
-                        f"适用范围/原文：{scope_display}"
+                        f"计算公式：{formula_display or '（见原文摘录）'}\n"
+                        f"计算基数：{cbase or '（见原文摘录）'}\n"
+                        f"适用范围：{scope_display or '（见原文摘录）'}"
+                        f"{source_snippet}"
                     ).strip()
                     results.append({
                         "chunk_id": cid,
@@ -2131,6 +2560,87 @@ def _query_trend_points(
 # ── 新工具：pg_vector_search（PG pgvector）──────────────────────────────────
 
 
+def _run_coro_sync(coro):
+    """在同步工具函数里安全执行异步适配器调用。"""
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, Exception] = {}
+
+    def _runner() -> None:
+        try:
+            result_holder["value"] = asyncio.run(coro)
+        except Exception as exc:  # pragma: no cover - error path is surfaced to caller
+            error_holder["error"] = exc
+
+    worker = _threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    worker.join()
+
+    if "error" in error_holder:
+        raise error_holder["error"]
+    return result_holder.get("value")
+
+
+def _milvus_vector_results(query: str, top_k: int) -> list[dict]:
+    try:
+        vector_config = AppConfig().vector_store
+    except Exception as e:
+        logger.warning(f"[vector_search] failed to load vector store config: {e}")
+        return []
+
+    if vector_config.type != "milvus":
+        return []
+
+    try:
+        adapter = create_vector_store_adapter(vector_config)
+    except Exception as e:
+        logger.warning(f"[vector_search] failed to create vector adapter: {e}")
+        return []
+
+    if not adapter.is_available():
+        logger.warning("[vector_search] milvus adapter unavailable, falling back to pgvector")
+        return []
+
+    query_embedding = _get_embedding(query.strip())
+    if not query_embedding:
+        return []
+
+    try:
+        documents = _run_coro_sync(
+            adapter.search(np.asarray(query_embedding, dtype=float), top_k=top_k, score_threshold=0.40)
+        )
+    except Exception as e:
+        logger.warning(f"[vector_search] milvus search failed, falling back to pgvector: {e}")
+        return []
+
+    if not isinstance(documents, list):
+        return []
+
+    results = []
+    for document, score in documents:
+        results.append(
+            _with_retrieval_path(
+                {
+                    "chunk_id": str(document.id),
+                    "doc_id": str(document.doc_id or ""),
+                    "page_number": document.page or 1,
+                    "source_db": "milvus",
+                    "content": document.content or "",
+                    "score": round(float(score or 0), 4),
+                    "metadata": {
+                        "title": document.title,
+                        "section": document.section,
+                        "chunk_type": document.chunk_type,
+                        **document.metadata,
+                    },
+                },
+                RETRIEVAL_PATH_VECTOR,
+                evidence_kind="vector_chunk",
+                route_stage="primary",
+            )
+        )
+    return results
+
+
 @tool
 def vector_search(query: str, top_k: int = 10) -> str:
     """向量语义搜索：从 text_chunks 表中使用 pgvector 余弦相似度检索"""
@@ -2139,6 +2649,10 @@ def vector_search(query: str, top_k: int = 10) -> str:
 
     conn = None
     try:
+        milvus_results = _milvus_vector_results(query, top_k)
+        if milvus_results:
+            return json.dumps(milvus_results, ensure_ascii=False)
+
         query_embedding = _get_embedding(query.strip())
         if not query_embedding:
             return json.dumps([])
@@ -2169,7 +2683,7 @@ def vector_search(query: str, top_k: int = 10) -> str:
                             "score": round(float(row[4] or 0), 4),
                             "metadata": {},
                         },
-                        RETRIEVAL_PATH_DATABASE,
+                        RETRIEVAL_PATH_VECTOR,
                         evidence_kind="vector_chunk",
                         route_stage="primary",
                     )
@@ -2442,31 +2956,173 @@ def category_search(query: str, top_k: int = 5) -> str:
             _put_pg_conn(conn)
 
 
-# ── graph_search（已废弃，Neo4j 移除）────────────────────────────────────────
+# ── graph_search（概念图入口）────────────────────────────────────────
 
 
 @tool
 def graph_search(query: str, top_k: int = 10) -> str:
-    """知识图谱搜索：已废弃（Neo4j 已移除），返回空结果"""
-    logger.warning("[graph_search] Neo4j removed, returning empty")
-    return json.dumps([])
+    """知识图谱搜索：复用概念图命中与证据下钻，但显式标记 graph 路由。"""
+    if not query.strip():
+        return json.dumps([])
+
+    try:
+        concept_tool = getattr(concept_search, "func", None)
+        if concept_tool is None:
+            return json.dumps([])
+
+        concept_results = json.loads(concept_tool(query, top_k=top_k, include_evidence=True))
+        graph_results = []
+        for item in concept_results:
+            rewritten = dict(item)
+            metadata = dict(rewritten.get("metadata") or {})
+            metadata["graph_entry_query"] = query
+            rewritten["metadata"] = metadata
+            rewritten["retrieval_path"] = RETRIEVAL_PATH_GRAPH
+            graph_results.append(rewritten)
+
+        logger.info(f"[graph_search] query='{query}' hits={len(graph_results)}")
+        return json.dumps(graph_results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[graph_search] error: {e}")
+        return json.dumps([])
+
+
+@tool
+def topology_search(query: str, top_k: int = 10, max_depth: int = 2) -> str:
+    """拓扑遍历搜索：返回概念锚点及受限深度的关联证据，并显式标记停止原因。"""
+    if not query.strip():
+        return json.dumps([])
+
+    conn = None
+    bounded_depth = max(1, min(4, int(max_depth or 1)))
+    anchor_limit = max(1, min(4, int(top_k or 1)))
+    expansion_limit = max(1, min(4, int(top_k or 1)))
+    try:
+        conn = _get_pg_conn()
+        concept_hits = _load_concept_hits(conn, query.strip(), top_k=anchor_limit)
+        expanded_hits = _expand_concept_hits(
+            conn,
+            query.strip(),
+            concept_hits,
+            top_k=expansion_limit,
+            recursive_depth=bounded_depth,
+        ) if concept_hits else []
+
+        expanded_anchor_ids = {
+            str((item.get("metadata") or {}).get("parent_concept_id") or "")
+            for item in expanded_hits
+            if (item.get("metadata") or {}).get("parent_concept_id")
+        }
+
+        rewritten_anchors: list[dict] = []
+        for anchor in concept_hits:
+            rewritten = dict(anchor)
+            metadata = dict(rewritten.get("metadata") or {})
+            anchor_id = str(rewritten.get("chunk_id") or "")
+            metadata["topology_role"] = "anchor"
+            metadata["topology_depth"] = 0
+            metadata["topology_anchor_id"] = anchor_id
+            metadata["topology_max_depth"] = bounded_depth
+            metadata["stop_reason"] = "expanded" if anchor_id in expanded_anchor_ids else "anchor_only"
+            rewritten["metadata"] = metadata
+            rewritten["retrieval_path"] = RETRIEVAL_PATH_TOPOLOGY
+            rewritten_anchors.append(rewritten)
+
+        expansions_by_anchor: dict[str, list[dict]] = {}
+        orphan_expansions: list[dict] = []
+        for item in expanded_hits:
+            rewritten = dict(item)
+            metadata = dict(rewritten.get("metadata") or {})
+            graph_depth = int(metadata.get("graph_depth") or 0)
+            parent_anchor_id = str(metadata.get("parent_concept_id") or "")
+            metadata["topology_role"] = "evidence"
+            metadata["topology_depth"] = graph_depth
+            metadata["topology_anchor_id"] = parent_anchor_id
+            metadata["topology_max_depth"] = bounded_depth
+            if graph_depth >= bounded_depth:
+                metadata["stop_reason"] = "max_depth_reached"
+            elif graph_depth <= 0:
+                metadata["stop_reason"] = "direct_evidence"
+            else:
+                metadata["stop_reason"] = "evidence_collected"
+            rewritten["metadata"] = metadata
+            rewritten["retrieval_path"] = RETRIEVAL_PATH_TOPOLOGY
+            if parent_anchor_id:
+                expansions_by_anchor.setdefault(parent_anchor_id, []).append(rewritten)
+            else:
+                orphan_expansions.append(rewritten)
+
+        ordered: list[dict] = []
+        deferred: list[dict] = []
+        for anchor in rewritten_anchors:
+            anchor_id = str(anchor.get("chunk_id") or "")
+            ordered.append(anchor)
+            anchor_expansions = expansions_by_anchor.pop(anchor_id, [])
+            if anchor_expansions:
+                ordered.append(anchor_expansions[0])
+                deferred.extend(anchor_expansions[1:])
+        for remaining in expansions_by_anchor.values():
+            deferred.extend(remaining)
+        ordered.extend(orphan_expansions)
+        ordered.extend(deferred)
+
+        combined: list[dict] = []
+        seen_ids: set[str] = set()
+        for item in ordered:
+            cid = str(item.get("chunk_id") or "")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            combined.append(item)
+
+        max_results = max(int(top_k or 1), min(len(combined), anchor_limit + expansion_limit))
+        logger.info(
+            "[topology_search] query='%s' anchors=%s expansions=%s depth=%s",
+            query,
+            len(rewritten_anchors),
+            len(expanded_hits),
+            bounded_depth,
+        )
+        return json.dumps(combined[:max_results], ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[topology_search] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 # ── hybrid_search（PG 双路融合）─────────────────────────────────────────────
 
 
 @tool
-def hybrid_search(query: str, top_k: int = 10) -> str:
-    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。"""
+def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str:
+    """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。
+
+    Args:
+        query: 检索关键词
+        top_k: 返回结果数量
+        path_constraint: 可选，章节路径前缀过滤（如 '第二册电气设备安装工程/10.%'）。
+    """
     if not query.strip():
         return json.dumps([])
 
     conn = None
     started = time.perf_counter()
+    path_filter_sql = "AND tc.path LIKE %s" if path_constraint else ""
+    path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
         cfg = _get_hybrid_runtime_config(top_k)
         query_family = str((_concept_analyzer.analyze(query).get("intent") or "semantic"))
         cfg = _apply_query_family_routing(query_family, cfg, top_k)
+        milvus_vector_hits: list[dict] = []
+        if not path_constraint:
+            milvus_vector_hits = _milvus_vector_results(query, int(cfg["vector_fetch_k"]))
+            for chunk in milvus_vector_hits:
+                chunk["source_db"] = "hybrid_vector"
+                metadata = dict(chunk.get("metadata") or {})
+                metadata["vector_backend"] = "milvus"
+                chunk["metadata"] = metadata
         query_embedding = _get_embedding(query.strip())
         conn = _get_pg_conn()
         has_chunk_vector_views = _table_available(conn, "public.chunk_vector_views")
@@ -2493,19 +3149,25 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
             "appendix_hits": 0,
             "fill_hits": 0,
             "route_policy": cfg.get("route_policy", query_family),
+            "vector_backend": "milvus" if milvus_vector_hits else "pgvector",
         }
         ts_cfg = _resolve_text_search_config(conn)
 
         with conn.cursor() as cur:
-            if query_embedding:
+            if milvus_vector_hits:
+                vector_hits.extend(milvus_vector_hits)
+                observability["vector_hits"] = len(vector_hits)
+            elif query_embedding:
+                cur.execute("SET hnsw.ef_search = 100")
                 try:
                     cur.execute(
-                        """
+                        f"""
                             SELECT id, doc_id, page_number, content,
                                    1 - (embedding <=> %s::vector) AS score
                             FROM text_chunks
                             WHERE embedding IS NOT NULL
                               AND 1 - (embedding <=> %s::vector) >= %s
+                              {path_filter_sql.replace('tc.', '')}
                             ORDER BY embedding <=> %s::vector
                             LIMIT %s
                         """,
@@ -2513,6 +3175,7 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                             query_embedding,
                             query_embedding,
                             float(cfg["vector_min_score"]),
+                            *path_filter_params,
                             query_embedding,
                             int(cfg["vector_fetch_k"]),
                         ),
@@ -2527,9 +3190,9 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                     "source_db": "hybrid_vector",
                                     "content": row[3] or "",
                                     "score": round(float(row[4] or 0), 4),
-                                    "metadata": {},
+                                    "metadata": {"vector_backend": "pgvector"},
                                 },
-                                RETRIEVAL_PATH_DATABASE,
+                                RETRIEVAL_PATH_VECTOR,
                                 evidence_kind="vector_chunk",
                                 route_stage="primary",
                             )
@@ -2573,11 +3236,12 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                         "content": row[5] or "",
                                         "score": round(float(row[6] or 0), 4),
                                         "metadata": {
+                                            "vector_backend": "pgvector",
                                             "vector_view_id": row[0],
                                             "vector_view_type": row[2] or "raw_chunk",
                                         },
                                     },
-                                    RETRIEVAL_PATH_DATABASE,
+                                    RETRIEVAL_PATH_VECTOR,
                                     evidence_kind="multi_vector_parent",
                                     route_stage="primary",
                                 )
@@ -2598,10 +3262,11 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                ts_rank(tsv, plainto_tsquery('{ts_cfg}', %s)) AS score
                         FROM text_chunks
                         WHERE tsv @@ plainto_tsquery('{ts_cfg}', %s)
+                        {path_filter_sql.replace('tc.', '')}
                         ORDER BY score DESC
                         LIMIT %s
                     """,
-                    (query, query, int(cfg["text_fetch_k"])),
+                    (query, query, *path_filter_params, int(cfg["text_fetch_k"])),
                 )
             else:
                 cur.execute(
@@ -2611,10 +3276,11 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
                                        plainto_tsquery('{ts_cfg}', %s)) AS score
                         FROM text_chunks
                         WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                        {path_filter_sql.replace('tc.', '')}
                         ORDER BY score DESC
                         LIMIT %s
                     """,
-                    (query, query, int(cfg["text_fetch_k"])),
+                    (query, query, *path_filter_params, int(cfg["text_fetch_k"])),
                 )
             for row in cur.fetchall():
                 text_hits.append(
@@ -2722,14 +3388,35 @@ def hybrid_search(query: str, top_k: int = 10) -> str:
 
 
 @tool
-def text_search(query: str, top_k: int = 8) -> str:
-    """语义向量搜索+全文检索：从 text_chunks 表中检索"""
+def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
+    """语义向量搜索+全文检索：从 text_chunks 表中检索。
+
+    Args:
+        query: 检索关键词
+        top_k: 返回结果数量
+        path_constraint: 可选，章节路径前缀过滤（如 '第二册电气设备安装工程/10.%'），
+                         限定检索范围到特定章节，避免跨册噪声。
+    """
     if not query.strip():
         return json.dumps([])
+
+    # ── tracking number: every text_search call gets a short ID so log lines
+    # for FTS / vector / structured can be correlated with this exact invocation.
+    trace_id = uuid.uuid4().hex[:8]
+    logger.info(
+        f"[text_search][{trace_id}] query={query!r} top_k={top_k} "
+        f"path_constraint={path_constraint!r}"
+    )
 
     results = []
     seen_ids = set()
     conn = None
+    fts_count = 0
+    vec_count = 0
+    structured_count = 0
+    # Build optional path filter clause (parameterized, injection-safe)
+    path_filter_sql = "AND path LIKE %s" if path_constraint else ""
+    path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
         conn = _get_pg_conn()
         ts_cfg = _resolve_text_search_config(conn)
@@ -2742,12 +3429,14 @@ def text_search(query: str, top_k: int = 8) -> str:
                            ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
                     FROM text_chunks
                     WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
+                    {path_filter_sql}
                     ORDER BY score DESC
                     LIMIT %s
-                """, (query, query, top_k))
+                """, (query, query, *path_filter_params, top_k))
                 for row in cur.fetchall():
                     if row[0] not in seen_ids:
                         seen_ids.add(row[0])
+                        fts_count += 1
                         results.append(
                             _with_retrieval_path(
                                 {
@@ -2772,18 +3461,21 @@ def text_search(query: str, top_k: int = 8) -> str:
             query_embedding = _get_embedding(query.strip())
             if query_embedding:
                 with conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute("SET hnsw.ef_search = 100")
+                    cur.execute(f"""
                         SELECT id, doc_id, page_number, content,
                                1 - (embedding <=> %s::vector) AS score
                         FROM text_chunks
                         WHERE embedding IS NOT NULL
                           AND 1 - (embedding <=> %s::vector) >= 0.40
+                          {path_filter_sql}
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
-                    """, (query_embedding, query_embedding, query_embedding, top_k))
+                    """, (query_embedding, query_embedding, *path_filter_params, query_embedding, top_k))
                     for row in cur.fetchall():
                         if row[0] not in seen_ids:
                             seen_ids.add(row[0])
+                            vec_count += 1
                             results.append(
                                 _with_retrieval_path(
                                     {
@@ -2840,7 +3532,13 @@ def text_search(query: str, top_k: int = 8) -> str:
             _put_pg_conn(conn)
 
     results.sort(key=lambda x: x["score"], reverse=True)
-    return json.dumps(results[:top_k], ensure_ascii=False)
+    final = results[:top_k]
+    top_ids = [c.get("chunk_id") for c in final[:5]]
+    logger.info(
+        f"[text_search][{trace_id}] done fts={fts_count} vector={vec_count} "
+        f"total_unique={len(results)} returned={len(final)} top_ids={top_ids}"
+    )
+    return json.dumps(final, ensure_ascii=False)
 
 
 @tool
@@ -2906,9 +3604,6 @@ def pdf_page_search(query: str, top_k: int = 8) -> str:
             _put_pg_conn(conn)
 
 
-# ── rule_clause_search（目录命中后二跳定向检索条文正文）─────────────────────
-
-
 @tool
 def rule_clause_search(
     query: str,
@@ -2919,85 +3614,98 @@ def rule_clause_search(
     page_end: int = 0,
     top_k: int = 8,
 ) -> str:
-    """条文定向检索：在已锁定文档/章节/页段范围内二跳检索条文正文。
-    目录命中后优先使用此工具，传入 doc_id/doc_filename/section/page_start/page_end
-    来限定检索范围，避免跨文档噪音。
-    未传 doc_id/doc_filename 时退化为全库 text_search。
-    """
+    """在限定文档/章节/页码范围内检索条文正文，适合目录命中后的二跳下钻。"""
     if not query.strip():
         return json.dumps([])
 
     conn = None
     try:
         conn = _get_pg_conn()
+
+        cleaned_doc_filename = (
+            (doc_filename or "").strip().replace("《", "").replace("》", "")
+        )
+        terms = [query.strip()]
+        section_term = (section or "").strip()
+        if section_term and section_term not in terms:
+            terms.append(section_term)
+
+        where_clauses = ["1=1"]
+        params: list = []
+        if doc_id.strip():
+            where_clauses.append("doc_id = %s")
+            params.append(doc_id.strip())
+        if cleaned_doc_filename:
+            where_clauses.append("file_name ILIKE %s")
+            params.append(f"%{cleaned_doc_filename}%")
+        if int(page_start or 0) > 0:
+            where_clauses.append("page_number >= %s")
+            params.append(int(page_start))
+        if int(page_end or 0) > 0:
+            where_clauses.append("page_number <= %s")
+            params.append(int(page_end))
+
+        term_clauses = []
+        for term in terms:
+            term_clauses.append("content ILIKE %s")
+            params.append(f"%{term}%")
+        if term_clauses:
+            where_clauses.append(f"({' OR '.join(term_clauses)})")
+
+        sql = f"""
+            SELECT id, doc_id, file_name, page_number, content
+            FROM text_chunks
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY
+                CASE WHEN content ILIKE %s THEN 0 ELSE 1 END,
+                page_number ASC,
+                length(content) ASC
+            LIMIT %s
+        """
+        params.extend((f"%{query.strip()}%", int(top_k)))
+
         with conn.cursor() as cur:
-            conditions = ["content ILIKE %s"]
-            params: list = [f"%{query.strip()}%"]
-
-            if doc_id:
-                conditions.append("doc_id = %s")
-                params.append(doc_id)
-            elif doc_filename:
-                conditions.append("doc_id IN (SELECT id FROM document_registry WHERE file_name ILIKE %s)")
-                params.append(f"%{doc_filename}%")
-
-            if page_start and page_end and page_end >= page_start:
-                conditions.append("page_number BETWEEN %s AND %s")
-                params.extend([page_start, page_end])
-            elif page_start:
-                conditions.append("page_number >= %s")
-                params.append(page_start)
-
-            if section:
-                conditions.append("content ILIKE %s")
-                params.append(f"%{section}%")
-
-            where = " AND ".join(conditions)
-            params.append(top_k * 3)
-            cur.execute(
-                f"SELECT id, doc_id, page_number, content FROM text_chunks WHERE {where} LIMIT %s",
-                params,
-            )
+            cur.execute(sql, params)
             rows = cur.fetchall()
 
-            # fallback: drop ILIKE filter, keep scope constraints only
-            if not rows and (doc_id or doc_filename or page_start):
-                conditions2 = []
-                params2: list = []
-                if doc_id:
-                    conditions2.append("doc_id = %s")
-                    params2.append(doc_id)
-                elif doc_filename:
-                    conditions2.append("doc_id IN (SELECT id FROM document_registry WHERE file_name ILIKE %s)")
-                    params2.append(f"%{doc_filename}%")
-                if page_start and page_end and page_end >= page_start:
-                    conditions2.append("page_number BETWEEN %s AND %s")
-                    params2.extend([page_start, page_end])
-                if conditions2:
-                    params2.append(top_k * 2)
-                    cur.execute(
-                        f"SELECT id, doc_id, page_number, content FROM text_chunks WHERE {' AND '.join(conditions2)} ORDER BY page_number LIMIT %s",
-                        params2,
-                    )
-                    rows = cur.fetchall()
-
-            results = []
-            for row in rows[:top_k]:
-                results.append(
-                    _with_retrieval_path(
-                        {
-                            "id": str(row[0]),
-                            "doc_id": str(row[1]),
-                            "page_number": row[2],
-                            "content": row[3],
-                            "score": 0.75,
-                            "source_db": "rule_clause_search",
+        results: list[dict] = []
+        for index, row in enumerate(rows):
+            score = max(0.75, 0.98 - index * 0.03)
+            results.append(
+                _with_retrieval_path(
+                    {
+                        "chunk_id": f"rule_clause_{row[0]}",
+                        "doc_id": str(row[1] or ""),
+                        "page_number": row[3] or 1,
+                        "source_db": "rule_clause",
+                        "content": row[4] or "",
+                        "score": round(score, 4),
+                        "metadata": {
+                            "file_name": row[2] or "",
+                            "target_doc_id": doc_id or "",
+                            "target_doc_filename": cleaned_doc_filename,
+                            "target_section": section_term,
+                            "target_page_start": int(page_start or 0),
+                            "target_page_end": int(page_end or 0),
                         },
-                        "rule_clause_search",
-                        {"doc_id": doc_id, "section": section, "page_start": page_start, "page_end": page_end},
-                    )
+                    },
+                    RETRIEVAL_PATH_PDF_PAGE,
+                    evidence_kind="rule_clause_chunk",
+                    route_stage="scoped",
                 )
-            return json.dumps(results, ensure_ascii=False)
+            )
+
+        logger.info(
+            "[rule_clause_search] query='%s' doc_id='%s' file='%s' section='%s' pages=%s-%s hits=%s",
+            query,
+            doc_id,
+            cleaned_doc_filename,
+            section_term,
+            page_start,
+            page_end,
+            len(results),
+        )
+        return json.dumps(results[:top_k], ensure_ascii=False)
     except Exception as e:
         logger.error(f"[rule_clause_search] error: {e}")
         return json.dumps([])
@@ -3048,6 +3756,19 @@ def price_query(material_name: str = "", specification: str = "", year_month: st
                         where_clauses.append("year_month = %s")
                         params.append(period_filter)
                 where_clauses.append("price_tax_included IS NOT NULL")
+                # 排除 OCR 噪声行（表格标题、单位行等）
+                where_clauses.append(
+                    "material_name !~ '^\\\\d+\\\\.?\\\\d*$'"
+                )
+                where_clauses.append(
+                    "material_name !~ '^(kg|台班|t|m²|m³|m|套|个)$'"
+                )
+                where_clauses.append(
+                    "material_name !~ '元$'"
+                )
+                where_clauses.append(
+                    "material_name !~ '^(机械费|材料费|人工费|管理费|利润|规费|税金|安全文明).*元$'"
+                )
 
                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
                 sql = f"""
@@ -3297,17 +4018,54 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 f"""
                 SELECT year_month,
                        AVG(price_tax_included)::numeric(10,2) AS avg_price,
-                       MAX(unit)          AS unit,
-                       MAX(specification) AS specification
+                       MAX(unit) AS unit,
+                       specification,
+                       COUNT(*)  AS n
                 FROM price_records
                 {where_sql}
-                GROUP BY year_month
-                ORDER BY year_month ASC
-                LIMIT 48
+                GROUP BY year_month, specification, unit
+                ORDER BY year_month ASC, n DESC
+                LIMIT 200
                 """,
                 params,
             )
-            rows = cur.fetchall()
+            raw_rows = cur.fetchall()
+
+        rows = _pick_consistent_spec_trend(raw_rows)
+
+        if not rows and any(token in material_name for token in ("装配式", "预制构件")):
+            category_params: list = ["%预制%", "%预制%", "%混凝土%", "%混凝土%"]
+            category_where_parts = [
+                "(material_name ILIKE %s OR specification ILIKE %s)",
+                "(material_name ILIKE %s OR specification ILIKE %s)",
+                "price_tax_included IS NOT NULL",
+            ]
+            if start_month:
+                category_where_parts.append("year_month >= %s")
+                category_params.append(start_month)
+            if end_month:
+                category_where_parts.append("year_month <= %s")
+                category_params.append(end_month)
+            category_where = "WHERE " + " AND ".join(category_where_parts)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT year_month,
+                           AVG(price_tax_included)::numeric(10,2) AS avg_price,
+                           COALESCE(NULLIF(MAX(unit), ''), '综合') AS unit,
+                           material_name,
+                           COUNT(*) AS n
+                    FROM price_records
+                    {category_where}
+                    GROUP BY year_month, material_name, unit
+                    ORDER BY year_month ASC, n DESC
+                    LIMIT 120
+                    """,
+                    category_params,
+                )
+                raw_rows = cur.fetchall()
+            rows = _pick_consistent_spec_trend(raw_rows)
+            logger.info(f"[price_trend] precast category fallback hits={len(rows)}")
 
         # Fallback: compound Chinese names (e.g. "装配式混凝土预制构件") won't match
         # individual items like "预制混凝土楼板" via substring or AND-based FTS.
@@ -3333,28 +4091,75 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                         SELECT year_month,
                                AVG(price_tax_included)::numeric(10,2) AS avg_price,
                                MAX(unit) AS unit,
-                               MAX(material_name) AS material_name
+                               material_name,
+                               COUNT(*) AS n
                         FROM price_records
                         {fb_where}
-                        GROUP BY year_month
-                        ORDER BY year_month ASC
-                        LIMIT 48
+                        GROUP BY year_month, material_name, unit
+                        ORDER BY year_month ASC, n DESC
+                        LIMIT 120
                         """,
                         fb_params,
                     )
-                    rows = cur2.fetchall()
+                    raw_rows = cur2.fetchall()
+                rows = _pick_consistent_spec_trend(raw_rows)
                 logger.info(f"[price_trend] bigram fallback bigrams={bigrams} hits={len(rows)}")
 
         existing_months = {str(r[0]) for r in rows}
         fallback_chunks: list[dict] = []
         months_to_fill = [month for month in _iter_months(start_month, end_month) if month not in existing_months]
         for month in months_to_fill:
-            fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=1)
+            prefer_page_fallback = any(token in material_name for token in ("装配式", "预制构件"))
+            fallback_rows: list[dict] = []
+            if prefer_page_fallback:
+                fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=1)
+                if not fallback_rows:
+                    fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=5)
+            else:
+                fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=5)
+                if not fallback_rows:
+                    fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=1)
             if not fallback_rows:
                 fallback_rows = _query_material_ocr_fallback(material_name, month)
             if not fallback_rows:
                 continue
-            fallback_chunks.extend(fallback_rows)
+            priced_rows = [row for row in fallback_rows if (row.get("metadata") or {}).get("price")]
+            if priced_rows:
+                prices = [
+                    float(price)
+                    for row in priced_rows
+                    if (price := (row.get("metadata") or {}).get("price")) is not None
+                ]
+                if not prices:
+                    continue
+                first_row = priced_rows[0]
+                first_metadata = first_row.get("metadata") or {}
+                unit = str(first_metadata.get("unit") or "")
+                fallback_chunks.append(
+                    {
+                        "chunk_id": f"price_trend_fallback_aggregate_{material_name}_{month}",
+                        "doc_id": first_row.get("doc_id") or "",
+                        "page_number": first_row.get("page_number") or 1,
+                        "source_db": first_row.get("source_db", "text_price_fallback"),
+                        "content": (
+                            f"{material_name} 价格走势 期间:{month} 均价:{sum(prices) / len(prices):.2f}元/{unit} "
+                            f"样本数:{len(prices)}"
+                        ),
+                        "score": max(float(row.get("score", 0.0)) for row in priced_rows),
+                        "metadata": {
+                            "year_month": month,
+                            "price": f"{sum(prices) / len(prices):.2f}",
+                            "unit": unit,
+                            "sample_count": len(prices),
+                            "retrieval_path": first_metadata.get("retrieval_path") or first_row.get("retrieval_path") or RETRIEVAL_PATH_DATABASE,
+                            "evidence_kind": "fallback_price_aggregate",
+                            "route_stage": "secondary",
+                        },
+                        "retrieval_path": first_row.get("retrieval_path") or first_metadata.get("retrieval_path") or RETRIEVAL_PATH_DATABASE,
+                    }
+                )
+                continue
+            fallback_chunks.extend(fallback_rows[:1])
 
         # 返回 chunk 格式，以便 _collect_chunks 可以处理并传递给 synthesizer
         chunks = []
@@ -3377,7 +4182,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                         "source_db": "price_records",
                         "content": content,
                         "score": 0.85,
-                        "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit},
+                        "metadata": {"year_month": r[0], "avg_price": avg, "unit": unit, "specification": spec},
                     },
                     RETRIEVAL_PATH_DATABASE,
                     evidence_kind="structured_row",
@@ -3386,6 +4191,9 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
             )
         for row in sorted(fallback_chunks, key=lambda item: item.get("metadata", {}).get("year_month", "")):
             year_month = row["metadata"]["year_month"]
+            if "price" not in (row.get("metadata") or {}):
+                chunks.append(row)
+                continue
             avg_price = float(row["metadata"]["price"])
             unit = row["metadata"]["unit"]
             spec = material_name
@@ -3527,3 +4335,77 @@ def python_eval(code: str, chunks_json: str = "") -> str:
     except Exception as e:
         logger.error(f"[python_eval] error: {e}")
         return f"[沙箱调用失败: {e}]"
+
+
+@tool
+def get_catalog_map(query: str, top_k: int = 12) -> str:
+    """章节目录检索：根据关键词查找相关章节的 ID 和路径，用于在调用 text_search/hybrid_search 前确定 path_constraint。
+
+    调用时机：当需要检索工程标准条文、计算规则、费率说明时，先调用此工具确定目标章节路径，
+    再将 path 字段作为 path_constraint 传给 text_search 或 hybrid_search。
+
+    返回：[{chapter_id, title, path, file_name, depth}]
+    示例：get_catalog_map('送配电装置系统调试') →
+          [{chapter_id: '10.1.7', path: '第二册电气设备安装工程/10.1/10.1.7', ...}]
+    """
+    if not query.strip():
+        return json.dumps([])
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        ts_cfg = _resolve_text_search_config(conn)
+        results = []
+        with conn.cursor() as cur:
+            # BM25 search on catalog_index.title
+            cur.execute(
+                f"""
+                SELECT chapter_id, title, path, file_name, depth,
+                       ts_rank(to_tsvector('simple', coalesce(title,'')),
+                               plainto_tsquery('simple', %s)) AS score
+                FROM catalog_index
+                WHERE to_tsvector('simple', coalesce(title,''))
+                      @@ plainto_tsquery('simple', %s)
+                ORDER BY score DESC, depth ASC
+                LIMIT %s
+                """,
+                (query, query, top_k),
+            )
+            for row in cur.fetchall():
+                results.append({
+                    "chapter_id": row[0] or "",
+                    "title":      row[1] or "",
+                    "path":       row[2] or "",
+                    "file_name":  row[3] or "",
+                    "depth":      row[4] or 1,
+                    "score":      round(float(row[5] or 0), 4),
+                })
+        if not results:
+            # Fallback: ILIKE title search
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT chapter_id, title, path, file_name, depth, 0.1 AS score
+                    FROM catalog_index
+                    WHERE title ILIKE %s
+                    ORDER BY depth ASC
+                    LIMIT %s
+                    """,
+                    (f"%{query}%", top_k),
+                )
+                for row in cur.fetchall():
+                    results.append({
+                        "chapter_id": row[0] or "",
+                        "title":      row[1] or "",
+                        "path":       row[2] or "",
+                        "file_name":  row[3] or "",
+                        "depth":      row[4] or 1,
+                        "score":      round(float(row[5] or 0), 4),
+                    })
+        logger.info(f"[get_catalog_map] query='{query}' hits={len(results)}")
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[get_catalog_map] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)

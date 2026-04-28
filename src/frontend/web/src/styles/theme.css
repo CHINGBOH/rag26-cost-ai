@@ -3,23 +3,23 @@
  */
 
 :root {
-  /* 默认深色主题 */
-  --bg-primary: #0f172a;
-  --bg-surface: #1e293b;
-  --bg-elevated: #334155;
-  --bg-hover: #475569;
+  /* 默认深色主题 — 降饱和、和谐过渡 */
+  --bg-primary: #0b0d12;
+  --bg-surface: #14171f;
+  --bg-elevated: #1c2029;
+  --bg-hover: #232831;
   
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --text-inverse: #0f172a;
+  --text-primary: #e8eaed;
+  --text-secondary: #b3b7be;
+  --text-muted: #7c818b;
+  --text-inverse: #0b0d12;
   
-  --border-default: #334155;
+  --border-default: #232831;
   --border-highlight: #3b82f6;
   
-  --color-primary: #3b82f6;
-  --color-primary-hover: #60a5fa;
-  --color-primary-light: rgba(59, 130, 246, 0.2);
+  --color-primary: #5b8def;
+  --color-primary-hover: #7ba3f5;
+  --color-primary-light: rgba(91, 141, 239, 0.14);
   
   --color-success: #22c55e;
   --color-warning: #f59e0b;
