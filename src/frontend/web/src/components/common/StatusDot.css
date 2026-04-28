@@ -1,0 +1,29 @@
+.status-dot-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  display: inline-block;
+  border-radius: 999px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px transparent;
+  transition: box-shadow 0.18s ease;
+}
+
+.size-md .status-dot { width: 8px; height: 8px; }
+.size-sm .status-dot { width: 6px; height: 6px; }
+
+.status-healthy   { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.16); }
+.status-degraded  { background: #d97706; box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.16); }
+.status-unhealthy { background: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.16); }
+.status-unknown   { background: #64748b; }
+
+.status-dot-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+}
