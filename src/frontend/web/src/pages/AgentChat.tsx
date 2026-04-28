@@ -1091,25 +1091,28 @@ export const AgentChat: React.FC = () => {
                 disabled={isLoading}
               />
               {isLoading ? (
-                <button className="cancel-btn" onClick={cancelStream}>■ 停止</button>
+                <button className="cancel-btn" onClick={cancelStream}>停止</button>
               ) : (
                 <button
                   className="send-btn"
                   onClick={handleSend}
                   disabled={!input.trim()}
+                  aria-label="发送"
                 >
-                  ➤
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 13V3M3 8l5-5 5 5" />
+                  </svg>
                 </button>
               )}
             </div>
-            <div className="input-hints">
-              <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
-              <div className="input-meta-actions">
-                <span className="char-count">{input.length}</span>
-                {messages.length > 0 && (
-                  <button className="clear-btn" onClick={clearMessages}>清空对话</button>
-                )}
-              </div>
+          </div>
+          <div className="input-hints">
+            <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
+            <div className="input-meta-actions">
+              {input.length > 0 && <span className="char-count">{input.length}</span>}
+              {messages.length > 0 && (
+                <button className="clear-btn" onClick={clearMessages}>清空对话</button>
+              )}
             </div>
           </div>
         </div>
@@ -1135,8 +1138,8 @@ const QUICK_QUESTIONS = [
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">
     <div className="welcome-content">
-      <h1 className="welcome-title">🧠 造价知识问答</h1>
-      <p className="welcome-desc">基于深圳市建设工程定额、费率标准、信息价的智能问答系统</p>
+      <h1 className="welcome-title">造价知识问答</h1>
+      <p className="welcome-desc">深圳市建设工程定额 · 费率标准 · 信息价</p>
       <div className="quick-questions">
         {QUICK_QUESTIONS.map((q, i) => (
           <button key={i} className="quick-question-btn" onClick={() => onQuickAsk(q)}>
