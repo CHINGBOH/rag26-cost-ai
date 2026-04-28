@@ -557,6 +557,7 @@ def _normalize_math_text(text: str) -> str:
         .replace("×", "*")
         .replace("÷", "/")
         .replace("％", "%")
+        .replace("＝", "=")
         .replace("—", "-")
         .replace("–", "-")
     )
@@ -654,7 +655,8 @@ def _build_calculation_steps_presentation(
 
     steps: list[dict] = []
     seen_signatures: set[tuple[str, str]] = set()
-    for sentence in candidate_sentences:
+    for raw_sentence in candidate_sentences:
+        sentence = raw_sentence.replace("＝", "=")
         if "=" not in sentence or not re.search(r"\d", sentence):
             continue
 
