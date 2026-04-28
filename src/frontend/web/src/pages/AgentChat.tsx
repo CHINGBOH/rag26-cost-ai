@@ -132,7 +132,14 @@ function getHighlightBaseLabel(kind?: string, queryType?: string): string {
 
 function getSectionBaseLabel(kind?: string, queryType?: string): string {
   if (kind === 'analysis') {
-    return queryType === 'standard_ref' ? '依据说明' : '核心说明';
+    const labels: Record<string, string> = {
+      standard_ref: '依据说明',
+      price: '价格解析',
+      fee_rate: '费率解析',
+      formula: '公式推导',
+      comparison: '对比分析',
+    };
+    return (queryType && labels[queryType]) || '核心说明';
   }
   return '补充说明';
 }

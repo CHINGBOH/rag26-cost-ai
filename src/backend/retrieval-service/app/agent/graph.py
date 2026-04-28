@@ -66,6 +66,14 @@ from app.agent.tools import (
     get_catalog_map,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
+from app.agent.presentation_payloads import (
+    _build_presentation_payload,
+    _format_citations,
+    _normalize_final_answer,
+    _prune_chunks_for_query,
+    finalize_presentation_payload,
+    refine_citations_for_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +184,6 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 输出格式（纯 JSON，不含 markdown 代码块）：
 {"steps": ["步骤1", "步骤2", ...]}
 """
-
-_INTERNAL_SOURCES = {"智能体问答", "agent_qa", "eval_qa"}
 
 _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
     "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字。若证据中已给出“价格走势 期间:YYYY-MM 均价:XX”这类月均价点，可直接按该类别月均价口径计算走势或环比，不要因为底层规格混杂而拒答，但需说明口径。",
@@ -2167,6 +2173,46 @@ _FEE_RULE_QUERY_RE = re.compile(
 )
 _TAX_RULE_QUERY_RE = re.compile(r"一般计税方法|简易计税方法|进项税额|税前工程造价|增值税")
 _PRESENTATION_FORMULA_QUERY_RE = re.compile(r"计算公式|计算基数|如果.*为0|边界|代入")
+
+
+def _looks_like_annual_price_query(query: str, entities: dict) -> bool:
+    """检测是否为全年/某年度价格查询（year_month 仅含年份，或查询中明确提到'全年'/'年度'）。"""
+    year_month = str(entities.get("year_month") or "")
+    # year-only pattern e.g. "2025" or "2025年"
+    if re.fullmatch(r"\d{4}年?", year_month.strip()):
+        return True
+    if any(kw in query for kw in ("全年", "年度", "当年", "整年")):
+        return True
+    return False
+
+
+def _looks_like_multi_material_price_change_query(query: str, entities: dict) -> bool:
+    """检测是否为多材料价格变化查询（material_names 有多项，或查询含'变化/涨跌/幅度'等）。"""
+    material_names = entities.get("material_names") or []
+    if isinstance(material_names, list) and len(material_names) >= 2:
+        return True
+    change_keywords = ("变化", "涨跌", "幅度", "涨幅", "跌幅", "价格变化", "价格涨", "价格跌", "较上月", "环比")
+    return any(kw in query for kw in change_keywords)
+
+
+def _previous_month(year_month: str) -> str:
+    """返回给定月份的上一个月，格式与输入一致 (YYYY-MM 或 YYYY年MM月)。"""
+    if not year_month:
+        return ""
+    try:
+        m = re.search(r"(\d{4})[年\-/](\d{1,2})", year_month)
+        if not m:
+            return year_month
+        year, month = int(m.group(1)), int(m.group(2))
+        if month == 1:
+            year, month = year - 1, 12
+        else:
+            month -= 1
+        sep = "年" if "年" in year_month else "-"
+        end = "月" if "月" in year_month else ""
+        return f"{year}{sep}{month:02d}{end}"
+    except Exception:
+        return year_month
 
 
 def query_analysis_node(state: RAGAgentState) -> dict:

@@ -16,6 +16,7 @@
     "dev:ocr": "cd src/backend/ocr-service && python -m uvicorn ocr_service:app --port 8001",
     "start:all": "./start_all.sh",
     "test": "npm run test:node && npm run test:python",
+    "test:agent-ui": "node scripts/agent_ui_regression.mjs",
     "test:node": "cd src/backend/server && npm test",
     "test:python": "cd src/backend/python-legacy && python -m pytest tests/ -v",
     "test:quick": "./quick_test.sh",

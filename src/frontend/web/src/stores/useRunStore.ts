@@ -124,6 +124,7 @@ export interface PresentationPayload {
   layout?: PresentationBlock[];
   steps?: PresentationCalculationStep[];
   sources?: PresentationSource[];
+  support_label?: string;
 }
 
 export interface RunState {
