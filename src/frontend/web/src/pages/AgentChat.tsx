@@ -3,7 +3,7 @@
  * Left: config | Center: chat | Right: process visualization
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAgent, ChatMessage, AgentConfig } from '../hooks/useAgent';
 import {
   useRunStore,
@@ -12,6 +12,7 @@ import {
   PresentationCalculationStep,
 } from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
+import { evaluate } from 'mathjs';
 import {
   RadarChart,
   PolarGrid,
@@ -139,22 +140,10 @@ function buildDisplayLabels(
   items: Array<{ label?: string; kind?: string }>,
   resolver: (kind?: string) => string,
 ): string[] {
-  const totalByLabel = new Map<string, number>();
-  const nextIndexByLabel = new Map<string, number>();
-
-  const baseLabels = items.map((item) => item.label?.trim() || resolver(item.kind));
-  for (const baseLabel of baseLabels) {
-    totalByLabel.set(baseLabel, (totalByLabel.get(baseLabel) ?? 0) + 1);
-  }
-
-  return baseLabels.map((baseLabel) => {
-    const total = totalByLabel.get(baseLabel) ?? 0;
-    if (total <= 1) return baseLabel;
-
-    const nextIndex = (nextIndexByLabel.get(baseLabel) ?? 0) + 1;
-    nextIndexByLabel.set(baseLabel, nextIndex);
-    return `${baseLabel} ${String(nextIndex).padStart(2, '0')}`;
-  });
+  // Prefer LLM-supplied labels; fall back to kind-resolved label without "01/02" numbering.
+  // Numbered duplicates (e.g. "计量方式 01", "计量方式 02") were stripped per issue #52: they
+  // make the layout look mechanical and are redundant when each card already has distinct content.
+  return items.map((item) => item.label?.trim() || resolver(item.kind));
 }
 
 const TrendTooltipContent: React.FC<{
@@ -218,27 +207,72 @@ function extractSandboxExpression(step: PresentationCalculationStep): string {
 }
 
 const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ step }) => {
-  const [copied, setCopied] = useState(false);
-  const [verified, setVerified] = useState<string | null>(null);
+  const [copied, setCopied] = useState<'formula' | 'substituted' | null>(null);
   const safeExpression = extractSandboxExpression(step);
 
-  const copyExpression = async () => {
-    await navigator.clipboard.writeText(safeExpression);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  };
-
-  const verifyExpression = () => {
-    if (!isValidSandboxExpression(safeExpression)) {
-      setVerified('计算错误');
-      return;
+  // Parse numeric variables from substituted expression so user can tweak.
+  // Example substituted: "(100 + 50 * 0.1) * 20.44% = ..."
+  // We extract numbers (excluding pure decimals like 0.1 only when paired with operators).
+  const numericTokens = useMemo(() => {
+    const tokens: { value: string; index: number; raw: string }[] = [];
+    const regex = /(\d+(?:\.\d+)?)/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(safeExpression)) !== null) {
+      tokens.push({ value: m[1], index: m.index, raw: m[0] });
     }
+    return tokens;
+  }, [safeExpression]);
 
+  const [vars, setVars] = useState<string[]>(() => numericTokens.map((t) => t.value));
+
+  useEffect(() => {
+    setVars(numericTokens.map((t) => t.value));
+  }, [numericTokens]);
+
+  const liveExpression = useMemo(() => {
+    if (numericTokens.length === 0) return safeExpression;
+    let out = '';
+    let cursor = 0;
+    numericTokens.forEach((tok, i) => {
+      out += safeExpression.slice(cursor, tok.index);
+      out += vars[i] ?? tok.value;
+      cursor = tok.index + tok.raw.length;
+    });
+    out += safeExpression.slice(cursor);
+    return out;
+  }, [safeExpression, numericTokens, vars]);
+
+  const liveResult = useMemo(() => {
+    if (!liveExpression || !isValidSandboxExpression(liveExpression)) return null;
     try {
-      const result = new Function(`"use strict"; return (${safeExpression});`)();
-      setVerified(formatSandboxNumber(Number(result)));
+      const r = evaluate(liveExpression);
+      return formatSandboxNumber(typeof r === 'number' ? r : Number(r));
     } catch {
-      setVerified('计算错误');
+      return null;
+    }
+  }, [liveExpression]);
+
+  const agentResult = useMemo(() => {
+    const m = step.result_text?.match(/-?\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  }, [step.result_text]);
+
+  const liveNumeric = useMemo(() => {
+    if (!liveResult) return null;
+    const n = Number(liveResult.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  }, [liveResult]);
+
+  const mismatch =
+    agentResult != null && liveNumeric != null && Math.abs(liveNumeric - agentResult) > 0.01;
+
+  const copyTo = async (text: string, kind: 'formula' | 'substituted') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(null), 1200);
+    } catch {
+      // ignore clipboard errors
     }
   };
 
@@ -253,32 +287,77 @@ const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ 
         <div className="calc-step-block">
           <span className="calc-step-label">公式</span>
           <code className="calc-step-code">{step.formula}</code>
+          <button
+            className="calc-action-btn"
+            onClick={() => copyTo(step.formula, 'formula')}
+            type="button"
+          >
+            {copied === 'formula' ? '已复制' : '📋 复制公式'}
+          </button>
         </div>
         <div className="calc-step-block">
           <span className="calc-step-label">代入</span>
           <code className="calc-step-code">{step.substituted}</code>
+          <button
+            className="calc-action-btn"
+            onClick={() => copyTo(`${liveExpression} = ${liveResult ?? ''}`, 'substituted')}
+            type="button"
+          >
+            {copied === 'substituted' ? '已复制' : '📋 复制带数据公式'}
+          </button>
         </div>
         <div className="calc-step-block result">
-          <span className="calc-step-label">结果</span>
+          <span className="calc-step-label">Agent 结果</span>
           <strong className="calc-step-result">{step.result_text}</strong>
         </div>
       </div>
 
-      <div className="calc-sandbox">
-        <div className="calc-sandbox-header">
-          <span className="calc-sandbox-title">校验表达式</span>
-          <div className="calc-sandbox-actions">
-            <button className="calc-action-btn" onClick={verifyExpression} type="button">
-              🧮 本地校验
-            </button>
-            <button className="calc-action-btn primary" onClick={copyExpression} type="button">
-              {copied ? '已复制' : '📋 复制表达式'}
-            </button>
+      {numericTokens.length > 0 && (
+        <div className="calc-sandbox">
+          <div className="calc-sandbox-header">
+            <span className="calc-sandbox-title">🧮 内置计算器（可改变量重算）</span>
+          </div>
+          <div className="calc-sandbox-vars">
+            {numericTokens.map((tok, i) => (
+              <label key={`${tok.index}-${i}`} className="calc-sandbox-var">
+                <span className="calc-sandbox-var-label">x{i + 1}</span>
+                <input
+                  className="calc-sandbox-var-input"
+                  type="text"
+                  inputMode="decimal"
+                  value={vars[i] ?? ''}
+                  onChange={(e) =>
+                    setVars((prev) => {
+                      const next = [...prev];
+                      next[i] = e.target.value;
+                      return next;
+                    })
+                  }
+                />
+                <span className="calc-sandbox-var-orig">原值 {tok.value}</span>
+              </label>
+            ))}
+          </div>
+          <code className="calc-sandbox-expression">{liveExpression}</code>
+          <div className={`calc-sandbox-result ${mismatch ? 'mismatch' : ''}`}>
+            {liveResult != null ? (
+              <>
+                本地结果：<strong>{liveResult}</strong>
+                {mismatch && (
+                  <span className="calc-sandbox-warn">
+                    ⚠ 与 Agent 结果差 {(liveNumeric! - agentResult!).toFixed(4)}
+                  </span>
+                )}
+                {!mismatch && agentResult != null && (
+                  <span className="calc-sandbox-ok">✓ 与 Agent 结果一致</span>
+                )}
+              </>
+            ) : (
+              <span className="calc-sandbox-warn">表达式无法计算</span>
+            )}
           </div>
         </div>
-        <code className="calc-sandbox-expression">{safeExpression}</code>
-        {verified && <div className="calc-sandbox-result">本地结果：{verified}</div>}
-      </div>
+      )}
     </div>
   );
 };
