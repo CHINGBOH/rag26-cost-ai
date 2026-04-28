@@ -1,9 +1,11 @@
 /**
- * 系统看板 — 真实 RAG Agent 运行指标 + 实时测试
+ * 系统看板 — RAG Agent 运行状态 + 实时测试
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { checkHealth, askAgent, HealthResponse } from '../services/agentApi';
+import { PageHeader } from '../components/common/PageHeader';
+import { StatusDot } from '../components/common/StatusDot';
 import './SystemPage.css';
 
 interface TestRecord {
@@ -17,6 +19,14 @@ interface TestRecord {
   timestamp: number;
 }
 
+const SERVICE_LABELS: Record<string, string> = {
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  qdrant: 'Qdrant',
+  cache: '缓存',
+  redis: 'Redis',
+};
+
 export const SystemPage: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [testQuery, setTestQuery] = useState('');
@@ -24,7 +34,6 @@ export const SystemPage: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [maxIterations, setMaxIterations] = useState(3);
 
-  // 健康检查
   useEffect(() => {
     const fetch = async () => {
       try { setHealth(await checkHealth()); } catch {}
@@ -34,10 +43,9 @@ export const SystemPage: React.FC = () => {
     return () => clearInterval(t);
   }, []);
 
-  // 统计指标
   const stats = (() => {
     if (testRecords.length === 0) return null;
-    const passed = testRecords.filter(r => r.passed).length;
+    const passed = testRecords.filter((r) => r.passed).length;
     const avgConf = testRecords.reduce((s, r) => s + r.confidence, 0) / testRecords.length;
     const avgIter = testRecords.reduce((s, r) => s + r.iterations, 0) / testRecords.length;
     const avgLatency = testRecords.reduce((s, r) => s + r.latencyMs, 0) / testRecords.length;
@@ -54,12 +62,13 @@ export const SystemPage: React.FC = () => {
     if (!testQuery.trim() || testing) return;
     setTesting(true);
     const start = Date.now();
+    const q = testQuery.trim();
 
     try {
-      const res = await askAgent(testQuery.trim(), { maxIterations });
-      setTestRecords(prev => [{
+      const res = await askAgent(q, { maxIterations });
+      setTestRecords((prev) => [{
         id: Date.now(),
-        query: testQuery.trim(),
+        query: q,
         passed: res.evaluation?.passed ?? false,
         confidence: res.evaluation?.confidence ?? 0,
         iterations: res.iterations ?? 1,
@@ -67,10 +76,10 @@ export const SystemPage: React.FC = () => {
         latencyMs: Date.now() - start,
         timestamp: Date.now(),
       }, ...prev]);
-    } catch (e: any) {
-      setTestRecords(prev => [{
+    } catch {
+      setTestRecords((prev) => [{
         id: Date.now(),
-        query: testQuery.trim(),
+        query: q,
         passed: false,
         confidence: 0,
         iterations: 0,
@@ -84,44 +93,38 @@ export const SystemPage: React.FC = () => {
     }
   }, [testQuery, testing, maxIterations]);
 
-  const statusIcon = (s: string) =>
-    s === 'healthy' || s === 'ok' ? '🟢' : s === 'degraded' ? '🟡' : '🔴';
-
   return (
     <div className="system-page">
-      <h1>系统看板</h1>
-      <p className="page-subtitle">RAG Agent 运行状态与实时测试</p>
+      <PageHeader title="系统看板" subtitle="RAG Agent 运行状态与实时测试" />
 
       <div className="system-grid">
-        {/* 四库状态 */}
         <div className="sys-card">
-          <h2>四库连通性</h2>
+          <h2>知识库连通性</h2>
           {health ? (
             <div className="sys-health-list">
               {Object.entries(health.services || {}).map(([k, v]) => (
                 <div key={k} className="sys-health-row">
-                  <span>{statusIcon(v)}</span>
-                  <span className="sys-health-name">{k}</span>
-                  <span className="sys-health-val">{v}</span>
+                  <StatusDot status={String(v)} />
+                  <span className="sys-health-name">{SERVICE_LABELS[k] || k}</span>
+                  <span className="sys-health-val">{String(v)}</span>
                 </div>
               ))}
               <div className="sys-health-overall">
-                整体: <strong>{health.status}</strong>
+                整体 <strong>{health.status}</strong>
               </div>
             </div>
           ) : (
-            <p className="loading-text">连接中...</p>
+            <p className="loading-text">连接中…</p>
           )}
         </div>
 
-        {/* Agent 概览 */}
         <div className="sys-card">
           <h2>Agent 概览</h2>
           {stats ? (
             <div className="sys-stats-grid">
               <div className="stat-item">
                 <div className="stat-value">{stats.passRate}%</div>
-                <div className="stat-label">通过率 ({stats.total}次)</div>
+                <div className="stat-label">通过率（{stats.total} 次）</div>
               </div>
               <div className="stat-item">
                 <div className="stat-value">{stats.avgConfidence}</div>
@@ -142,20 +145,19 @@ export const SystemPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 实时测试 */}
       <div className="sys-card full-width">
         <h2>实时测试</h2>
         <div className="test-bar">
           <input
             className="test-input"
             value={testQuery}
-            onChange={e => setTestQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && runTest()}
-            placeholder="输入测试查询..."
+            onChange={(e) => setTestQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && runTest()}
+            placeholder="输入测试查询…"
             disabled={testing}
           />
           <button className="test-btn" onClick={runTest} disabled={testing || !testQuery.trim()}>
-            {testing ? '测试中...' : '▶ 测试'}
+            {testing ? '测试中…' : '测试'}
           </button>
           {testRecords.length > 0 && (
             <button className="clear-records-btn" onClick={() => setTestRecords([])}>
@@ -164,16 +166,20 @@ export const SystemPage: React.FC = () => {
           )}
         </div>
 
-        {/* 测试记录 */}
         {testRecords.length > 0 && (
           <div className="test-records">
             {testRecords.map((r, i) => (
               <div key={r.id} className={`test-record ${r.passed ? 'passed' : 'failed'}`}>
                 <span className="record-num">#{testRecords.length - i}</span>
-                <span className="record-status">{r.passed ? '✅' : '❌'}</span>
-                <span className="record-query">{r.query.slice(0, 40)}{r.query.length > 40 ? '...' : ''}</span>
+                <span className={`record-status ${r.passed ? 'pass' : 'fail'}`}>
+                  {r.passed ? '通过' : '未通过'}
+                </span>
+                <span className="record-query">
+                  {r.query.slice(0, 40)}{r.query.length > 40 ? '…' : ''}
+                </span>
                 <span className="record-meta">
-                  conf={r.confidence.toFixed(2)} · iter={r.iterations} · chunks={r.chunks} · {(r.latencyMs/1000).toFixed(1)}s
+                  conf {r.confidence.toFixed(2)} · iter {r.iterations} · chunks {r.chunks} ·
+                  {' '}{(r.latencyMs / 1000).toFixed(1)}s
                 </span>
               </div>
             ))}
@@ -181,7 +187,6 @@ export const SystemPage: React.FC = () => {
         )}
       </div>
 
-      {/* Agent 参数 */}
       <div className="sys-card full-width">
         <h2>Agent 参数</h2>
         <div className="param-row">
@@ -191,7 +196,7 @@ export const SystemPage: React.FC = () => {
             min={1}
             max={5}
             value={maxIterations}
-            onChange={e => setMaxIterations(Number(e.target.value))}
+            onChange={(e) => setMaxIterations(Number(e.target.value))}
             className="param-slider"
           />
           <span className="param-value">{maxIterations}</span>

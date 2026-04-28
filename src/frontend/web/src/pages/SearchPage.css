@@ -1,23 +1,7 @@
 .search-page {
-  max-width: 800px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: 40px 24px;
-}
-
-.search-header {
-  margin-bottom: 32px;
-}
-
-.search-header h1 {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 6px;
-}
-
-.search-subtitle {
-  font-size: 14px;
-  color: var(--text-muted);
+  padding: 0 24px 40px;
 }
 
 /* ── 搜索栏 ─────────────────────── */
@@ -72,17 +56,18 @@
 }
 
 .mode-btn.active {
-  background: var(--color-primary);
-  color: #fff;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 .search-btn {
-  padding: 10px 20px;
+  padding: 10px 22px;
   border: none;
   border-radius: 10px;
-  background: var(--color-primary);
-  color: #fff;
-  font-size: 14px;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: opacity 0.2s;
@@ -148,9 +133,10 @@
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.1);
-  color: var(--color-primary);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .result-body {

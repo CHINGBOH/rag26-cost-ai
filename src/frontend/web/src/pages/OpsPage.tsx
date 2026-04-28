@@ -1,25 +1,17 @@
 /**
- * Ops Dashboard — service health grid + metrics charts
+ * 运维看板 — 服务健康网格 + 真实延迟柱状图
+ * QPS 折线已移除：缺少真实指标接口，不再 mock random
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { getHealthDetail, getLlmMetrics, HealthDetailResponse } from '../services/metricsApi';
 import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { PageHeader } from '../components/common/PageHeader';
+import { StatusDot } from '../components/common/StatusDot';
 import './OpsPage.css';
-
-/* ── Service definitions ─────────────────────────────── */
 
 interface ServiceDef {
   name: string;
@@ -29,36 +21,18 @@ interface ServiceDef {
 }
 
 const SERVICES: ServiceDef[] = [
-  { name: 'Go Gateway', label: 'Go GW', port: 8090, key: 'go_gateway' },
-  { name: 'Python Legacy', label: 'Python', port: 8000, key: 'python_legacy' },
-  { name: 'Retrieval', label: 'Retrieval', port: 8002, key: 'retrieval' },
-  { name: 'llama-server', label: 'LLM', port: 8080, key: 'llama_server' },
-  { name: 'OCR', label: 'OCR', port: 8001, key: 'ocr' },
-  { name: 'PostgreSQL', label: 'PgSQL', port: 5432, key: 'postgresql' },
-  { name: 'Qdrant', label: 'Qdrant', port: 6333, key: 'qdrant' },
-  { name: 'Node.js', label: 'Node', port: 3001, key: 'nodejs' },
+  { name: 'Go Gateway',    label: 'Go GW',    port: 8090, key: 'go_gateway' },
+  { name: 'Python Legacy', label: 'Python',   port: 8000, key: 'python_legacy' },
+  { name: 'Retrieval',     label: 'Retrieval',port: 8002, key: 'retrieval' },
+  { name: 'llama-server',  label: 'LLM',      port: 8080, key: 'llama_server' },
+  { name: 'OCR',           label: 'OCR',      port: 8001, key: 'ocr' },
+  { name: 'PostgreSQL',    label: 'PgSQL',    port: 5432, key: 'postgresql' },
+  { name: 'Qdrant',        label: 'Qdrant',   port: 6333, key: 'qdrant' },
 ];
-
-/* ── Mock QPS time series ────────────────────────────── */
-
-function generateQpsData() {
-  const now = Date.now();
-  return Array.from({ length: 20 }, (_, i) => ({
-    time: new Date(now - (19 - i) * 15000).toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }),
-    qps: Math.max(0, Math.round(Math.random() * 8 + 2)),
-  }));
-}
-
-/* ── Component ───────────────────────────────────────── */
 
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
   const [llmStatus, setLlmStatus] = useState<string>('—');
-  const [qpsData, setQpsData] = useState(generateQpsData());
   const { isConnected } = useWebSocket('dashboard');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -71,26 +45,12 @@ export const OpsPage: React.FC = () => {
 
   useEffect(() => {
     fetchAll();
-    pollRef.current = setInterval(() => {
-      fetchAll();
-      setQpsData((prev) => [
-        ...prev.slice(1),
-        {
-          time: new Date().toLocaleTimeString('zh-CN', {
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-          }),
-          qps: Math.max(0, Math.round(Math.random() * 8 + 2)),
-        },
-      ]);
-    }, 5000);
+    pollRef.current = setInterval(fetchAll, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
-  const getStatus = (key: string): { status: string; latency_ms: number } => {
-    return healthDetail?.services[key] ?? { status: 'unknown', latency_ms: -1 };
-  };
+  const getStatus = (key: string) =>
+    healthDetail?.services[key] ?? { status: 'unknown', latency_ms: -1 };
 
   const latencyBarData = SERVICES.map((s) => {
     const svc = getStatus(s.key);
@@ -103,14 +63,17 @@ export const OpsPage: React.FC = () => {
 
   return (
     <div className="ops-page">
-      <div className="ops-header">
-        <h1>运维看板</h1>
-        <div className="ops-ws-badge">
-          WS: <span className={isConnected ? 'ws-ok' : 'ws-off'}>{isConnected ? '已连接' : '断开'}</span>
-        </div>
-      </div>
+      <PageHeader
+        title="运维看板"
+        subtitle="服务健康与延迟监控"
+        actions={
+          <span className="ops-ws-badge">
+            <span className={`ws-pulse ${isConnected ? 'on' : 'off'}`} />
+            <span>{isConnected ? '实时连接' : '连接断开'}</span>
+          </span>
+        }
+      />
 
-      {/* Service health grid */}
       <div className="service-grid">
         {SERVICES.map((s) => {
           const svc = getStatus(s.key);
@@ -126,43 +89,34 @@ export const OpsPage: React.FC = () => {
         })}
       </div>
 
-      {/* Charts row */}
       <div className="ops-charts">
         <div className="ops-chart-card">
-          <h3>QPS（实时，15s 采样）</h3>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={qpsData}>
+          <h3>服务延迟</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={latencyBarData} margin={{ top: 12, right: 12, bottom: 4, left: -12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
-              <XAxis dataKey="time" tick={{ fontSize: 10 }} interval={4} />
-              <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip />
-              <Line
-                type="monotone"
-                dataKey="qps"
-                stroke="var(--color-primary)"
-                dot={false}
-                strokeWidth={2}
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
+              <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
+              <Tooltip
+                contentStyle={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: 8,
+                  fontSize: 12,
+                }}
               />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="ops-chart-card">
-          <h3>服务延迟（ms）</h3>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={latencyBarData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
-              <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="latency" name="延迟(ms)" fill="var(--color-primary)" radius={[3, 3, 0, 0]} />
+              <Bar
+                dataKey="latency"
+                name="延迟 (ms)"
+                fill="var(--color-primary)"
+                radius={[4, 4, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* LLM status */}
       <div className="ops-info-row">
         <div className="ops-info-card">
           <span className="ops-info-label">LLM 服务</span>
@@ -181,8 +135,6 @@ export const OpsPage: React.FC = () => {
   );
 };
 
-/* ── Service Card ────────────────────────────────────── */
-
 interface ServiceCardProps {
   label: string;
   port: number;
@@ -191,17 +143,19 @@ interface ServiceCardProps {
 }
 
 const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency }) => {
-  const statusClass =
+  const klass =
     status === 'healthy' ? 'healthy' : status === 'degraded' ? 'degraded' : 'unhealthy';
-  const statusIcon = statusClass === 'healthy' ? '🟢' : statusClass === 'degraded' ? '🟡' : '🔴';
-
   return (
-    <div className={`svc-card ${statusClass}`}>
-      <div className="svc-icon">{statusIcon}</div>
+    <div className={`svc-card ${klass}`}>
+      <div className="svc-card-top">
+        <StatusDot status={status} />
+        <span className="svc-port">:{port}</span>
+      </div>
       <div className="svc-name">{label}</div>
-      <div className="svc-port">:{port}</div>
-      <div className={`svc-status-label ${statusClass}`}>{status}</div>
-      {latency > 0 && <div className="svc-latency">{latency}ms</div>}
+      <div className="svc-meta">
+        <span className={`svc-status-label ${klass}`}>{status}</span>
+        {latency > 0 && <span className="svc-latency">{latency}ms</span>}
+      </div>
     </div>
   );
 };

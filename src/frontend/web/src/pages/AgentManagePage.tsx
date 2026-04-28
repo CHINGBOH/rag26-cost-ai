@@ -1,9 +1,11 @@
 /**
- * Agent Management Page — Task Queue + Active Agents dashboard
- * Mirrors the .agent/agents/ config files in the UI
+ * Agent Management Page — Task Queue + Active Agents 看板
+ * 当前为 .agent/agents/ 配置文件的演示视图，数据为本地种子，
+ * 待后端 agent registry / task queue 接口完成后接通真实数据。
  */
 
 import { useState, useEffect } from 'react';
+import { PageHeader } from '../components/common/PageHeader';
 import './AgentManagePage.css';
 
 /* ── Types ───────────────────────────────────────────── */
@@ -162,6 +164,12 @@ export const AgentManagePage: React.FC = () => {
 
   return (
     <div className="agent-manage-page">
+      <PageHeader
+        title="Agents 看板"
+        subtitle="任务队列与运行中的 agent 概览"
+        actions={<span className="demo-tag">演示数据</span>}
+      />
+
       {/* Task Queue */}
       <section className="section-block">
         <h2 className="section-title">Task Queue</h2>
