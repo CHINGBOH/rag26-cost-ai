@@ -886,6 +886,67 @@
   font-weight: 600;
 }
 
+.calc-sandbox-result.mismatch {
+  color: rgb(220, 38, 38);
+}
+
+.calc-sandbox-warn {
+  margin-left: 8px;
+  color: rgb(220, 38, 38);
+  font-weight: 600;
+}
+
+.calc-sandbox-ok {
+  margin-left: 8px;
+  color: rgb(5, 150, 105);
+  font-weight: 600;
+}
+
+.calc-sandbox-vars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.calc-sandbox-var {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: rgba(99, 102, 241, 0.06);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 6px;
+}
+
+.calc-sandbox-var-label {
+  font-size: 10px;
+  color: rgb(99, 102, 241);
+  font-weight: 700;
+}
+
+.calc-sandbox-var-input {
+  width: 80px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  background: white;
+  color: rgb(15, 23, 42);
+}
+
+.calc-sandbox-var-input:focus {
+  outline: none;
+  border-color: rgb(99, 102, 241);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.calc-sandbox-var-orig {
+  font-size: 9px;
+  color: rgb(100, 116, 139);
+}
+
 .streaming-cursor {
   display: inline-block;
   width: 2px;

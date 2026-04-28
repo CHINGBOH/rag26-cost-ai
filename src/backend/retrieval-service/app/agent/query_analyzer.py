@@ -169,6 +169,14 @@ _QUOTA_LOCATION_PATTERN = re.compile(
 )
 _FEE_STANDARD_HINT_PATTERN = re.compile(r"费率标准|推荐费率|企业管理费|利润|安全文明施工费|履约担保手续费|夜间施工增加费|总包管理服务费|暂列金额|优质优价奖励费")
 _FORMULA_EXPLAIN_PATTERN = re.compile(r"计算方法|计算公式|计算规则|公式|怎么计算|如何计算")
+# Detect numeric-input calculation problems: e.g. "人工费100万、材料费200万、机械费50万 ... 利润为多少"
+# Pattern: at least two cost items with explicit numeric values, plus a formulaic target (利润/管理费/总价).
+_NUMERIC_CALC_INPUT_PATTERN = re.compile(
+    r"(?:人工费|材料费|机械费|设备费|工料机|管理费)\s*[为是＝=]?\s*\d+(?:\.\d+)?\s*(?:万|元|亿)?"
+)
+_NUMERIC_CALC_TARGET_PATTERN = re.compile(
+    r"(?:利润|企业管理费|管理费|总造价|工程造价|总价|合计|为多少|是多少)"
+)
 _FEE_COMPARISON_HINT_PATTERN = re.compile(r"参考范围|推荐费率|是否一致|一致吗|是否相同|相同吗|一样吗|有无差异|差异|区别|不同")
 _FEE_ITEM_PATTERN = re.compile(
     r"企业管理费|安全文明施工费费率部分|安全文明施工费|履约担保手续费|夜间施工增加费|"
@@ -213,6 +221,11 @@ def _classify_intent(query: str) -> str:
     # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
     if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
         return "standard_ref"
+    # numeric calculation problem: query supplies cost values and asks for a derived figure
+    # e.g. "人工费100万、材料费200万、机械费50万 ... 利润为多少？"
+    numeric_inputs = _NUMERIC_CALC_INPUT_PATTERN.findall(cleaned_query)
+    if len(numeric_inputs) >= 2 and _NUMERIC_CALC_TARGET_PATTERN.search(cleaned_query):
+        return "calculation"
     has_price_keyword = any(kw in q for kw in PRICE_KEYWORDS)
     has_calc_keyword = any(kw in q for kw in CALC_KEYWORDS)
     if has_price_keyword:
