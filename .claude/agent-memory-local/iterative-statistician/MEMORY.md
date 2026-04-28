@@ -1,0 +1,1 @@
+- [RAG System Architecture Overview](project-rag-architecture.md) — LangGraph agent graph, retrieval tools, ANN+reranker, state shape, current uncertainty handling
