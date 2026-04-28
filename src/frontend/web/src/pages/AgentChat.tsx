@@ -10,6 +10,7 @@ import {
   PresentationPayload,
   PresentationPoint,
   PresentationCalculationStep,
+  PresentationBlock,
 } from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
 import { evaluate } from 'mathjs';
@@ -141,10 +142,50 @@ function buildDisplayLabels(
   resolver: (kind?: string) => string,
 ): string[] {
   // Prefer LLM-supplied labels; fall back to kind-resolved label without "01/02" numbering.
-  // Numbered duplicates (e.g. "计量方式 01", "计量方式 02") were stripped per issue #52: they
-  // make the layout look mechanical and are redundant when each card already has distinct content.
+  // Kept only as fallback for legacy payloads that lack `layout[]`.
   return items.map((item) => item.label?.trim() || resolver(item.kind));
 }
+
+const LayoutBlocks: React.FC<{ blocks: PresentationBlock[] }> = ({ blocks }) => {
+  if (!blocks || blocks.length === 0) return null;
+  return (
+    <div className="answer-layout-flow">
+      {blocks.map((block) => {
+        const hint = block.hint || 'paragraph';
+        const body = block.body || '';
+        if (hint === 'list') {
+          // Split bullet markers into list items so the LLM-authored list renders natively.
+          const items = body
+            .split(/\n+|(?:^|\s)(?:\d+[、.)]|[•▶◆■]|[-－]|\*)\s+/g)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          return (
+            <div key={block.id} className={`answer-layout-block hint-${hint}`}>
+              <div className="answer-layout-title">{block.title}</div>
+              <ul className="answer-layout-list">
+                {items.map((item, idx) => (
+                  <li
+                    key={`${block.id}-item-${idx}`}
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(item) }}
+                  />
+                ))}
+              </ul>
+            </div>
+          );
+        }
+        return (
+          <div key={block.id} className={`answer-layout-block hint-${hint}`}>
+            {block.title && <div className="answer-layout-title">{block.title}</div>}
+            <div
+              className="answer-layout-body"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(body) }}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 const TrendTooltipContent: React.FC<{
   active?: boolean;
@@ -373,14 +414,19 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
   }, [presentation.type, presentation.points?.length]);
 
   if (presentation.type === 'answer_sections') {
-    const highlightLabels = buildDisplayLabels(
-      presentation.highlights ?? [],
-      (kind) => getHighlightBaseLabel(kind, presentation.query_type),
-    );
-    const sectionLabels = buildDisplayLabels(
-      presentation.sections ?? [],
-      (kind) => getSectionBaseLabel(kind, presentation.query_type),
-    );
+    const hasLayout = presentation.layout && presentation.layout.length > 0;
+    const highlightLabels = hasLayout
+      ? []
+      : buildDisplayLabels(
+          presentation.highlights ?? [],
+          (kind) => getHighlightBaseLabel(kind, presentation.query_type),
+        );
+    const sectionLabels = hasLayout
+      ? []
+      : buildDisplayLabels(
+          presentation.sections ?? [],
+          (kind) => getSectionBaseLabel(kind, presentation.query_type),
+        );
 
     return (
       <div className="presentation-card answer-sections">
@@ -394,7 +440,8 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
           </div>
         )}
 
-        {(presentation.highlights && presentation.highlights.length > 0) ||
+        {(hasLayout) ||
+        (presentation.highlights && presentation.highlights.length > 0) ||
         (presentation.sections && presentation.sections.length > 0) ||
             (presentation.sources && presentation.sources.length > 0) ? (
           <div className="presentation-support-block">
@@ -402,38 +449,44 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
               {presentation.support_kicker || '补充说明'}
             </div>
 
-            {presentation.highlights && presentation.highlights.length > 0 && (
-              <div className="answer-highlight-grid">
-                {presentation.highlights.map((item, index) => (
-                  <div
-                    key={`${item.kind ?? item.label ?? 'highlight'}-${index}`}
-                    className="answer-highlight-item"
-                  >
-                    <span className="answer-highlight-label">{highlightLabels[index]}</span>
-                    <div
-                      className="answer-highlight-value"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
-                    />
+            {hasLayout ? (
+              <LayoutBlocks blocks={presentation.layout!} />
+            ) : (
+              <>
+                {presentation.highlights && presentation.highlights.length > 0 && (
+                  <div className="answer-highlight-grid">
+                    {presentation.highlights.map((item, index) => (
+                      <div
+                        key={`${item.kind ?? item.label ?? 'highlight'}-${index}`}
+                        className="answer-highlight-item"
+                      >
+                        <span className="answer-highlight-label">{highlightLabels[index]}</span>
+                        <div
+                          className="answer-highlight-value"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                        />
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            {presentation.sections && presentation.sections.length > 0 && (
-              <div className="answer-sections-list">
-                {presentation.sections.map((section, index) => (
-                  <div
-                    key={`${section.kind ?? section.label ?? 'section'}-${index}`}
-                    className="answer-section-item"
-                  >
-                    <div className="answer-section-label">{sectionLabels[index]}</div>
-                    <div
-                      className="answer-section-body"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
-                    />
+                {presentation.sections && presentation.sections.length > 0 && (
+                  <div className="answer-sections-list">
+                    {presentation.sections.map((section, index) => (
+                      <div
+                        key={`${section.kind ?? section.label ?? 'section'}-${index}`}
+                        className="answer-section-item"
+                      >
+                        <div className="answer-section-label">{sectionLabels[index]}</div>
+                        <div
+                          className="answer-section-body"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
+                        />
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+              </>
             )}
 
             {presentation.sources && presentation.sources.length > 0 && (
@@ -465,7 +518,8 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
           </div>
         )}
 
-        {(presentation.highlights && presentation.highlights.length > 0) ||
+        {(presentation.layout && presentation.layout.length > 0) ||
+        (presentation.highlights && presentation.highlights.length > 0) ||
         (presentation.steps && presentation.steps.length > 0) ||
         (presentation.sources && presentation.sources.length > 0) ? (
           <div className="presentation-support-block">
@@ -473,20 +527,24 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
               {presentation.support_kicker || '计算说明'}
             </div>
 
-            {presentation.highlights && presentation.highlights.length > 0 && (
-              <div className="answer-highlight-grid">
-                {presentation.highlights.map((item, index) => (
-                  <div key={`${item.kind ?? item.label ?? 'highlight'}-${index}`} className="answer-highlight-item">
-                    <span className="answer-highlight-label">
-                      {item.label || getHighlightBaseLabel(item.kind, presentation.query_type)}
-                    </span>
-                    <div
-                      className="answer-highlight-value"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
-                    />
-                  </div>
-                ))}
-              </div>
+            {presentation.layout && presentation.layout.length > 0 ? (
+              <LayoutBlocks blocks={presentation.layout} />
+            ) : (
+              presentation.highlights && presentation.highlights.length > 0 && (
+                <div className="answer-highlight-grid">
+                  {presentation.highlights.map((item, index) => (
+                    <div key={`${item.kind ?? item.label ?? 'highlight'}-${index}`} className="answer-highlight-item">
+                      <span className="answer-highlight-label">
+                        {item.label || getHighlightBaseLabel(item.kind, presentation.query_type)}
+                      </span>
+                      <div
+                        className="answer-highlight-value"
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )
             )}
 
             {presentation.steps && presentation.steps.length > 0 && (

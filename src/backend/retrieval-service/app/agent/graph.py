@@ -535,6 +535,8 @@ def _build_answer_sections_presentation(
     if len(query) <= 28:
         note = query
 
+    layout = _build_layout_blocks(direct_answer, analysis_paragraphs, query_type)
+
     return {
         "type": "answer_sections",
         "query_type": query_type,
@@ -543,8 +545,94 @@ def _build_answer_sections_presentation(
         "summary": _build_summary_text(query_type, direct_answer),
         "highlights": highlights,
         "sections": sections,
+        "layout": layout,
         "sources": sources,
     }
+
+
+# Block title prefix: matches "调试范围：", "**计费基数**：", "1. 适用对象：" etc.
+_BLOCK_TITLE_PATTERN = re.compile(
+    r"^\s*(?:\d+[、.)]\s*|[（(]\d+[）)]\s*|[•▶◆■]\s*|\*\*\s*)?"
+    r"([\u4e00-\u9fa5A-Za-z0-9（）()\u3001]{2,16})"
+    r"(?:\s*\*\*)?"
+    r"\s*[：:]"
+)
+_LIST_MARKER_PATTERN = re.compile(r"(?:^|\n)\s*(?:\d+[、.)]|[•▶◆■]|[-－]|\*)\s+")
+_INLINE_METRIC_PATTERN = re.compile(r"\d+(?:\.\d+)?\s*(?:%|元|万元|万|亿|kg|吨|m³|m2|m|页)")
+
+
+def _extract_block_title(paragraph: str) -> tuple[str, str]:
+    """Return (title, body) by peeling a leading '标题：' clause when present."""
+    match = _BLOCK_TITLE_PATTERN.match(paragraph)
+    if not match:
+        return "", paragraph.strip()
+    title = match.group(1).strip().strip("*")
+    if len(title) < 2 or len(title) > 16:
+        return "", paragraph.strip()
+    body = paragraph[match.end():].strip()
+    if not body:
+        return "", paragraph.strip()
+    return title, body
+
+
+def _classify_block_hint(body: str) -> str:
+    """Pick a render hint: list | callout | inline | paragraph."""
+    stripped = body.strip()
+    if not stripped:
+        return "paragraph"
+    list_markers = _LIST_MARKER_PATTERN.findall("\n" + stripped)
+    if len(list_markers) >= 2:
+        return "list"
+    if len(stripped) <= 60 and _INLINE_METRIC_PATTERN.search(stripped):
+        return "callout"
+    if len(stripped) <= 80 and stripped.count("。") <= 1:
+        return "inline"
+    return "paragraph"
+
+
+def _build_layout_blocks(
+    direct_answer: str,
+    analysis_paragraphs: list[str],
+    query_type: str,
+) -> list[dict]:
+    """Produce a free-form layout list driven by the LLM's own paragraph titles.
+
+    Each block carries an LLM-derived title (peeled from '标题：' prefix or the
+    first noun phrase) plus a render hint so the frontend doesn't have to
+    translate kind→title via a hardcoded map.
+    """
+    blocks: list[dict] = []
+
+    if direct_answer.strip():
+        body = direct_answer.strip()
+        blocks.append(
+            {
+                "id": "answer",
+                "title": "结论" if query_type != "calculation" else "结果",
+                "body": body,
+                "hint": _classify_block_hint(body),
+            }
+        )
+
+    seen_bodies: set[str] = {b["body"] for b in blocks}
+    for idx, paragraph in enumerate(analysis_paragraphs[:4]):
+        title, body = _extract_block_title(paragraph)
+        if body in seen_bodies:
+            continue
+        seen_bodies.add(body)
+        if not title:
+            # Fall back to a numbered title only when nothing better is available.
+            title = "依据" if idx == 0 else "补充"
+        blocks.append(
+            {
+                "id": f"block-{idx + 1}",
+                "title": title,
+                "body": body,
+                "hint": _classify_block_hint(body),
+            }
+        )
+
+    return blocks
 
 
 def _normalize_math_text(text: str) -> str:
@@ -713,6 +801,9 @@ def _build_calculation_steps_presentation(
     if not steps:
         return None
 
+    analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
+    layout = _build_layout_blocks(direct_answer, analysis_paragraphs, "calculation")
+
     return {
         "type": "calculation_steps",
         "title": "计算沙箱",
@@ -720,6 +811,7 @@ def _build_calculation_steps_presentation(
         "summary": _build_summary_text("calculation", direct_answer),
         "highlights": _build_highlights("calculation", direct_answer, analysis_text),
         "steps": steps,
+        "layout": layout,
         "sources": _parse_citation_items(citations_text)[:4],
     }
 
