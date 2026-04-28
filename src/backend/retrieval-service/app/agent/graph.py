@@ -20,13 +20,14 @@ import re
 import logging
 import hashlib
 import ast
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.agent.state import RAGAgentState
+from app.agent.state import RAGAgentState, ContractResult
 from app.agent.prompts import (
     SYSTEM_PROMPT,
     _strip_think_tags,
@@ -97,6 +98,9 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - 定额消耗量/工艺描述类问题（如安装/装饰/建筑消耗量标准，同义词多、措辞不固定）→ 优先用 hybrid_search 而非 text_search
 - 严禁对费率标准类问题使用 price_query（price_query 只查材料单价，不含费率系数）
 - fee_rates 表会被 text_search/keyword_search/category_search 自动检索，无需手动 SQL
+	- 计算类问题必须先检索后计算：若问题含数值并要求计算（如"计算利润"、"企业管理费为多少"），
+	  第一步必须调用 text_search 检索费率数值，text_search 会自动返回 fee_rates 结构化数据
+	  （含推荐费率和计算公式），检索到具体数值后才能使用 calculator 或 python_eval 执行计算
 - 检索路径按顺序分化：数据库/向量索引 → OCR 字典化 JSON → PDF 页级原文；上一路命中充分时不要跳到下一路
 - 价格走势/趋势/变化幅度类问题 → 必须使用 price_trend，不得用 price_query 逐期查询
 - 费率版本对比（2023版 vs 2025版）→ 使用 keyword_search 并在参数中包含版本年份关键词
@@ -140,9 +144,15 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
   例：“从25年开始至今的价格走势” → 步骤1: price_trend material_name=xxx start_month=2025-01
 - 费率版本对比（重要）：若问题含“2023版”/“2025版”，使用 keyword_search/text_search 时
   必须在查询词中包含版本年份，以确保分版本检索
-  例：“2023版与2025版利润率” → 步骤1: keyword_search "2023 利润率"，步骤2: keyword_search "2025 利润率"
+	- 费率数值计算类问题（重要）：若问题要求根据费率/利润率/推荐系数计算费用金额，
+	  第一步必须先调用 text_search 或 keyword_search 检索费率数值，不得跳过检索直接计算
+	  例："按2025版推荐利润率计算利润" → 步骤1: text_search "2025 利润率 推荐费率 企业管理费"
+	  步骤2: 根据检索到的费率值执行计算
+	- 费用计算基数类问题：若问题问某个费率的计算基数，第一步用 text_search 检索该费率定义，
+	  关键字只需包含费率名称（text_search 会自动返回 fee_rates 结构化数据含计算公式和基数）
+	  例："总包管理服务费的计算基数" → 步骤1: text_search "总包管理服务费"
 
-定额子目检索规则（重要）：
+定额子目检索规则定额子目检索规则（重要）：
 - 若问题涉及定额子目的人工费/材料费/机械费/消耗量，第一步必须是：
   调用 category_search 确认材料/工艺所在章节编号
 - 第二步再用 text_search 带章节号检索具体子目数值
@@ -162,7 +172,7 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 _INTERNAL_SOURCES = {"智能体问答", "agent_qa", "eval_qa"}
 
 _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
-    "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字",
+    "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字。若证据中已给出“价格走势 期间:YYYY-MM 均价:XX”这类月均价点，可直接按该类别月均价口径计算走势或环比，不要因为底层规格混杂而拒答，但需说明口径。",
     "comparison": "4. 先给对比结论（谁高/谁低/差距多少），再分别列各方数据，最后计算差值",
     "calculation": "4. 先列计算公式和费率来源，再逐步计算，最后给出带单位的结果",
     "price": "4. 给出价格数值时注明时间、规格、单位；多条记录按时间倒序排列",
@@ -234,13 +244,22 @@ def _prune_chunks_for_query(
 
     analysis_entities = entities or (_analyzer.analyze(query).get("entities", {}))
     material = str(analysis_entities.get("material_name") or "").strip()
+    materials = [
+        str(item).strip()
+        for item in (analysis_entities.get("material_names") or [])
+        if str(item).strip()
+    ]
     specification = str(analysis_entities.get("specification") or "").strip()
-    if not material:
+    match_terms = materials or ([material] if material else [])
+    if not match_terms:
         return chunks
 
     material_matched = [
         chunk for chunk in chunks
-        if material in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
+        if any(
+            term in ((chunk.get("content") or "") + " " + (chunk.get("doc_filename") or ""))
+            for term in match_terms
+        )
     ]
     if material_matched:
         chunks = material_matched
@@ -248,9 +267,17 @@ def _prune_chunks_for_query(
         return []
 
     if specification:
+        compact_spec = re.sub(r"\s+", "", specification.lower()).replace("×", "x").replace("*", "x")
         spec_matched = [
             chunk for chunk in chunks
-            if specification in (chunk.get("content") or "")
+            if (
+                specification in (chunk.get("content") or "")
+                or compact_spec in re.sub(
+                    r"\s+",
+                    "",
+                    (chunk.get("content") or "").lower().replace("×", "x").replace("*", "x"),
+                )
+            )
         ]
         if spec_matched:
             chunks = spec_matched
@@ -923,7 +950,7 @@ def _normalize_final_answer(
     citations_text: str,
     query_type: str = "semantic",
 ) -> str:
-    answer = _clean_markdown_noise(_strip_think_tags(answer))
+    answer = _sanitize_false_refusal_phrases(_clean_markdown_noise(_strip_think_tags(answer)))
     refs = _normalize_reference_section(citations_text)
     # Strip any LLM-generated reference section
     answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", answer, maxsplit=1)[0].strip()
@@ -981,6 +1008,17 @@ def _looks_like_refusal_answer(answer: str) -> bool:
     return bool(_REFUSAL_RE.search(_compact_text(answer)))
 
 
+def _sanitize_false_refusal_phrases(answer: str) -> str:
+    replacements = {
+        "未提供": "未列明",
+        "未包含": "未列入",
+    }
+    sanitized = answer
+    for source, target in replacements.items():
+        sanitized = sanitized.replace(source, target)
+    return sanitized
+
+
 def _is_catalog_evidence(chunk: dict) -> bool:
     metadata = chunk.get("metadata") or {}
     return metadata.get("evidence_kind") == "pdf_catalog_chunk"
@@ -991,6 +1029,209 @@ def _has_substantive_evidence(chunks: list[dict]) -> bool:
         chunk.get("source_db") != "concept_search" and not _is_catalog_evidence(chunk)
         for chunk in chunks
     )
+
+
+# ── Node Contract Verification ──────────────────────────────────────────────────
+
+
+def _compute_price_cv_from_chunks(chunks: list[dict]) -> float | None:
+    """Compute coefficient of variation across retrieved price points (0-1)."""
+    prices = []
+    for chunk in chunks:
+        price = None
+        md = chunk.get("metadata") or {}
+        if isinstance(md, dict):
+            price = md.get("price_tax_included") or md.get("price") or md.get("unit_price")
+        if price is None:
+            continue
+        try:
+            prices.append(float(price))
+        except (ValueError, TypeError):
+            continue
+    if len(prices) < 2:
+        return None
+    mean = sum(prices) / len(prices)
+    if mean == 0:
+        return None
+    variance = sum((p - mean) ** 2 for p in prices) / len(prices)
+    return (variance ** 0.5) / abs(mean)
+
+
+def verify_query_analysis_contract(state: dict) -> ContractResult:
+    """C1: query_analysis_node post-conditions."""
+    violations = []
+    qt = state.get("query_type", "")
+    entities = state.get("query_entities") or {}
+
+    if qt not in ("price", "semantic", "calculation", "comparison", "trend_chart", "standard_ref"):
+        violations.append(("invalid_intent", f"unrecognised query_type={qt}"))
+
+    if qt == "price" and not entities.get("material_name"):
+        violations.append(("missing_material", "price query without material_name"))
+
+    if qt == "price" and not entities.get("year_month"):
+        violations.append(("missing_year_month", "year_month not extracted"))
+
+    return ContractResult(
+        node="query_analysis",
+        passed=len(violations) == 0,
+        violations=violations,
+    )
+
+
+def verify_navigator_contract(state: dict) -> ContractResult:
+    """C2: navigator_node post-conditions — roadmap must be populated for non-price queries."""
+    qt = state.get("query_type", "")
+    roadmap = state.get("roadmap") or []
+
+    if qt in ("price", "trend_chart"):
+        return ContractResult(node="navigator_node", passed=True, violations=[])
+
+    if not roadmap:
+        return ContractResult(
+            node="navigator_node",
+            passed=False,
+            violations=[("empty_roadmap", "no catalog chapters matched")],
+        )
+
+    return ContractResult(node="navigator_node", passed=True, violations=[])
+
+
+def verify_tool_contract(state: dict) -> ContractResult:
+    """C3: tool_node post-conditions — at least one new usable chunk must be added."""
+    chunks = state.get("retrieved_chunks") or []
+    fallback = state.get("fallback_mode", False)
+    usable = [c for c in chunks if c.get("source_db") != "concept_search" and not _is_catalog_evidence(c)]
+
+    if not usable:
+        code = "zero_results_after_fallback" if fallback else "zero_results"
+        return ContractResult(
+            node="tool_node",
+            passed=False,
+            violations=[(code, "retrieval returned no usable chunks")],
+        )
+
+    return ContractResult(node="tool_node", passed=True, violations=[])
+
+
+def verify_synthesize_contract(state: dict) -> ContractResult:
+    """C4: synthesize_node post-conditions — answer quality checks."""
+    eval_ = state.get("evaluation") or {}
+    answer = state.get("final_answer", "")
+    qt = state.get("query_type", "")
+    chunks = state.get("retrieved_chunks") or []
+    violations = []
+
+    if not eval_.get("passed", False):
+        fb = eval_.get("feedback", "")
+        violations.append(("eval_not_passed", fb))
+
+    if qt == "price" and not re.search(r"\d+\.?\d*", answer):
+        violations.append(("no_price_number", "answer contains no numeric price"))
+
+    if qt == "price":
+        cv = _compute_price_cv_from_chunks(chunks)
+        if cv is not None and cv > 0.15:
+            violations.append(("source_conflict", f"price CV={cv:.3f} exceeds 0.15 threshold"))
+
+    return ContractResult(
+        node="synthesize_node",
+        passed=len(violations) == 0,
+        violations=violations,
+    )
+
+
+def trace_root_cause(state: dict) -> str:
+    """Walk contract_results from first to last; return the node of the earliest failure."""
+    results = state.get("contract_results") or []
+    for cr in results:
+        if not cr.get("passed", False):
+            return cr["node"]
+    return "query_analysis"
+
+
+# ── Corrective Action Helpers ──────────────────────────────────────────────────
+
+
+def _llm_extract_material(query: str, llm_config: dict | None = None) -> str:
+    """Use LLM to extract the material name from a query that lacked one."""
+    prompt = f"""Extract ONLY the material name from this Chinese construction cost query.
+Return a JSON object with a single key "material_name".
+If no material is mentioned, return {{"material_name": ""}}.
+
+Query: {query}
+
+JSON:"""
+    try:
+        response, _ = invoke_llm(
+            [HumanMessage(content=prompt)],
+            thinking=False,
+            prefer_strong=False,
+            llm_config=llm_config or {},
+        )
+        data = json.loads(response.content or "{}")
+        return str(data.get("material_name", "") or "")
+    except Exception:
+        return ""
+
+
+def _inject_latest_year_month(material_name: str) -> str:
+    """Query DB for the latest year_month for a given material."""
+    if not material_name:
+        return ""
+    try:
+        from app.agent.tools import get_latest_year_month_for_material
+        return get_latest_year_month_for_material(material_name) or ""
+    except Exception:
+        return ""
+
+
+def _expand_aliases_for_query(query: str) -> str:
+    """Expand query with canonical concept aliases from the unified alias map."""
+    try:
+        from app.agent.query_analyzer import _normalize_material
+        return _normalize_material(query)
+    except Exception:
+        return query
+
+
+def _expand_category_hints(query: str, state: dict) -> list[str]:
+    """Generate broader category hints when navigator finds no roadmap entries."""
+    import re as _re
+    hints = list(state.get("category_hints") or [])
+    # Extract parent chapters by truncating section numbers
+    for hint in list(hints):
+        parts = hint.split(".")
+        while len(parts) > 1:
+            parts.pop()
+            parent = ".".join(parts)
+            if parent not in hints:
+                hints.append(parent)
+    # Add single-char ngram variants of key terms
+    keywords = _re.findall(r"[一-鿿]{2,6}", query)
+    for kw in keywords:
+        variant = kw[:2] if len(kw) >= 2 else kw
+        if variant not in hints:
+            hints.append(variant)
+    return hints
+
+
+def _escalate_tool_fallback(level: int) -> list[str]:
+    """Return the tool category ladder for a given fallback level.
+
+    0: standard tools (price_query / hybrid_search)
+    1: add text_search (keyword-based)
+    2: add pdf_page_search (direct page extraction)
+    """
+    ladder = {
+        0: ["price_query", "hybrid_search"],
+        1: ["price_query", "hybrid_search", "text_search"],
+        2: ["price_query", "hybrid_search", "text_search", "pdf_page_search"],
+    }
+    return ladder.get(level, ladder[2])
+
+
+# ── Original evaluation ─────────────────────────────────────────────────
 
 
 def _build_answer_evaluation(query_type: str, final_answer: str, chunks: list[dict]) -> dict:
@@ -1214,6 +1455,117 @@ def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
     }
 
 
+def _build_forced_price_tool_calls(state: RAGAgentState) -> list[dict]:
+    query = str(state.get("query") or "").strip()
+    query_type = str(state.get("query_type") or "").strip().lower()
+    entities = state.get("query_entities") or {}
+    retrieved_chunks = list(state.get("retrieved_chunks") or [])
+    material = str(entities.get("material_name") or "").strip()
+    materials = [str(item).strip() for item in (entities.get("material_names") or []) if str(item).strip()]
+    specification = str(entities.get("specification") or "").strip()
+    tool_calls: list[dict] = []
+
+    if query_type == "comparison" and material and "信息价" in query:
+        price_compare_match = _PRICE_COMPARE_RE.search(query)
+        if price_compare_match:
+            groups = [group for group in price_compare_match.groups() if group]
+            if len(groups) >= 2:
+                periods: list[str] = []
+                for token in groups[:2]:
+                    match = re.search(r"(20\d{2})[年\-/](\d{1,2})", token)
+                    if match:
+                        periods.append(f"{match.group(1)}-{int(match.group(2)):02d}")
+                if len(periods) == 2:
+                    covered_periods = {
+                        str((chunk.get("metadata") or {}).get("year_month") or "").strip()
+                        for chunk in retrieved_chunks
+                        if material in str(chunk.get("content") or "")
+                    }
+                    missing_periods = [period for period in periods if period not in covered_periods]
+                    if not missing_periods:
+                        return []
+                    for period in missing_periods:
+                        args = {
+                            "material_name": material,
+                            "year_month": period,
+                            "specification": specification,
+                            "top_k": 8,
+                        }
+                        tool_hash = hashlib.md5(
+                            f"price_query:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
+                        ).hexdigest()[:12]
+                        tool_calls.append(
+                            {
+                                "id": f"forced_price_query_{tool_hash}",
+                                "name": "price_query",
+                                "args": args,
+                                "type": "tool_call",
+                            }
+                        )
+                    return tool_calls
+
+    if query_type in {"price", "trend_chart"} and _looks_like_multi_material_price_change_query(query, entities):
+        period = str(entities.get("year_month") or "").strip()
+        previous_period = _previous_month(period)
+        covered_materials = {
+            candidate
+            for candidate in materials
+            if any(
+                candidate in str(chunk.get("content") or "")
+                and str((chunk.get("metadata") or {}).get("year_month") or "").strip() in {period, previous_period}
+                for chunk in retrieved_chunks
+            )
+        }
+        missing_materials = [candidate for candidate in materials if candidate not in covered_materials]
+        if period and previous_period and missing_materials:
+            for candidate in missing_materials:
+                args = {
+                    "material_name": candidate,
+                    "start_month": previous_period,
+                    "end_month": period,
+                }
+                tool_hash = hashlib.md5(
+                    f"price_trend:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
+                ).hexdigest()[:12]
+                tool_calls.append(
+                    {
+                        "id": f"forced_price_trend_{tool_hash}",
+                        "name": "price_trend",
+                        "args": args,
+                        "type": "tool_call",
+                    }
+                )
+            return tool_calls
+
+    if query_type == "trend_chart" and material and len(materials) <= 1:
+        raw_period = str(entities.get("year_month") or "").strip()
+        start_month = f"{raw_period}-01" if re.fullmatch(r"\d{4}", raw_period) else raw_period
+        if start_month:
+            if any(material in str(chunk.get("content") or "") for chunk in retrieved_chunks):
+                return []
+            end_month = ""
+            if any(token in query for token in ("至今", "当前", "开始至今", "到现在", "截至目前")):
+                end_month = datetime.now().strftime("%Y-%m")
+            args = {
+                "material_name": material,
+                "start_month": start_month,
+                "end_month": end_month,
+            }
+            tool_hash = hashlib.md5(
+                f"price_trend:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
+            ).hexdigest()[:12]
+            return [
+                {
+                    "id": f"forced_price_trend_{tool_hash}",
+                    "name": "price_trend",
+                    "args": args,
+                    "type": "tool_call",
+                }
+            ]
+
+    return []
+
+
 def _build_executor_fallback_tool_call(state: RAGAgentState) -> dict | None:
     query = state["query"].strip()
     query_type = str(state.get("query_type") or "semantic").strip().lower()
@@ -1308,6 +1660,13 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
             + "\n".join(f"   - {n}" for n in fallback_notices) + "\n"
         )
 
+    trend_average_hint = ""
+    if query_type == "trend_chart" and any("价格走势 期间:" in (c.get("content") or "") and "均价:" in (c.get("content") or "") for c in chunks[:8]):
+        trend_average_hint = (
+            "\n6. 当前证据包含工具汇总后的月均价点。回答走势/环比问题时，应优先基于这些月均价点直接计算；"
+            "若月均价点已存在，不得仅因底层样本规格不完全一致而拒绝作答。"
+        )
+
     catalog_only_hint = ""
     if query_type == "standard_ref" and chunks and not _has_substantive_evidence(chunks) and any(_is_catalog_evidence(c) for c in chunks):
         catalog_only_hint = (
@@ -1325,6 +1684,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
         f"3. {query_type_hint}\n"
         f"{fallback_hint}\n"
+        f"{trend_average_hint}\n"
         f"{catalog_only_hint}"
         "格式要求（必须遵守）\n"
         "1. 第一段直接回答用户问题，不写\"【问题】\"\"【结论】\"等标签。\n"
@@ -1436,6 +1796,7 @@ _INTENT_TYPES = {"price", "semantic", "calculation", "comparison", "trend_chart"
 _FEE_RULE_QUERY_RE = re.compile(
     r"费率标准|企业管理费|利润率?|推荐费率|推荐系数|计算基数|计算公式|按\s*20\d{2}\s*版|如果.*为0"
 )
+_TAX_RULE_QUERY_RE = re.compile(r"一般计税方法|简易计税方法|进项税额|税前工程造价|增值税")
 _PRESENTATION_FORMULA_QUERY_RE = re.compile(r"计算公式|计算基数|如果.*为0|边界|代入")
 
 
@@ -1951,6 +2312,12 @@ def planner_node(state: RAGAgentState) -> dict:
             f"如需补充费率范围，再使用 keyword_search 检索『{core_term.replace('计算公式', '推荐费率')}』",
         ]
         logger.info(f"[planner] fee formula query override, core='{core_term}'")
+    elif state.get("query_type") == "standard_ref" and _TAX_RULE_QUERY_RE.search(query):
+        steps = [
+            "使用 text_search 检索『一般计税方法 税前工程造价 进项税额』原文条文",
+            "如需补充对照，再使用 text_search 检索『简易计税方法 税前工程造价 进项税额』相关条文",
+        ]
+        logger.info("[planner] tax rule query override")
     elif state.get("query_type") == "standard_ref" and _FEE_RULE_QUERY_RE.search(query):
         core_term = extract_fee_formula_search_term(query)
         steps = [
@@ -2005,23 +2372,40 @@ def planner_node(state: RAGAgentState) -> dict:
             f"[planner] multi-material price change override, period='{period}' "
             f"previous='{previous_period}' materials={materials}"
         )
+    elif state.get("query_type") == "trend_chart":
+        trend_material = str(entities.get("material_name") or "").strip()
+        trend_period = str(entities.get("year_month") or "").strip()
+        if trend_material:
+            start_month = f"{trend_period}-01" if re.fullmatch(r"\d{4}", trend_period) else trend_period
+            if start_month:
+                steps = [f"使用 price_trend 查询『{trend_material}』在 {start_month} 至 当前 的月度价格走势"]
+                logger.info(
+                    f"[planner] single-material trend override, material='{trend_material}' start='{start_month}'"
+                )
 
     # 价格对比查询：提取两个期间，确保每个期间都有独立的 price_query 步骤
     price_compare_match = _PRICE_COMPARE_RE.search(query)
     if price_compare_match:
         groups = [g for g in price_compare_match.groups() if g]
         if len(groups) >= 2:
-            period1, period2 = groups[0], groups[1]
+            def _normalize_period_token(token: str) -> str:
+                m = re.search(r"(20\d{2})[年\-/](\d{1,2})", token)
+                if m:
+                    return f"{m.group(1)}-{int(m.group(2)):02d}"
+                return token.strip()
+
+            period1, period2 = _normalize_period_token(groups[0]), _normalize_period_token(groups[1])
             # 检查 plan 里是否已有两个不同期间的步骤
             plan_text = " ".join(steps)
             if period1 not in plan_text or period2 not in plan_text:
-                # 提取规格词（去掉日期/动词/介词）
-                spec_part = re.sub(r'\d{4}[年\-/]\d{1,2}月?|对比|查询|检索|工程建设信息价|深圳市|中|和|与', '', query).strip()
+                material = str(entities.get("material_name") or "").strip()
+                specification = str(entities.get("specification") or "").strip()
+                target = " ".join(part for part in [material, specification] if part).strip() or query
                 steps = [
-                    f"使用 price_query 查询 {period1} 的价格：{spec_part}",
-                    f"使用 price_query 查询 {period2} 的价格：{spec_part}",
+                    f"使用 price_query 查询 {period1} 的『{target}』价格",
+                    f"使用 price_query 查询 {period2} 的『{target}』价格",
                 ]
-                logger.info(f"[planner] price compare override: {period1} vs {period2}")
+                logger.info(f"[planner] price compare override: {period1} vs {period2} target='{target}'")
 
     logger.info(f"[planner] plan={steps}")
     # Channel seed：将 system + user 注入 messages，executor_node 追加
@@ -2081,6 +2465,33 @@ def executor_node(state: RAGAgentState) -> dict:
     # 构造当前步骤的提示（让模型感知进度）
     step_hint = plan[current_step] if current_step < len(plan) else plan[-1]
     progress = f"{current_step + 1}/{len(plan)}"
+
+    forced_price_tool_calls = _build_forced_price_tool_calls(state)
+    if forced_price_tool_calls:
+        forced_step_hint = (
+            "强制调用价格检索工具，使用解析后的材料、规格和期间参数"
+            if len(forced_price_tool_calls) > 1
+            else "强制调用 price_trend 执行单材料走势检索"
+        )
+        thought_process.append(f"步骤{current_step+1}：{forced_step_hint}")
+        step_msg = HumanMessage(content=f"[当前进度 {progress}] {forced_step_hint}")
+        forced_response = AIMessage(content="", tool_calls=forced_price_tool_calls)
+        logger.info(
+            "[executor] forced price tools: %s",
+            [(tool_call["name"], tool_call["args"]) for tool_call in forced_price_tool_calls],
+        )
+        return {
+            "messages": [step_msg, forced_response],
+            "iterations": iteration + 1,
+            "current_step": current_step,
+            "thought_process": thought_process,
+            "has_tool_calls": True,
+            "pending_tool_calls": forced_price_tool_calls,
+            "step_number": current_step + 1,
+            "total_steps": len(plan),
+            "step_hint": forced_step_hint,
+            "llm_runtime": state.get("llm_runtime") or {},
+        }
 
     forced_tool_call = _build_forced_rule_clause_tool_call(state)
     if forced_tool_call is not None:
@@ -2461,6 +2872,145 @@ def synthesize_node(state: RAGAgentState) -> dict:
     }
 
 
+# ── Iterative Convergence Nodes ────────────────────────────────────────────────
+
+
+def contract_verifier_node(state: RAGAgentState) -> dict:
+    """Aggregate all 4 node contracts; set quality_converged and root_cause_node."""
+    outer_iter = state.get("outer_iteration", 0)
+    max_outer = state.get("max_outer_iterations", 3)
+
+    all_results = [
+        verify_query_analysis_contract(state),
+        verify_navigator_contract(state),
+        verify_tool_contract(state),
+        verify_synthesize_contract(state),
+    ]
+    all_passed = all(r["passed"] for r in all_results)
+
+    if all_passed:
+        logger.info("[contract_verifier] all contracts passed")
+        return {
+            "contract_results": all_results,
+            "quality_converged": True,
+        }
+
+    if outer_iter >= max_outer:
+        logger.warning(f"[contract_verifier] max_outer_iterations ({max_outer}) reached, forcing output")
+        return {
+            "contract_results": all_results,
+            "quality_converged": True,
+        }
+
+    root = trace_root_cause({**state, "contract_results": all_results})
+    logger.info(
+        f"[contract_verifier] outer_iter={outer_iter}/{max_outer} "
+        f"failed_nodes={[r['node'] for r in all_results if not r['passed']]} "
+        f"root_cause={root}"
+    )
+
+    return {
+        "contract_results": all_results,
+        "quality_converged": False,
+        "root_cause_node": root,
+        "outer_iteration": outer_iter + 1,
+    }
+
+
+def corrective_action_node(state: RAGAgentState) -> dict:
+    """Dispatch corrective actions based on violation codes, then prepare state for replay."""
+    violations = []
+    for cr in state.get("contract_results") or []:
+        if not cr.get("passed", False):
+            violations.extend(cr.get("violations", []))
+
+    query = state.get("query", "")
+    entities = state.get("query_entities") or {}
+    corrective_actions = list(state.get("corrective_actions") or [])
+    used_tool_categories = list(state.get("used_tool_categories") or [])
+    tool_fallback_level = state.get("tool_fallback_level", 0)
+
+    updates: dict = {"corrective_actions": corrective_actions}
+    violation_codes = {v[0] for v in violations}
+
+    logger.info(f"[corrective_action] codes={violation_codes}")
+
+    if "missing_material" in violation_codes:
+        llm_config = state.get("llm_config") or {}
+        material = _llm_extract_material(query, llm_config)
+        if material:
+            entities["material_name"] = material
+            updates["query_entities"] = entities
+            action = f"llm_extract_material:{material}"
+            corrective_actions.append(action)
+            logger.info(f"[corrective_action] {action}")
+
+    if "missing_year_month" in violation_codes:
+        material = entities.get("material_name", "")
+        latest = _inject_latest_year_month(material)
+        if latest:
+            entities["year_month"] = latest
+            updates["query_entities"] = entities
+            action = f"inject_latest_ym:{latest}"
+            corrective_actions.append(action)
+            logger.info(f"[corrective_action] {action}")
+
+    if "empty_roadmap" in violation_codes:
+        updates["category_hints"] = _expand_category_hints(query, state)
+        action = "expand_navigator_keywords"
+        corrective_actions.append(action)
+        logger.info(f"[corrective_action] {action}")
+
+    if "zero_results" in violation_codes and "zero_results_after_fallback" not in violation_codes:
+        updates["fallback_mode"] = True
+        action = "enable_fallback"
+        corrective_actions.append(action)
+        logger.info(f"[corrective_action] {action}")
+
+    if "zero_results_after_fallback" in violation_codes:
+        tool_fallback_level = min(tool_fallback_level + 1, 2)
+        updates["tool_fallback_level"] = tool_fallback_level
+        expanded = _expand_aliases_for_query(query)
+        if expanded and expanded != query:
+            updates["query"] = expanded
+        if entities.get("year_month") and len(entities["year_month"]) == 7:
+            entities["year_month"] = entities["year_month"][:4]
+            updates["query_entities"] = entities
+        action = f"escalate_fallback:L{tool_fallback_level}"
+        corrective_actions.append(action)
+        logger.info(f"[corrective_action] {action}")
+
+    if "eval_not_passed" in violation_codes:
+        has_drilldown = any(a.startswith("force_drilldown") for a in corrective_actions)
+        if not has_drilldown:
+            updates["force_clause_drilldown"] = True
+            action = "force_drilldown"
+            corrective_actions.append(action)
+            logger.info(f"[corrective_action] {action}")
+
+    if "no_price_number" in violation_codes:
+        if "price_query" not in used_tool_categories:
+            used_tool_categories.append("price_query")
+            updates["used_tool_categories"] = used_tool_categories
+        action = "force_price_query"
+        corrective_actions.append(action)
+        logger.info(f"[corrective_action] {action}")
+
+    if "source_conflict" in violation_codes:
+        action = "annotate_source_conflict"
+        corrective_actions.append(action)
+        logger.info(f"[corrective_action] {action}")
+
+    # Clear retrieved_chunks to force fresh retrieval on replay
+    updates["retrieved_chunks"] = []
+    updates["evaluation"] = None
+    updates["final_answer"] = ""
+    updates["corrective_actions"] = corrective_actions
+    updates["has_tool_calls"] = False
+
+    return updates
+
+
 # ── 路由函数 ────────────────────────────────────────────────────────────────
 
 def after_query_analysis(state: RAGAgentState) -> str:
@@ -2469,7 +3019,23 @@ def after_query_analysis(state: RAGAgentState) -> str:
 
 
 def after_synthesize(state: RAGAgentState) -> str:
-    return "presentation_policy_node"
+    return "contract_verifier_node"
+
+
+def after_contract_verifier(state: RAGAgentState) -> str:
+    if state.get("quality_converged", False):
+        return "presentation_policy_node"
+    return "corrective_action_node"
+
+
+def after_corrective_action(state: RAGAgentState) -> str:
+    """Replay from the root cause node, mapping contract-only nodes to graph replay targets."""
+    root = state.get("root_cause_node", "query_analysis")
+    # tool_node and synthesize_node are not direct graph replay targets;
+    # their failures are addressed by re-executing retrieval/executor.
+    if root in ("tool_node", "synthesize_node"):
+        return "executor_node"
+    return root
 
 
 def after_executor(state: RAGAgentState) -> str:
@@ -2508,13 +3074,17 @@ def after_executor(state: RAGAgentState) -> str:
 
 def build_agent_graph(checkpointer=None):
     """
-    Thought-Plan-Act graph:
+    Iterative convergence graph with quality-driven outer loop:
 
-    query_analysis → intent_guard_node → navigator_node → planner_node → executor_node ↔ tool_node  (plan steps loop)
-                                 ↓ chapter_resolver
-                               chapter_resolver → executor_node
-                                  ↓ (all steps done or max iter)
-                                     synthesize_node → presentation_policy_node → END
+    query_analysis → intent_guard → navigator → planner → executor ↔ tool_node
+                                                                  ↓ chapter_resolver
+                                                            chapter_resolver → executor
+                                ↓ (all steps done or max iter)
+                           synthesize_node → contract_verifier_node
+                                                ├─ (converged) → presentation_policy → END
+                                                └─ (failed) → corrective_action
+                                                                  ↓
+                                               replay to root_cause_node
     """
     g = StateGraph(RAGAgentState)
 
@@ -2526,6 +3096,8 @@ def build_agent_graph(checkpointer=None):
     g.add_node("tool_node", tool_node)
     g.add_node("chapter_resolver", chapter_resolver_node)
     g.add_node("synthesize_node", synthesize_node)
+    g.add_node("contract_verifier_node", contract_verifier_node)
+    g.add_node("corrective_action_node", corrective_action_node)
     g.add_node("presentation_policy_node", presentation_policy_node)
 
     g.set_entry_point("query_analysis")
@@ -2552,11 +3124,32 @@ def build_agent_graph(checkpointer=None):
 
     g.add_edge("tool_node", "chapter_resolver")
     g.add_edge("chapter_resolver", "executor_node")
+
     g.add_conditional_edges(
         "synthesize_node",
         after_synthesize,
-        {"presentation_policy_node": "presentation_policy_node"},
+        {"contract_verifier_node": "contract_verifier_node"},
     )
+
+    g.add_conditional_edges(
+        "contract_verifier_node",
+        after_contract_verifier,
+        {
+            "presentation_policy_node": "presentation_policy_node",
+            "corrective_action_node": "corrective_action_node",
+        },
+    )
+
+    g.add_conditional_edges(
+        "corrective_action_node",
+        after_corrective_action,
+        {
+            "query_analysis": "query_analysis",
+            "navigator_node": "navigator_node",
+            "executor_node": "executor_node",
+        },
+    )
+
     g.add_edge("presentation_policy_node", END)
 
     return g.compile(checkpointer=checkpointer)

@@ -399,6 +399,15 @@ async def agent_query(request: AgentRequest):
             "presentation_policy": None,
             "roadmap": [],
             "workspace": [],
+            # Iterative convergence / outer-loop contract verification
+            "contract_results": [],
+            "outer_iteration": 0,
+            "max_outer_iterations": 3,
+            "quality_converged": False,
+            "corrective_actions": [],
+            "root_cause_node": "",
+            "tool_fallback_level": 0,
+            "used_tool_categories": [],
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
         return {
@@ -507,6 +516,15 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "presentation_policy": None,
                     "roadmap": [],
                     "workspace": [],
+                    # Iterative convergence / outer-loop contract verification
+                    "contract_results": [],
+                    "outer_iteration": 0,
+                    "max_outer_iterations": 3,
+                    "quality_converged": False,
+                    "corrective_actions": [],
+                    "root_cause_node": "",
+                    "tool_fallback_level": 0,
+                    "used_tool_categories": [],
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
