@@ -3417,6 +3417,8 @@ def synthesize_node(state: RAGAgentState) -> dict:
         existing_presentation=presentation,
     )
 
+    _log_agent_run(state, final_answer, evaluation, runtime, all_chunks)
+
     return {
         "messages": [AIMessage(content=final_answer)],
         "final_answer": final_answer,
@@ -3428,6 +3430,69 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "presentation": presentation,
         "presentation_policy": state.get("presentation_policy"),
     }
+
+
+def _log_agent_run(state: dict, final_answer: str, evaluation: dict, runtime: dict, all_chunks: list) -> None:
+    """Append a record of this agent run to a JSONL file for the learning loop.
+
+    Captures: query, final_answer, evaluation scores, tools used, chunk count,
+    iterations, runtime info. Quality is heuristically classified so the
+    learning page can surface failures and gaps without further analysis.
+    """
+    try:
+        log_dir = os.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "agent_runs.jsonl")
+
+        ev = evaluation or {}
+        confidence = float(ev.get("confidence", 0) or 0)
+        info_gain = float(ev.get("information_gain", 0) or 0)
+
+        # Tools called (collected from messages with name attr in tool_node)
+        tools_used = []
+        for m in state.get("messages", []) or []:
+            tn = getattr(m, "name", None)
+            if tn and tn not in tools_used:
+                tools_used.append(tn)
+
+        # Heuristic classification — answer text leakage of refusal patterns
+        refusal_markers = ["无法直接回答", "无法回答", "无法提供", "无法分析",
+                           "不足以回答", "未提供", "无相关数据", "未包含"]
+        refused = any(m in final_answer for m in refusal_markers)
+        no_chunks = len(all_chunks) == 0
+        if refused or no_chunks:
+            quality = "failure"
+        elif confidence < 0.5 or info_gain < 0.3:
+            quality = "weak"
+        else:
+            quality = "good"
+
+        record = {
+            "ts": datetime.now().isoformat(),
+            "query": state.get("query", ""),
+            "query_type": state.get("query_type", ""),
+            "answer": final_answer[:1500],
+            "answer_truncated": len(final_answer) > 1500,
+            "iterations": int(state.get("iterations", 0) or 0),
+            "chunks_count": len(all_chunks),
+            "tools_used": tools_used,
+            "evaluation": {
+                "confidence": confidence,
+                "information_gain": info_gain,
+                "completeness": float(ev.get("completeness", 0) or 0),
+                "consistency": float(ev.get("consistency", 0) or 0),
+            },
+            "quality": quality,
+            "refused": refused,
+            "runtime": {
+                "provider": (runtime or {}).get("provider"),
+                "model": (runtime or {}).get("model"),
+            },
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"agent_run log failed: {e}")
 
 
 # ── Iterative Convergence Nodes ────────────────────────────────────────────────

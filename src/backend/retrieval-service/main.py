@@ -80,5 +80,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Lightweight in-memory request metrics for /api/v1/ops/metrics
+@app.middleware("http")
+async def _metrics_middleware(request, call_next):
+    import time as _t
+    from app.api import ops_record_request
+
+    t0 = _t.monotonic()
+    response = await call_next(request)
+    dur_ms = (_t.monotonic() - t0) * 1000.0
+    try:
+        ops_record_request(dur_ms, response.status_code, request.url.path)
+    except Exception:
+        pass
+    return response
+
+
 app.include_router(router)
 app.include_router(tools_router)

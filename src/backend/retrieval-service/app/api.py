@@ -918,3 +918,200 @@ async def metrics_llm():
             return {"raw": r.text[:2000], "status": "ok"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ── Learning Loop ─────────────────────────────────────────────────────────────
+
+import os as _os_learn
+
+_LEARN_DIR = _os_learn.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
+_FEEDBACK_PATH = _os_learn.environ.get("FEEDBACK_LOG_PATH", "/tmp/rag_feedback.jsonl")
+
+
+def _read_jsonl(path: str, limit: int = 500) -> list[dict]:
+    if not _os_learn.path.exists(path):
+        return []
+    rows: list[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception as e:
+        logger.warning(f"read jsonl failed {path}: {e}")
+        return []
+    return rows[-limit:]
+
+
+@router.get("/api/v1/learning/runs")
+async def learning_runs(limit: int = 50, quality: Optional[str] = None):
+    """Recent agent runs from JSONL log. Filter by quality=failure|weak|good."""
+    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=max(limit * 4, 200))
+    if quality:
+        runs = [r for r in runs if r.get("quality") == quality]
+    runs.reverse()  # newest first
+    return {"runs": runs[:limit], "total_in_window": len(runs)}
+
+
+@router.get("/api/v1/learning/summary")
+async def learning_summary():
+    """Aggregate stats over recent agent runs + feedback."""
+    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
+    feedback = _read_jsonl(_FEEDBACK_PATH, limit=500)
+
+    total = len(runs)
+    by_quality = {"good": 0, "weak": 0, "failure": 0}
+    refused = 0
+    confidence_sum = 0.0
+    confidence_n = 0
+    tool_freq: dict[str, int] = {}
+    type_freq: dict[str, int] = {}
+
+    for r in runs:
+        q = r.get("quality") or "unknown"
+        by_quality[q] = by_quality.get(q, 0) + 1
+        if r.get("refused"):
+            refused += 1
+        ev = r.get("evaluation") or {}
+        c = ev.get("confidence")
+        if isinstance(c, (int, float)):
+            confidence_sum += float(c)
+            confidence_n += 1
+        for t in r.get("tools_used", []) or []:
+            tool_freq[t] = tool_freq.get(t, 0) + 1
+        qt = r.get("query_type") or "unknown"
+        type_freq[qt] = type_freq.get(qt, 0) + 1
+
+    pos = sum(1 for fb in feedback if fb.get("rating", 0) > 0)
+    neg = sum(1 for fb in feedback if fb.get("rating", 0) < 0)
+
+    avg_conf = (confidence_sum / confidence_n) if confidence_n else 0.0
+    return {
+        "total_runs": total,
+        "by_quality": by_quality,
+        "refused_count": refused,
+        "avg_confidence": round(avg_conf, 3),
+        "tool_frequency": dict(sorted(tool_freq.items(), key=lambda kv: -kv[1])[:20]),
+        "type_frequency": type_freq,
+        "feedback": {
+            "positive": pos,
+            "negative": neg,
+            "total": len(feedback),
+        },
+    }
+
+
+@router.get("/api/v1/learning/gaps")
+async def learning_gaps(limit: int = 30):
+    """Distinct failed/weak queries — surface knowledge gaps."""
+    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
+    seen: set[str] = set()
+    gaps: list[dict] = []
+    for r in reversed(runs):
+        if r.get("quality") not in ("failure", "weak"):
+            continue
+        q = (r.get("query") or "").strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        gaps.append({
+            "query": q,
+            "ts": r.get("ts"),
+            "quality": r.get("quality"),
+            "refused": bool(r.get("refused")),
+            "chunks_count": r.get("chunks_count", 0),
+            "confidence": (r.get("evaluation") or {}).get("confidence", 0),
+            "answer_preview": (r.get("answer") or "")[:200],
+        })
+        if len(gaps) >= limit:
+            break
+    return {"gaps": gaps}
+
+
+# ── Ops Metrics (in-memory request counter) ───────────────────────────────────
+
+from collections import deque
+import time as _time_ops
+import threading as _threading_ops
+
+_OPS_LOCK = _threading_ops.Lock()
+_OPS_REQUESTS: deque = deque(maxlen=2000)  # (ts, latency_ms, status_code, path)
+
+
+def ops_record_request(latency_ms: float, status_code: int, path: str) -> None:
+    """Called by middleware on every HTTP response."""
+    with _OPS_LOCK:
+        _OPS_REQUESTS.append((_time_ops.time(), float(latency_ms), int(status_code), path))
+
+
+@router.get("/api/v1/ops/metrics")
+async def ops_metrics(window_sec: int = 60):
+    """Aggregated request metrics over the last `window_sec` seconds."""
+    now = _time_ops.time()
+    cutoff = now - window_sec
+    with _OPS_LOCK:
+        recent = [r for r in _OPS_REQUESTS if r[0] >= cutoff]
+        all_recent = list(_OPS_REQUESTS)
+
+    n = len(recent)
+    if n == 0:
+        return {
+            "window_sec": window_sec,
+            "requests": 0,
+            "qps": 0.0,
+            "p50_ms": 0,
+            "p95_ms": 0,
+            "p99_ms": 0,
+            "error_rate": 0.0,
+            "by_status": {},
+            "top_paths": [],
+            "qps_buckets": [],
+        }
+
+    latencies = sorted(r[1] for r in recent)
+
+    def _pct(p: float) -> int:
+        idx = min(len(latencies) - 1, int(len(latencies) * p))
+        return int(latencies[idx])
+
+    by_status: dict[str, int] = {}
+    paths: dict[str, int] = {}
+    errors = 0
+    for _, _, code, path in recent:
+        key = f"{code // 100}xx"
+        by_status[key] = by_status.get(key, 0) + 1
+        if code >= 400:
+            errors += 1
+        # collapse path to bucket
+        bucket = path.split("?")[0]
+        paths[bucket] = paths.get(bucket, 0) + 1
+
+    # 1-second QPS buckets for sparkline (last 60s window)
+    bucket_count = min(window_sec, 60)
+    buckets = [0] * bucket_count
+    base = now - bucket_count
+    for ts, _, _, _ in recent:
+        idx = int(ts - base)
+        if 0 <= idx < bucket_count:
+            buckets[idx] += 1
+
+    top_paths = sorted(paths.items(), key=lambda kv: -kv[1])[:10]
+
+    return {
+        "window_sec": window_sec,
+        "requests": n,
+        "qps": round(n / max(window_sec, 1), 2),
+        "p50_ms": _pct(0.50),
+        "p95_ms": _pct(0.95),
+        "p99_ms": _pct(0.99),
+        "error_rate": round(errors / n, 4),
+        "by_status": by_status,
+        "top_paths": [{"path": p, "count": c} for p, c in top_paths],
+        "qps_buckets": buckets,
+        "total_recorded": len(all_recent),
+    }

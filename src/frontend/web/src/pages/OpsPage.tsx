@@ -1,13 +1,16 @@
 /**
- * 运维看板 — 服务健康网格 + 真实延迟柱状图
- * QPS 折线已移除：缺少真实指标接口，不再 mock random
+ * 运维看板 — 服务健康 + 实时请求指标（QPS、延迟分位数）
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { getHealthDetail, getLlmMetrics, HealthDetailResponse } from '../services/metricsApi';
+import {
+  getHealthDetail, getLlmMetrics, getOpsMetrics,
+  HealthDetailResponse, OpsMetricsResponse,
+} from '../services/metricsApi';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  AreaChart, Area,
 } from 'recharts';
 import { PageHeader } from '../components/common/PageHeader';
 import { StatusDot } from '../components/common/StatusDot';
@@ -33,14 +36,16 @@ const SERVICES: ServiceDef[] = [
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
   const [llmStatus, setLlmStatus] = useState<string>('—');
+  const [ops, setOps] = useState<OpsMetricsResponse | null>(null);
   const { isConnected } = useWebSocket('dashboard');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = async () => {
-    const [hd, llm] = await Promise.allSettled([getHealthDetail(), getLlmMetrics()]);
+    const [hd, llm, m] = await Promise.allSettled([getHealthDetail(), getLlmMetrics(), getOpsMetrics(60)]);
     if (hd.status === 'fulfilled') setHealthDetail(hd.value);
     if (llm.status === 'fulfilled')
       setLlmStatus(llm.value.status === 'ok' ? '在线' : llm.value.message ?? '离线');
+    if (m.status === 'fulfilled' && m.value) setOps(m.value);
   };
 
   useEffect(() => {
@@ -61,11 +66,17 @@ export const OpsPage: React.FC = () => {
     };
   });
 
+  // QPS sparkline data (1-second buckets, last 60s)
+  const qpsData = (ops?.qps_buckets || []).map((v, i) => ({
+    t: i - (ops?.qps_buckets?.length || 0),
+    qps: v,
+  }));
+
   return (
     <div className="ops-page">
       <PageHeader
         title="运维看板"
-        subtitle="服务健康与延迟监控"
+        subtitle="服务健康 · 实时请求指标"
         actions={
           <span className="ops-ws-badge">
             <span className={`ws-pulse ${isConnected ? 'on' : 'off'}`} />
@@ -89,33 +100,76 @@ export const OpsPage: React.FC = () => {
         })}
       </div>
 
+      {/* 实时请求指标 */}
+      {ops && (
+        <div className="ops-metrics-row">
+          <MetricCard label="QPS (60s)" value={ops.qps.toFixed(2)} hint={`${ops.requests} 请求`} />
+          <MetricCard label="P50 延迟" value={`${ops.p50_ms} ms`} />
+          <MetricCard label="P95 延迟" value={`${ops.p95_ms} ms`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
+          <MetricCard label="P99 延迟" value={`${ops.p99_ms} ms`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
+          <MetricCard
+            label="错误率"
+            value={`${(ops.error_rate * 100).toFixed(2)}%`}
+            tone={ops.error_rate > 0.05 ? 'bad' : ops.error_rate > 0.01 ? 'warn' : 'good'}
+          />
+        </div>
+      )}
+
       <div className="ops-charts">
         <div className="ops-chart-card">
+          <h3>QPS · 最近 60 秒</h3>
+          {qpsData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={180}>
+              <AreaChart data={qpsData} margin={{ top: 12, right: 12, bottom: 4, left: -12 }}>
+                <defs>
+                  <linearGradient id="qpsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--color-primary)" stopOpacity={0.5} />
+                    <stop offset="100%" stopColor="var(--color-primary)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
+                <XAxis dataKey="t" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} />
+                <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 11 }}
+                  labelFormatter={(t) => `${t}s`}
+                />
+                <Area type="monotone" dataKey="qps" stroke="var(--color-primary)" fill="url(#qpsGrad)" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="ops-empty">无请求数据</p>
+          )}
+        </div>
+
+        <div className="ops-chart-card">
           <h3>服务延迟</h3>
-          <ResponsiveContainer width="100%" height={220}>
+          <ResponsiveContainer width="100%" height={180}>
             <BarChart data={latencyBarData} margin={{ top: 12, right: 12, bottom: 4, left: -12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
               <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
               <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border-default)',
-                  borderRadius: 8,
-                  fontSize: 12,
-                }}
-              />
+              <Tooltip contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar
-                dataKey="latency"
-                name="延迟 (ms)"
-                fill="var(--color-primary)"
-                radius={[4, 4, 0, 0]}
-              />
+              <Bar dataKey="latency" name="延迟 (ms)" fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
+
+      {ops && ops.top_paths.length > 0 && (
+        <div className="ops-paths-card">
+          <h3>请求量 TOP 路径 (60s)</h3>
+          <ul className="paths-list">
+            {ops.top_paths.map((p) => (
+              <li key={p.path}>
+                <code className="path-name">{p.path}</code>
+                <span className="path-count">{p.count}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="ops-info-row">
         <div className="ops-info-card">
@@ -134,6 +188,15 @@ export const OpsPage: React.FC = () => {
     </div>
   );
 };
+
+interface MetricCardProps { label: string; value: string; hint?: string; tone?: 'good' | 'warn' | 'bad' }
+const MetricCard: React.FC<MetricCardProps> = ({ label, value, hint, tone }) => (
+  <div className={`ops-metric-card ${tone || ''}`}>
+    <div className="ops-metric-label">{label}</div>
+    <div className="ops-metric-value">{value}</div>
+    {hint && <div className="ops-metric-hint">{hint}</div>}
+  </div>
+);
 
 interface ServiceCardProps {
   label: string;
@@ -159,3 +222,4 @@ const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency 
     </div>
   );
 };
+

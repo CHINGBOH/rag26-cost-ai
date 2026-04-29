@@ -56,3 +56,104 @@ export async function submitFeedback(data: {
   if (!res.ok) throw new Error(`Feedback API error: ${res.status}`);
   return res.json();
 }
+
+// ── Ops Metrics ──────────────────────────────────────────────────────────────
+
+export interface OpsMetricsResponse {
+  window_sec: number;
+  requests: number;
+  qps: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  error_rate: number;
+  by_status: Record<string, number>;
+  top_paths: Array<{ path: string; count: number }>;
+  qps_buckets: number[];
+  total_recorded?: number;
+}
+
+export async function getOpsMetrics(windowSec = 60): Promise<OpsMetricsResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/ops/metrics?window_sec=${windowSec}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+// ── Learning ─────────────────────────────────────────────────────────────────
+
+export interface LearningRun {
+  ts: string;
+  query: string;
+  query_type: string;
+  answer: string;
+  iterations: number;
+  chunks_count: number;
+  tools_used: string[];
+  evaluation: {
+    confidence: number;
+    information_gain: number;
+    completeness: number;
+    consistency: number;
+  };
+  quality: 'good' | 'weak' | 'failure' | string;
+  refused: boolean;
+  runtime: { provider?: string; model?: string };
+}
+
+export interface LearningSummary {
+  total_runs: number;
+  by_quality: Record<string, number>;
+  refused_count: number;
+  avg_confidence: number;
+  tool_frequency: Record<string, number>;
+  type_frequency: Record<string, number>;
+  feedback: { positive: number; negative: number; total: number };
+}
+
+export interface LearningGap {
+  query: string;
+  ts: string;
+  quality: string;
+  refused: boolean;
+  chunks_count: number;
+  confidence: number;
+  answer_preview: string;
+}
+
+export async function getLearningSummary(): Promise<LearningSummary | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/summary`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLearningRuns(limit = 50, quality?: string): Promise<LearningRun[]> {
+  try {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (quality) q.set('quality', quality);
+    const res = await fetch(`${API_BASE}/api/v1/learning/runs?${q}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.runs || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getLearningGaps(limit = 30): Promise<LearningGap[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.gaps || [];
+  } catch {
+    return [];
+  }
+}
