@@ -5373,3 +5373,289 @@ def find_knowledge_gaps(question: str, threshold: float = 0.55) -> str:
     finally:
         if conn is not None:
             _put_pg_conn(conn)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Round 4: Data science tools (numpy/pandas/sklearn/scipy)
+# ════════════════════════════════════════════════════════════════════════
+
+def _safe_table_check(table: str) -> bool:
+    return table in _QUERYABLE_TABLES
+
+
+@tool
+def forecast_series(
+    table: str,
+    time_col: str,
+    value_col: str,
+    where: str = "",
+    periods: int = 6,
+    method: str = "linear",
+) -> str:
+    """时间序列预测：对表中某时间序列做未来 N 期预测。
+    Args: table 表名；time_col 时间列；value_col 数值列；where 可选 col='val' 过滤；
+          periods 预测期数 (1-24)；method 'linear' 线性回归 | 'mean' 均值
+    Returns: JSON {history:[{t,v}], forecast:[{t,v_hat,lower,upper}], r2}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", time_col or ""):
+        return json.dumps({"error": "invalid time_col"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", value_col or ""):
+        return json.dumps({"error": "invalid value_col"})
+    periods = max(1, min(int(periods or 6), 24))
+    method = (method or "linear").lower()
+
+    where_sql = ""
+    where_params = []
+    if where:
+        m = _re_r3.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']{1,80})'$", where.strip())
+        if not m:
+            return json.dumps({"error": "where must be: col='value'"})
+        where_sql = f"WHERE {m.group(1)} = %s AND {value_col} IS NOT NULL AND {time_col} IS NOT NULL"
+        where_params = [m.group(2)]
+    else:
+        where_sql = f"WHERE {value_col} IS NOT NULL AND {time_col} IS NOT NULL"
+
+    conn = None
+    try:
+        import numpy as np  # local import
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {time_col}, AVG({value_col}::numeric)::float "
+                f"FROM {table} {where_sql} "
+                f"GROUP BY {time_col} ORDER BY {time_col} LIMIT 200",
+                where_params,
+            )
+            rows = cur.fetchall()
+        if len(rows) < 3:
+            return json.dumps({"error": f"need >=3 points, got {len(rows)}"})
+
+        ts = [str(r[0]) for r in rows]
+        vs = [float(r[1]) for r in rows]
+        x = np.arange(len(vs), dtype=float)
+        y = np.array(vs)
+
+        if method == "mean":
+            y_hat = float(y.mean())
+            std = float(y.std() or 0)
+            forecast = [{"t": f"+{i+1}", "v_hat": round(y_hat, 4),
+                         "lower": round(y_hat - 1.96 * std, 4),
+                         "upper": round(y_hat + 1.96 * std, 4)} for i in range(periods)]
+            r2 = 0.0
+        else:
+            slope, intercept = np.polyfit(x, y, 1)
+            pred_in = slope * x + intercept
+            ss_res = float(((y - pred_in) ** 2).sum())
+            ss_tot = float(((y - y.mean()) ** 2).sum()) or 1e-9
+            r2 = round(1 - ss_res / ss_tot, 4)
+            sigma = float(np.std(y - pred_in)) or 0
+            forecast = []
+            for i in range(periods):
+                xi = len(vs) + i
+                yh = slope * xi + intercept
+                forecast.append({
+                    "t": f"+{i+1}",
+                    "v_hat": round(float(yh), 4),
+                    "lower": round(float(yh - 1.96 * sigma), 4),
+                    "upper": round(float(yh + 1.96 * sigma), 4),
+                })
+
+        return json.dumps({
+            "table": table, "time_col": time_col, "value_col": value_col,
+            "method": method, "n_history": len(vs),
+            "history": [{"t": t, "v": round(v, 4)} for t, v in zip(ts, vs)],
+            "forecast": forecast, "r2": r2,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[forecast_series] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def outlier_detect(table: str, column: str, method: str = "iqr", where: str = "") -> str:
+    """异常值检测：用 IQR 或 zscore 找数值列异常。
+    Args: table 表名；column 数值列；method 'iqr' (默认) | 'zscore'；where 可选过滤
+    Returns: JSON {threshold_lo, threshold_hi, outlier_count, samples:[{rowid,value}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", column or ""):
+        return json.dumps({"error": "invalid column"})
+    method = (method or "iqr").lower()
+    if method not in ("iqr", "zscore"):
+        return json.dumps({"error": "method must be iqr or zscore"})
+
+    where_sql = f"WHERE {column} IS NOT NULL"
+    where_params = []
+    if where:
+        m = _re_r3.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']{1,80})'$", where.strip())
+        if not m:
+            return json.dumps({"error": "where must be: col='value'"})
+        where_sql += f" AND {m.group(1)} = %s"
+        where_params = [m.group(2)]
+
+    conn = None
+    try:
+        import numpy as np
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, {column}::numeric::float FROM {table} {where_sql} LIMIT 10000",
+                where_params,
+            )
+            rows = cur.fetchall()
+        if len(rows) < 5:
+            return json.dumps({"error": f"need >=5 rows, got {len(rows)}"})
+
+        ids = [r[0] for r in rows]
+        vals = np.array([float(r[1]) for r in rows])
+
+        if method == "iqr":
+            q1, q3 = np.percentile(vals, [25, 75])
+            iqr = q3 - q1
+            lo, hi = float(q1 - 1.5 * iqr), float(q3 + 1.5 * iqr)
+            mask = (vals < lo) | (vals > hi)
+        else:
+            mu, sd = float(vals.mean()), float(vals.std() or 1e-9)
+            lo, hi = mu - 3 * sd, mu + 3 * sd
+            mask = np.abs(vals - mu) > 3 * sd
+
+        out_idx = np.where(mask)[0]
+        samples = [{"row_id": int(ids[i]), "value": round(float(vals[i]), 4)} for i in out_idx[:30]]
+        return json.dumps({
+            "table": table, "column": column, "method": method,
+            "n": int(len(vals)),
+            "threshold_lo": round(lo, 4), "threshold_hi": round(hi, 4),
+            "outlier_count": int(mask.sum()),
+            "ratio": round(float(mask.mean()), 4),
+            "samples": samples,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[outlier_detect] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def correlate(table: str, columns: str, method: str = "pearson") -> str:
+    """相关性矩阵：给定多个数值列，计算两两相关。
+    Args: table 表名；columns 逗号分隔的列名 (2-8 个)；method 'pearson' (默认) | 'spearman'
+    Returns: JSON {columns, matrix:[[...]], top_pairs:[{a,b,corr}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    if not (2 <= len(cols) <= 8):
+        return json.dumps({"error": "columns: 2-8 names, comma separated"})
+    for c in cols:
+        if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c):
+            return json.dumps({"error": f"invalid column: {c}"})
+    method = (method or "pearson").lower()
+    if method not in ("pearson", "spearman"):
+        return json.dumps({"error": "method must be pearson or spearman"})
+
+    conn = None
+    try:
+        import pandas as pd
+        conn = _get_pg_conn()
+        sel = ", ".join(f"{c}::numeric::float AS {c}" for c in cols)
+        where = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {sel} FROM {table} WHERE {where} LIMIT 5000")
+            rows = cur.fetchall()
+        if len(rows) < 5:
+            return json.dumps({"error": f"need >=5 rows, got {len(rows)}"})
+
+        df = pd.DataFrame(rows, columns=cols)
+        corr = df.corr(method=method).round(4)
+        # top pairs
+        pairs = []
+        for i, a in enumerate(cols):
+            for j, b in enumerate(cols):
+                if j <= i:
+                    continue
+                v = float(corr.iloc[i, j])
+                if not (v != v):  # not NaN
+                    pairs.append({"a": a, "b": b, "corr": round(v, 4)})
+        pairs.sort(key=lambda p: -abs(p["corr"]))
+
+        return json.dumps({
+            "table": table, "columns": cols, "method": method,
+            "n": int(len(rows)),
+            "matrix": corr.values.tolist(),
+            "top_pairs": pairs[:10],
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[correlate] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def cluster_records(table: str, columns: str, k: int = 4, sample_per_cluster: int = 3) -> str:
+    """KMeans 聚类：基于多列把记录分 K 簇，返回每簇统计 + 样本。
+    Args: table；columns 逗号分隔数值列 (2-8)；k 簇数 (2-10)；sample_per_cluster 每簇样本数
+    Returns: JSON {clusters:[{label,size,center,samples}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    if not (2 <= len(cols) <= 8):
+        return json.dumps({"error": "columns: 2-8 names, comma separated"})
+    for c in cols:
+        if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c):
+            return json.dumps({"error": f"invalid column: {c}"})
+    k = max(2, min(int(k or 4), 10))
+    sample_per_cluster = max(1, min(int(sample_per_cluster or 3), 8))
+
+    conn = None
+    try:
+        import numpy as np
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+        conn = _get_pg_conn()
+        sel = "id, " + ", ".join(f"{c}::numeric::float AS {c}" for c in cols)
+        where = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {sel} FROM {table} WHERE {where} LIMIT 5000")
+            rows = cur.fetchall()
+        if len(rows) < k * 3:
+            return json.dumps({"error": f"need >={k*3} rows, got {len(rows)}"})
+
+        ids = [r[0] for r in rows]
+        X = np.array([list(r[1:]) for r in rows], dtype=float)
+        Xs = StandardScaler().fit_transform(X)
+        km = KMeans(n_clusters=k, n_init=10, random_state=42).fit(Xs)
+        labels = km.labels_
+
+        clusters = []
+        for cid in range(k):
+            idx = np.where(labels == cid)[0]
+            if len(idx) == 0:
+                continue
+            center = X[idx].mean(axis=0)
+            sample_idx = idx[:sample_per_cluster]
+            samples = [{"row_id": int(ids[i]), **{cols[j]: round(float(X[i, j]), 4) for j in range(len(cols))}} for i in sample_idx]
+            clusters.append({
+                "label": int(cid),
+                "size": int(len(idx)),
+                "center": {cols[j]: round(float(center[j]), 4) for j in range(len(cols))},
+                "samples": samples,
+            })
+        clusters.sort(key=lambda c: -c["size"])
+        return json.dumps({"table": table, "columns": cols, "k": k, "n": int(len(rows)), "clusters": clusters}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[cluster_records] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)

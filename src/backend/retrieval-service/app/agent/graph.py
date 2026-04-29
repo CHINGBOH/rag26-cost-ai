@@ -64,6 +64,29 @@ from app.agent.tools import (
     price_trend,
     rule_clause_search,
     get_catalog_map,
+    # round 2: schema-aware data backbone
+    list_tables,
+    describe_table,
+    sql_query,
+    aggregate_query,
+    list_documents,
+    fetch_chunk,
+    similar_chunks,
+    stats_overview,
+    # round 3: graph penetration
+    concept_neighbors,
+    concept_path,
+    entity_cooccur,
+    upstream_downstream,
+    # round 3: proactive cognition
+    expand_question,
+    suggest_followup,
+    find_knowledge_gaps,
+    # round 4: data science
+    forecast_series,
+    outlier_detect,
+    correlate,
+    cluster_records,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 from app.agent.presentation_payloads import (
@@ -89,7 +112,21 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, get_catalog_map, calculator, python_eval]
+# 4 轮交付的全部工具：13 (legacy) + 8 (data) + 4 (graph) + 3 (proactive) + 4 (datasci) = 32
+REACT_TOOLS = [
+    # —— 基础检索（13）——
+    concept_search, price_query, price_trend, rule_clause_search,
+    text_search, hybrid_search, pdf_page_search, vector_search,
+    keyword_search, category_search, get_catalog_map, calculator, python_eval,
+    # —— round 2: 数据骨干（8）——
+    list_tables, describe_table, sql_query, aggregate_query,
+    list_documents, fetch_chunk, similar_chunks, stats_overview,
+    # —— round 3: 图谱穿透（4）+ 主动认知（3）——
+    concept_neighbors, concept_path, entity_cooccur, upstream_downstream,
+    expand_question, suggest_followup, find_knowledge_gaps,
+    # —— round 4: 数据科学（4）——
+    forecast_series, outlier_detect, correlate, cluster_records,
+]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -195,6 +232,10 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 
 
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
+
+
+# 内部数据集名（不应作为引用对外展示）。空集合 = 不过滤。
+_INTERNAL_SOURCES: set[str] = set()
 
 
 def _display_doc_name(doc_name: str) -> str:

@@ -68,6 +68,11 @@ _CATEGORIES: Dict[str, str] = {
     "expand_question":     "proactive",
     "suggest_followup":    "proactive",
     "find_knowledge_gaps": "proactive",
+    # ── round 4: data science ───────────────────────────────────
+    "forecast_series":   "datasci",
+    "outlier_detect":    "datasci",
+    "correlate":         "datasci",
+    "cluster_records":   "datasci",
 }
 
 _EXAMPLES: Dict[str, Dict[str, Any]] = {
@@ -104,6 +109,11 @@ _EXAMPLES: Dict[str, Dict[str, Any]] = {
     "expand_question":     {"question": "送配电装置系统调试的计算规则是什么?", "n": 5},
     "suggest_followup":    {"question": "送配电装置系统调试的计算规则是什么?", "answer": "按系统调试的电压等级和回路数计算工程量。", "n": 3},
     "find_knowledge_gaps": {"question": "送配电装置系统调试的计算规则是什么?", "threshold": 0.55},
+    # ── datasci examples ────────────────────────────────────────
+    "forecast_series":   {"table": "price_records", "time_col": "year_month", "value_col": "price_tax_included", "where": "", "periods": 6, "method": "linear"},
+    "outlier_detect":    {"table": "price_records", "column": "price_tax_included", "method": "iqr"},
+    "correlate":         {"table": "price_records", "columns": "price_tax_included,price_tax_excluded", "method": "pearson"},
+    "cluster_records":   {"table": "price_records", "columns": "price_tax_included,price_tax_excluded", "k": 4},
 }
 
 

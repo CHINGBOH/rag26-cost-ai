@@ -46,6 +46,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   data: '数据',
   graph: '图谱',
   proactive: '主动',
+  datasci: '分析',
   pricing: '价格',
   compute: '计算',
   other: '其它',
