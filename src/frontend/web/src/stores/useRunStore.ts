@@ -131,6 +131,9 @@ export interface FollowupSuggestion {
   question: string;
   source: string;
   reason?: string;
+  coverage_score?: number;
+  coverage_tier?: 'high' | 'med' | 'low';
+  coverage_chunks?: number;
 }
 
 export interface RunState {

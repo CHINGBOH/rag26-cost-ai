@@ -1974,3 +1974,14 @@
 .followup-chip.src-graph_upstream   { background: rgba(59,130,246,0.10); border-color: rgba(59,130,246,0.4); }
 .followup-chip.src-graph_downstream { background: rgba(168,85,247,0.10); border-color: rgba(168,85,247,0.4); }
 .followup-chip.src-gap              { background: rgba(245,158,11,0.10); border-color: rgba(245,158,11,0.4); }
+
+.followup-chip.tier-med  { opacity: 0.85; border-style: dashed; }
+.followup-chip.tier-low  { opacity: 0.6; border-style: dotted; }
+.followup-chip .chip-tier {
+  font-size: 10px;
+  padding: 0 4px;
+  color: var(--text-tertiary, #888);
+}
+.followup-chip .chip-tier.tier-med { color: #eab308; }
+.followup-chip .chip-tier.tier-low { color: #94a3b8; }
+

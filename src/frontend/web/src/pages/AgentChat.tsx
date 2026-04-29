@@ -1280,17 +1280,31 @@ const MessageBubble: React.FC<{
           <div className="followup-chips">
             <div className="followup-label">🔗 顺着这条线继续探</div>
             <div className="followup-list">
-              {message.followups.slice(0, 6).map((f, i) => (
-                <button
-                  key={i}
-                  className={`followup-chip src-${(f.source || 'llm').replace(/[^a-z_]/g, '')}`}
-                  title={f.reason || f.source}
-                  onClick={() => onFollowupClick?.(f.question)}
-                >
-                  <span className="chip-q">{f.question}</span>
-                  <span className="chip-src">{labelSource(f.source)}</span>
-                </button>
-              ))}
+              {message.followups.slice(0, 6).map((f, i) => {
+                const tier = f.coverage_tier || 'high';
+                const score = typeof f.coverage_score === 'number' ? f.coverage_score : null;
+                const tipParts = [
+                  f.reason || f.source,
+                  score !== null ? `KB 覆盖 ${(score * 100).toFixed(0)}% (${tier})` : null,
+                  typeof f.coverage_chunks === 'number' ? `${f.coverage_chunks} 命中` : null,
+                ].filter(Boolean);
+                return (
+                  <button
+                    key={i}
+                    className={`followup-chip src-${(f.source || 'llm').replace(/[^a-z_]/g, '')} tier-${tier}`}
+                    title={tipParts.join(' · ')}
+                    onClick={() => onFollowupClick?.(f.question)}
+                  >
+                    <span className="chip-q">{f.question}</span>
+                    <span className="chip-src">{labelSource(f.source)}</span>
+                    {tier !== 'high' && (
+                      <span className={`chip-tier tier-${tier}`}>
+                        {tier === 'med' ? '· 部分' : '· 弱'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}

@@ -3509,11 +3509,70 @@ def synthesize_node(state: RAGAgentState) -> dict:
     }
 
 
+def _score_followup_coverage(question: str) -> tuple[float, int]:
+    """KB coverage probe: returns (coverage_score 0..1, chunk_count).
+
+    Uses embedding cosine similarity between the question and top-3 retrieved
+    chunks (strict) — way more reliable than FTS rank, which fires on any
+    keyword overlap. Falls back to FTS-based score if embedding service down.
+    """
+    if not question or len(question) < 4:
+        return (0.0, 0)
+    try:
+        from app.agent.tools import text_search as _ts
+        raw = _ts.invoke({"query": question, "top_k": 3}) if hasattr(_ts, "invoke") else _ts(query=question, top_k=3)
+        rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        if not isinstance(rows, list) or not rows:
+            return (0.0, 0)
+        contents = [str(r.get("content") or "")[:600] for r in rows if isinstance(r, dict)]
+        contents = [c for c in contents if c]
+        if not contents:
+            return (0.0, 0)
+        # Embedding cosine path
+        try:
+            from app.agent.tools import _get_embedding_svc
+            svc = _get_embedding_svc()
+            if svc is None:
+                raise RuntimeError("no embedding svc")
+            import numpy as _np
+            qv = svc.encode([question])
+            cv = svc.encode(contents)
+            qv = _np.asarray(qv).reshape(-1)
+            cv = _np.asarray(cv)
+            if cv.ndim == 1:
+                cv = cv.reshape(1, -1)
+            qn = qv / (_np.linalg.norm(qv) + 1e-9)
+            cn = cv / (_np.linalg.norm(cv, axis=1, keepdims=True) + 1e-9)
+            sims = (cn @ qn).tolist()
+            max_sim = float(max(sims))
+            # Clamp 0..1, treat <0.3 as essentially miss
+            coverage = round(max(0.0, min(1.0, max_sim)), 3)
+            return (coverage, len(rows))
+        except Exception as ee:
+            logger.debug(f"[followup-coverage] embedding fallback for {question!r}: {ee}")
+            # Fallback: use FTS but stricter
+            scores = [float(r.get("score") or 0.0) for r in rows if isinstance(r, dict)]
+            max_s = max(scores) if scores else 0.0
+            cnt_factor = min(1.0, len(rows) / 3.0)
+            coverage = round(min(1.0, max_s) * 0.7 + 0.3 * cnt_factor, 3)
+            return (coverage, len(rows))
+    except Exception as e:
+        logger.debug(f"[followup-coverage] probe failed for {question!r}: {e}")
+        return (0.0, 0)
+
+
+def _coverage_tier(score: float) -> str:
+    if score >= 0.65:
+        return "high"
+    if score >= 0.45:
+        return "med"
+    return "low"
+
+
 def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int = 5) -> list[dict]:
-    """生成"链式穿透"用的追问 chips。
-    Returns: list of {question: str, source: str, reason: str}.
+    """生成"链式穿透"用的追问 chips，并通过 KB 覆盖检测过滤幻想式提问。
+    Returns: list of {question, source, reason, coverage_score, coverage_tier}.
     Sources: llm_followup, graph_neighbor, graph_upstream, graph_downstream, gap.
-    所有调用都在 try 内 — 工具失败/图谱缺数据时静默返回部分结果。
     """
     out: list[dict] = []
     seen: set[str] = set()
@@ -3586,7 +3645,27 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
     except Exception as e:
         logger.debug(f"[followup] find_knowledge_gaps failed: {e}")
 
-    return out[:max_n]
+    # ── R-grounded: probe each candidate against KB; drop low-coverage hallucinations ──
+    if not out:
+        return []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        candidates = out[: max_n * 3]  # over-collect, then prune
+        with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as ex:
+            scored = list(ex.map(lambda c: _score_followup_coverage(c["question"]), candidates))
+        for c, (s, n) in zip(candidates, scored):
+            c["coverage_score"] = s
+            c["coverage_tier"] = _coverage_tier(s)
+            c["coverage_chunks"] = n
+        # keep high+med; if none survive, keep up to 2 low-tier so UI shows "可能不在 KB"
+        kept = [c for c in candidates if c["coverage_tier"] != "low"]
+        if not kept:
+            kept = candidates[:2]
+        kept.sort(key=lambda c: c.get("coverage_score", 0.0), reverse=True)
+        return kept[:max_n]
+    except Exception as e:
+        logger.debug(f"[followup] coverage scoring failed: {e}")
+        return out[:max_n]
 
 
 def _log_agent_run(state: dict, final_answer: str, evaluation: dict, runtime: dict, all_chunks: list) -> None:
