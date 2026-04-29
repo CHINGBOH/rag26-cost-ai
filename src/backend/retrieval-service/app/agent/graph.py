@@ -87,6 +87,14 @@ from app.agent.tools import (
     outlier_detect,
     correlate,
     cluster_records,
+    # round 6: sandbox utilities + proactive explorer
+    regex_extract,
+    unit_convert,
+    date_math,
+    compare_values,
+    number_stats,
+    chart_spec,
+    proactive_explore,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 from app.agent.presentation_payloads import (
@@ -112,7 +120,7 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-# 4 轮交付的全部工具：13 (legacy) + 8 (data) + 4 (graph) + 3 (proactive) + 4 (datasci) = 32
+# 6 轮交付的全部工具：13+8+4+3+4+7 = 39
 REACT_TOOLS = [
     # —— 基础检索（13）——
     concept_search, price_query, price_trend, rule_clause_search,
@@ -126,6 +134,9 @@ REACT_TOOLS = [
     expand_question, suggest_followup, find_knowledge_gaps,
     # —— round 4: 数据科学（4）——
     forecast_series, outlier_detect, correlate, cluster_records,
+    # —— round 6: 沙箱通用工具（6）+ 主动穿透（1）——
+    regex_extract, unit_convert, date_math, compare_values, number_stats, chart_spec,
+    proactive_explore,
 ]
 
 # Executor 节点的系统提示 — 带自省要求
@@ -173,6 +184,21 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - 若 text_search/keyword_search 返回空结果，立即去除位置限定词，只用材料名重试
 
 严格禁止：在没有检索证据时编造数值或费率。
+
+—— 主动认知 / 沙箱通用工具（2026-04 新增）——
+- proactive_explore(question)：**主动穿透** — 根据问题自动从图谱抽取核心概念的邻居/上下游/共现实体 + 追问 + 知识缺口；用于复杂问题先建立概念地图，再下钻具体证据
+- regex_extract(text, pattern, flags)：从文本里按正则抽取（支持命名分组），适合从规范条文里抠数值/编号
+- unit_convert(value, from_unit, to_unit)：单位换算（长度/面积/体积/质量/货币/时间，含工日/万元）
+- date_math(operation, a, b, days)：日期算术（diff/add/period_diff/quarter）
+- compare_values(current, baseline, label)：两个数值对比（绝对差/百分比/基点/方向）
+- number_stats(values_json)：一组数的描述性统计（均值/中位数/分位数/极值）
+- chart_spec(chart_type, data_json, title, x_key, y_key)：生成前端可直接渲染的图表 spec（line/bar/pie/area/scatter）
+
+使用建议：
+- 涉及单位混合（如 万元 vs 元、㎡ vs m2、工日 vs 小时）必须先 unit_convert 再计算
+- 涉及"新旧对比/增减/同比/环比"必须用 compare_values，不要让 LLM 心算
+- 若问题很发散（"X 的影响因素有哪些"），先 proactive_explore，再选具体工具下钻
+- 需要图表时，最后一步用 chart_spec 输出 JSON spec，前端会直接渲染
 引用格式：【文件名 P页码】，如【费率标准 P4】
 """
 

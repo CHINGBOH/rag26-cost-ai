@@ -5659,3 +5659,230 @@ def cluster_records(table: str, columns: str, k: int = 4, sample_per_cluster: in
     finally:
         if conn is not None:
             _put_pg_conn(conn)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Round 6 · Sandbox utilities + proactive knowledge explorer
+# Domain-agnostic helpers so the agent can operate on cost data today
+# and pivot to e.g. annual reports tomorrow.
+# ──────────────────────────────────────────────────────────────────────
+
+def regex_extract(text: str, pattern: str, flags: str = "") -> str:
+    """从一段文本里按正则提取所有匹配（含命名分组）。flags: i(忽略大小写) m(多行) s(.匹配换行)"""
+    import re as _re
+    try:
+        flag_val = 0
+        if "i" in flags.lower(): flag_val |= _re.IGNORECASE
+        if "m" in flags.lower(): flag_val |= _re.MULTILINE
+        if "s" in flags.lower(): flag_val |= _re.DOTALL
+        rx = _re.compile(pattern, flag_val)
+        out = []
+        for m in rx.finditer(text or ""):
+            if m.groupdict():
+                out.append({"match": m.group(0), **m.groupdict()})
+            elif m.groups():
+                out.append({"match": m.group(0), "groups": list(m.groups())})
+            else:
+                out.append({"match": m.group(0)})
+            if len(out) >= 200:
+                break
+        return json.dumps({"count": len(out), "matches": out}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+_UNIT_CATEGORIES = {
+    "length":   {"mm": 0.001, "cm": 0.01, "dm": 0.1, "m": 1.0, "km": 1000.0, "寸": 0.0333, "尺": 0.333, "丈": 3.333},
+    "area":     {"mm2": 1e-6, "cm2": 1e-4, "m2": 1.0, "㎡": 1.0, "公顷": 1e4, "亩": 666.6667, "km2": 1e6},
+    "volume":   {"ml": 1e-6, "L": 1e-3, "m3": 1.0, "立方米": 1.0, "㎥": 1.0},
+    "mass":     {"mg": 1e-6, "g": 1e-3, "kg": 1.0, "t": 1000.0, "吨": 1000.0, "斤": 0.5},
+    "currency": {"元": 1.0, "¥": 1.0, "RMB": 1.0, "千元": 1000.0, "万元": 10000.0, "亿元": 1e8},
+    "time":     {"s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0, "工日": 28800.0, "月": 2592000.0, "年": 31536000.0},
+}
+
+def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
+    """单位换算：长度/面积/体积/质量/货币/时间。
+    支持单位：mm/cm/m/km、mm2/m2/㎡、L/m3、g/kg/t、元/万元/亿元、min/h/d/工日 等。"""
+    try:
+        fv = float(value)
+        for cat, table in _UNIT_CATEGORIES.items():
+            if from_unit in table and to_unit in table:
+                base = fv * table[from_unit]
+                result = base / table[to_unit]
+                return json.dumps({
+                    "input": {"value": fv, "unit": from_unit},
+                    "output": {"value": round(result, 8), "unit": to_unit},
+                    "category": cat,
+                    "factor": round(table[from_unit] / table[to_unit], 8),
+                }, ensure_ascii=False)
+        return json.dumps({"error": "unknown_or_mismatched_units",
+                           "supported": {k: list(v.keys()) for k, v in _UNIT_CATEGORIES.items()}},
+                          ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def date_math(operation: str, a: str = "", b: str = "", days: int = 0, fmt: str = "%Y-%m-%d") -> str:
+    """日期算术。operation:
+       - diff:  返回 a - b 的天数差
+       - add:   返回 a + days 的日期
+       - period_diff: a/b 为 YYYY-MM 或 YYYYMM，返回相差月数
+       - quarter: a 为日期，返回所属季度（YYYYQn）"""
+    from datetime import datetime, timedelta
+    try:
+        op = (operation or "").strip().lower()
+        if op == "diff":
+            da = datetime.strptime(a, fmt); db = datetime.strptime(b, fmt)
+            return json.dumps({"days": (da - db).days})
+        if op == "add":
+            da = datetime.strptime(a, fmt)
+            return json.dumps({"date": (da + timedelta(days=int(days))).strftime(fmt)})
+        if op == "period_diff":
+            def parse_p(s: str):
+                s = s.replace("-", "").replace("/", "")
+                return int(s[:4]), int(s[4:6])
+            ya, ma = parse_p(a); yb, mb = parse_p(b)
+            return json.dumps({"months": (ya - yb) * 12 + (ma - mb)})
+        if op == "quarter":
+            da = datetime.strptime(a, fmt)
+            return json.dumps({"quarter": f"{da.year}Q{(da.month - 1) // 3 + 1}"})
+        return json.dumps({"error": f"unknown operation: {operation}",
+                           "supported": ["diff", "add", "period_diff", "quarter"]})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def compare_values(current: float, baseline: float, label: str = "") -> str:
+    """比较两个数值，给出绝对差、百分比变化、基点变化（适合费率/价格对比）。"""
+    try:
+        c = float(current); b = float(baseline)
+        abs_diff = c - b
+        pct = (abs_diff / b * 100.0) if b != 0 else None
+        bp  = abs_diff * 10000.0
+        direction = "up" if abs_diff > 0 else "down" if abs_diff < 0 else "flat"
+        return json.dumps({
+            "label": label,
+            "current": c,
+            "baseline": b,
+            "abs_change": round(abs_diff, 6),
+            "pct_change": round(pct, 4) if pct is not None else None,
+            "bp_change": round(bp, 2),
+            "direction": direction,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def number_stats(values_json: str) -> str:
+    """对一组数值做描述性统计：均值/中位数/标准差/极值/分位数。values_json 为 JSON 数组。"""
+    try:
+        arr = json.loads(values_json) if isinstance(values_json, str) else list(values_json)
+        nums = [float(x) for x in arr if x is not None]
+        if not nums:
+            return json.dumps({"error": "empty"})
+        import statistics as _st
+        ns = sorted(nums)
+        n = len(ns)
+        def q(p):
+            idx = (n - 1) * p; lo = int(idx); hi = min(lo + 1, n - 1); frac = idx - lo
+            return ns[lo] * (1 - frac) + ns[hi] * frac
+        return json.dumps({
+            "n": n, "min": ns[0], "max": ns[-1],
+            "mean": round(sum(ns) / n, 6),
+            "median": round(_st.median(ns), 6),
+            "stdev": round(_st.pstdev(ns), 6) if n > 1 else 0.0,
+            "p25": round(q(0.25), 6), "p75": round(q(0.75), 6),
+            "p95": round(q(0.95), 6), "p99": round(q(0.99), 6),
+            "sum": round(sum(ns), 6),
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def chart_spec(chart_type: str, data_json: str, title: str = "", x_key: str = "x", y_key: str = "y") -> str:
+    """生成可被前端 recharts 渲染的图表 spec。chart_type: line/bar/pie/area/scatter。
+       data_json 为对象数组 JSON 字符串。返回 {chart_spec: ...} 供前端直接消费。"""
+    try:
+        rows = json.loads(data_json) if isinstance(data_json, str) else data_json
+        if not isinstance(rows, list):
+            return json.dumps({"error": "data_json must be a JSON array of objects"})
+        ct = (chart_type or "line").lower().strip()
+        if ct not in {"line", "bar", "pie", "area", "scatter"}:
+            return json.dumps({"error": f"unknown chart_type: {chart_type}"})
+        return json.dumps({
+            "chart_spec": {
+                "type": ct,
+                "title": title,
+                "x_key": x_key,
+                "y_key": y_key,
+                "data": rows[:200],
+            }
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def proactive_explore(question: str, max_concepts: int = 3, neighbor_top_k: int = 8) -> str:
+    """主动认知 — 从问题里抽取核心概念，沿图谱穿透邻居/上下游/共现实体，
+    把用户没主动问、但极相关的知识点也带回来。返回:
+    { question, concepts:[{name, neighbors:[...], upstream:[...], downstream:[...]}],
+      followups:[...], gaps:[...] }"""
+    out = {"question": question, "concepts": [], "followups": [], "gaps": []}
+    try:
+        # 1. 概念命中
+        concept_raw = concept_search(question, top_k=max_concepts, include_evidence=False)
+        try:
+            concept_payload = json.loads(concept_raw)
+        except Exception:
+            concept_payload = {}
+        concept_hits = (concept_payload or {}).get("concepts") or []
+        seen = set()
+        names: list[str] = []
+        for c in concept_hits:
+            nm = (c.get("concept") or c.get("name") or "").strip()
+            if nm and nm not in seen:
+                seen.add(nm)
+                names.append(nm)
+            if len(names) >= max_concepts:
+                break
+        # 2. 退化为关键词
+        if not names:
+            terms = _extract_terms(question, min_len=2, max_len=8)
+            names = list(dict.fromkeys(terms))[:max_concepts]
+
+        # 3. 对每个概念跑邻居 / 上下游
+        for nm in names:
+            entry = {"concept": nm, "neighbors": [], "upstream": [], "downstream": [], "cooccur": []}
+            try:
+                nb = json.loads(concept_neighbors(nm, hops=1, top_k=neighbor_top_k))
+                entry["neighbors"] = (nb or {}).get("neighbors", [])[:neighbor_top_k]
+            except Exception:
+                pass
+            try:
+                ud = json.loads(upstream_downstream(nm, direction="both"))
+                entry["upstream"]   = (ud or {}).get("upstream", [])[:6]
+                entry["downstream"] = (ud or {}).get("downstream", [])[:6]
+            except Exception:
+                pass
+            try:
+                co = json.loads(entity_cooccur(nm, top_k=6))
+                entry["cooccur"] = (co or {}).get("cooccur", [])[:6]
+            except Exception:
+                pass
+            out["concepts"].append(entry)
+
+        # 4. 追问 + 知识缺口
+        try:
+            fu = json.loads(suggest_followup(question, "", n=3))
+            out["followups"] = (fu or {}).get("suggestions", [])
+        except Exception:
+            pass
+        try:
+            gp = json.loads(find_knowledge_gaps(question, threshold=0.55))
+            out["gaps"] = (gp or {}).get("gaps", [])
+        except Exception:
+            pass
+        return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        out["error"] = str(e)
+        return json.dumps(out, ensure_ascii=False)
