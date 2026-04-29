@@ -1699,7 +1699,21 @@ async def get_pipeline_job(job_id: str):
     for k in ("created_at", "updated_at", "started_at", "finished_at"):
         if j.get(k) is not None:
             j[k] = str(j[k])
+    # attach blindspots so the dashboard can flag pages the extractor skipped
+    j["blindspots"] = ipl.blindspots_for_job(job_id)
     return j
+
+
+@router.get("/api/v1/pipeline/blindspots")
+async def list_blindspots(doc_id: str | None = None, limit: int = 100):
+    """List image/chart pages where extraction had insufficient text.
+
+    The agent uses this to honestly disclose data gaps instead of confabulating
+    chart values it cannot read.
+    """
+    from app import ingest_pipeline as ipl
+    rows = ipl.blindspots_list(doc_id=doc_id, limit=max(1, min(500, int(limit))))
+    return {"blindspots": rows, "count": len(rows)}
 
 
 @router.post("/api/v1/pipeline/retry/{job_id}")

@@ -286,6 +286,64 @@ def write_log_put(job_id: str, phase: str, key: str) -> None:
         _release(conn)
 
 
+def blindspots_for_job(job_id: str) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT page, kind, reason, image_count, text_chars
+                     FROM ingest_blindspots
+                    WHERE job_id = %s
+                 ORDER BY page""",
+                (job_id,),
+            )
+            return [
+                {"page": r[0], "kind": r[1], "reason": r[2],
+                 "image_count": r[3], "text_chars": r[4]}
+                for r in cur.fetchall()
+            ]
+    except Exception as e:
+        logger.warning("blindspots_for_job failed: %s", e)
+        return []
+    finally:
+        _release(conn)
+
+
+def blindspots_list(doc_id: str | None = None, limit: int = 100) -> list[dict]:
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            if doc_id:
+                cur.execute(
+                    """SELECT job_id, doc_id, file_name, page, kind, reason,
+                              image_count, text_chars, detected_at
+                         FROM ingest_blindspots
+                        WHERE doc_id = %s
+                     ORDER BY page LIMIT %s""",
+                    (doc_id, limit),
+                )
+            else:
+                cur.execute(
+                    """SELECT job_id, doc_id, file_name, page, kind, reason,
+                              image_count, text_chars, detected_at
+                         FROM ingest_blindspots
+                     ORDER BY detected_at DESC LIMIT %s""",
+                    (limit,),
+                )
+            return [
+                {"job_id": r[0], "doc_id": r[1], "file_name": r[2],
+                 "page": r[3], "kind": r[4], "reason": r[5],
+                 "image_count": r[6], "text_chars": r[7],
+                 "detected_at": str(r[8]) if r[8] else None}
+                for r in cur.fetchall()
+            ]
+    except Exception as e:
+        logger.warning("blindspots_list failed: %s", e)
+        return []
+    finally:
+        _release(conn)
+
+
 # ────────────────────────────── extractors ──────────────────────────────
 def extract_text_file(path: Path, doc_id: str) -> tuple[list[Block], str]:
     """Plain .txt / .md — one block per non-empty paragraph."""
@@ -419,12 +477,43 @@ def _extract_pdf_tables(path: Path, doc_id: str) -> list[Block]:
     return blocks
 
 
-def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | None:
+def record_blindspot(job_id: str, doc_id: str, file_name: str, page: int,
+                     kind: str, reason: str = "", bbox: dict | None = None,
+                     image_count: int = 0, text_chars: int = 0) -> None:
+    """UPSERT a blindspot row. Idempotent via UNIQUE(doc_id, page, kind)."""
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ingest_blindspots
+                     (job_id, doc_id, file_name, page, kind, reason, bbox,
+                      image_count, text_chars)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                   ON CONFLICT (doc_id, page, kind) DO UPDATE
+                     SET reason = EXCLUDED.reason,
+                         image_count = EXCLUDED.image_count,
+                         text_chars = EXCLUDED.text_chars""",
+                (job_id, doc_id, file_name, page, kind, reason,
+                 json.dumps(bbox) if bbox else None,
+                 image_count, text_chars),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.warning("blindspot insert failed: %s", e)
+    finally:
+        _release(conn)
+
+
+def extract_pdf_native(path: Path, doc_id: str,
+                       job_id: str | None = None,
+                       file_name: str = "") -> tuple[list[Block], str] | None:
     """Try PyMuPDF first; if pages have very little text, signal caller to OCR.
 
     Streams page-by-page so 905M files don't blow up memory.
     Also pulls native tables via pdfplumber and merges into the block stream
     (sorted by page, with text first, then tables — chunker preserves order).
+    Pages with images but very little text are recorded as blindspots so the
+    agent can disclose data gaps instead of confabulating chart values.
     """
     try:
         import fitz  # PyMuPDF
@@ -433,6 +522,7 @@ def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | Non
     blocks: list[Block] = []
     total_text_chars = 0
     n_pages = 0
+    blindspots: list[dict] = []
     try:
         with fitz.open(str(path)) as doc:
             n_pages = doc.page_count
@@ -440,6 +530,19 @@ def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | Non
                 page = doc.load_page(pi)
                 txt = page.get_text("text") or ""
                 total_text_chars += len(txt)
+                # Detect images on this page — chart/figure heuristic
+                try:
+                    n_img = len(page.get_images(full=False) or [])
+                except Exception:
+                    n_img = 0
+                page_chars = len(txt.strip())
+                # Heuristic: image present + sparse text → likely chart/figure
+                if n_img >= 1 and page_chars < 80:
+                    blindspots.append({
+                        "page": pi + 1, "kind": "chart" if n_img == 1 else "figure",
+                        "reason": f"page has {n_img} image(s) but only {page_chars} text chars",
+                        "image_count": n_img, "text_chars": page_chars,
+                    })
                 for bi, para in enumerate(p.strip() for p in txt.split("\n\n")):
                     if para and len(para) > 4:
                         blocks.append(Block(
@@ -462,6 +565,16 @@ def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | Non
             logger.info("pdfplumber added %d table blocks", len(tbl_blocks))
     except Exception as e:
         logger.warning("table extraction skipped: %s", e)
+
+    # Persist blindspots (best-effort)
+    if job_id and blindspots:
+        for bs in blindspots:
+            record_blindspot(
+                job_id=job_id, doc_id=doc_id, file_name=file_name,
+                page=bs["page"], kind=bs["kind"], reason=bs["reason"],
+                image_count=bs["image_count"], text_chars=bs["text_chars"],
+            )
+        logger.info("recorded %d blindspots for doc %s", len(blindspots), doc_id)
 
     return blocks, "pymupdf"
 
@@ -659,7 +772,7 @@ async def run_ingest_job(job_id: str) -> None:
         elif suffix in (".xlsx", ".xlsm"):
             blocks, extractor = extract_xlsx(file_path, doc_id)
         elif suffix == ".pdf":
-            res = extract_pdf_native(file_path, doc_id)
+            res = extract_pdf_native(file_path, doc_id, job_id=job_id, file_name=file_name)
             if res:
                 blocks, extractor = res
             else:
