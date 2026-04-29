@@ -281,3 +281,36 @@
   max-height: 240px;
   overflow-y: auto;
 }
+
+/* R6 inline tool result previews */
+.kv-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.kv-badge {
+  display: inline-flex; gap: 6px; align-items: center;
+  background: var(--bg-elevated, #f8fafc);
+  border: 1px solid var(--border-default, #e2e8f0);
+  border-radius: 6px; padding: 4px 8px; font-size: 11px;
+}
+.kv-k { color: var(--text-muted, #64748b); text-transform: uppercase; letter-spacing: 0.04em; }
+.kv-v { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.proactive-map { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.proactive-concept {
+  border-left: 3px solid #8b5cf6;
+  padding: 6px 10px; background: var(--bg-subtle, #faf5ff);
+  border-radius: 4px;
+}
+.proactive-name { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
+.proactive-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.chip-group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.chip-label { font-size: 10px; color: var(--text-muted, #64748b); text-transform: uppercase; margin-right: 4px; }
+.chip {
+  background: #fff; border: 1px solid var(--border-default, #e2e8f0);
+  border-radius: 12px; padding: 2px 8px; font-size: 11px;
+}
+.proactive-section { margin-top: 4px; }
+.proactive-label { display: block; font-size: 11px; color: var(--text-muted, #64748b); margin-bottom: 2px; }
+.followup-list { margin: 0; padding-left: 20px; font-size: 12px; }
+.followup-list li { margin: 2px 0; }
+
+.inline-chart { margin-top: 6px; padding: 6px; background: var(--bg-elevated, #fff); border-radius: 4px; border: 1px solid var(--border-default, #e2e8f0); }
+.chart-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted, #475569); }

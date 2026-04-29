@@ -6,6 +6,10 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import {
+  ResponsiveContainer, LineChart, BarChart, AreaChart, ScatterChart, PieChart,
+  Line, Bar, Area, Scatter, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
+} from 'recharts';
 import { useAgent } from '../hooks/useAgent';
 import { useRunStore } from '../stores/useRunStore';
 import './AgentRuntimePage.css';
@@ -59,17 +63,6 @@ function fmtArgs(args: Record<string, unknown>): string {
     return compact.length > 280 ? compact.slice(0, 280) + '…' : compact;
   } catch {
     return String(args);
-  }
-}
-
-function fmtResult(r: unknown): string {
-  if (r == null) return '—';
-  if (typeof r === 'string') return r.length > 600 ? r.slice(0, 600) + '…' : r;
-  try {
-    const s = JSON.stringify(r, null, 2);
-    return s.length > 1200 ? s.slice(0, 1200) + '…' : s;
-  } catch {
-    return String(r);
   }
 }
 
@@ -305,10 +298,7 @@ export function AgentRuntimePage() {
                       <code>{fmtArgs(tc.args)}</code>
                     </div>
                     {tc.result != null && (
-                      <details>
-                        <summary>result</summary>
-                        <pre>{fmtResult(tc.result)}</pre>
-                      </details>
+                      <ToolResultPreview tool={tc.tool} result={tc.result} />
                     )}
                   </li>
                 ))}
@@ -331,5 +321,172 @@ export function AgentRuntimePage() {
     </div>
   );
 }
+
+/** 解析 result（可能是字符串化 JSON）→ object，失败返回 null */
+function tryParseResult(result: unknown): unknown {
+  if (typeof result !== 'string') return result;
+  try {
+    return JSON.parse(result);
+  } catch {
+    return null;
+  }
+}
+
+/** 工具结果预览：对 R6 工具有特定渲染，否则回退到 details/pre */
+const ToolResultPreview: React.FC<{ tool: string; result: unknown }> = ({ tool, result }) => {
+  const parsed = tryParseResult(result);
+
+  if (tool === 'chart_spec' && parsed && typeof parsed === 'object' && 'chart_spec' in parsed) {
+    const spec = (parsed as Record<string, unknown>).chart_spec as Record<string, unknown>;
+    return <InlineChart spec={spec} />;
+  }
+
+  if (tool === 'proactive_explore' && parsed && typeof parsed === 'object') {
+    return <ProactiveMap data={parsed as Record<string, unknown>} />;
+  }
+
+  if ((tool === 'unit_convert' || tool === 'compare_values' || tool === 'number_stats')
+      && parsed && typeof parsed === 'object') {
+    return <KvBadgeList data={parsed as Record<string, unknown>} />;
+  }
+
+  return (
+    <details>
+      <summary>result</summary>
+      <pre>{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
+    </details>
+  );
+};
+
+const KvBadgeList: React.FC<{ data: Record<string, unknown> }> = ({ data }) => (
+  <div className="kv-badges">
+    {Object.entries(data).slice(0, 10).map(([k, v]) => (
+      <span key={k} className="kv-badge">
+        <span className="kv-k">{k}</span>
+        <span className="kv-v">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+      </span>
+    ))}
+  </div>
+);
+
+const ProactiveMap: React.FC<{ data: Record<string, unknown> }> = ({ data }) => {
+  const concepts = (data.concepts as Array<Record<string, unknown>>) || [];
+  const followups = (data.followups as string[]) || [];
+  const gaps = (data.gaps as Array<Record<string, unknown> | string>) || [];
+  return (
+    <div className="proactive-map">
+      {concepts.length === 0 && (
+        <p className="muted small">无概念命中（图谱中未找到相关节点）</p>
+      )}
+      {concepts.map((c, idx) => (
+        <div key={idx} className="proactive-concept">
+          <div className="proactive-name">🧭 {String(c.concept ?? '')}</div>
+          <div className="proactive-row">
+            {Array.isArray(c.neighbors) && (c.neighbors as unknown[]).length > 0 && (
+              <ConceptChips label="邻居" items={c.neighbors as Array<Record<string, unknown>>} />
+            )}
+            {Array.isArray(c.upstream) && (c.upstream as unknown[]).length > 0 && (
+              <ConceptChips label="上游" items={c.upstream as Array<Record<string, unknown>>} />
+            )}
+            {Array.isArray(c.downstream) && (c.downstream as unknown[]).length > 0 && (
+              <ConceptChips label="下游" items={c.downstream as Array<Record<string, unknown>>} />
+            )}
+          </div>
+        </div>
+      ))}
+      {followups.length > 0 && (
+        <div className="proactive-section">
+          <span className="proactive-label">💡 追问建议</span>
+          <ul className="followup-list">
+            {followups.slice(0, 5).map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </div>
+      )}
+      {gaps.length > 0 && (
+        <div className="proactive-section">
+          <span className="proactive-label">⚠️ 知识缺口</span>
+          <ul className="followup-list">
+            {gaps.slice(0, 5).map((g, i) => (
+              <li key={i}>{typeof g === 'string' ? g : JSON.stringify(g)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ConceptChips: React.FC<{ label: string; items: Array<Record<string, unknown>> }> = ({ label, items }) => (
+  <div className="chip-group">
+    <span className="chip-label">{label}</span>
+    {items.slice(0, 6).map((it, i) => (
+      <span key={i} className="chip">
+        {String(it.name ?? it.concept ?? it.entity ?? JSON.stringify(it))}
+      </span>
+    ))}
+  </div>
+);
+
+const InlineChart: React.FC<{ spec: Record<string, unknown> }> = ({ spec }) => {
+  const type = String(spec.type || 'line');
+  const data = (spec.data as Array<Record<string, unknown>>) || [];
+  const xKey = String(spec.x_key || 'x');
+  const yKey = String(spec.y_key || 'y');
+  const title = String(spec.title || '');
+
+  if (data.length === 0) {
+    return <p className="muted small">chart_spec: 空数据</p>;
+  }
+
+  const PIE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+  return (
+    <div className="inline-chart">
+      {title && <div className="chart-title">{title}</div>}
+      <ResponsiveContainer width="100%" height={220}>
+        {type === 'bar' ? (
+          <BarChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Bar dataKey={yKey} fill="#3b82f6" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        ) : type === 'pie' ? (
+          <PieChart>
+            <Tooltip />
+            <Pie data={data} dataKey={yKey} nameKey={xKey} outerRadius={80} label>
+              {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+            </Pie>
+          </PieChart>
+        ) : type === 'area' ? (
+          <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Area type="monotone" dataKey={yKey} stroke="#10b981" fill="#10b98133" />
+          </AreaChart>
+        ) : type === 'scatter' ? (
+          <ScatterChart margin={{ top: 8, right: 12, bottom: 4, left: -10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 11 }} />
+            <YAxis dataKey={yKey} tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Scatter data={data} fill="#8b5cf6" />
+          </ScatterChart>
+        ) : (
+          <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: -10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" />
+            <XAxis dataKey={xKey} tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} />
+            <Tooltip />
+            <Line type="monotone" dataKey={yKey} stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+          </LineChart>
+        )}
+      </ResponsiveContainer>
+    </div>
+  );
+};
 
 export default AgentRuntimePage;
