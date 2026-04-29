@@ -1,50 +1,73 @@
-# Dependencies
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+coverage/
+.coverage
+src/rag_retrieval.egg-info/
+src/src/
+
+# ============================================================
+# Node.js / TypeScript
+# ============================================================
 node_modules/
 .pnp
 .pnp.js
-
-# Build outputs
 dist/
 build/
 *.tsbuildinfo
-
-# Environment variables
-.env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
+.nyc_output/
+.cache/
+.parcel-cache/
+.eslintcache
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
+
+# ============================================================
+# 环境变量
+# ============================================================
+.env
+.env.local
+.env.*.local
+
+# ============================================================
+# IDE / 编辑器
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.qlty/
+
+# ============================================================
+# OS 系统文件
+# ============================================================
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# 日志
+# ============================================================
 logs/
 *.log
 
-# Testing
-coverage/
-.nyc_output/
-
-# Cache
-.cache/
-.parcel-cache/
-.eslintcache
-.venv/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-
-# Data / infrastructure runtime directories
+# ============================================================
+# 数据库 / 中间件运行时数据
+# ============================================================
 postgres_data/
 redis_data/
 neo4j_data/
@@ -52,81 +75,57 @@ neo4j_logs/
 es_data/
 qdrant_storage/
 minio_data/
+
+# ============================================================
+# 数据 / 模型 / 大文件
+# ============================================================
+data/
 models/
 models3/
-data/
-ocr_outputs/
-archive/
-venv/
-
-# Embedded repos / large binaries / generated
-trash/
-llama.cpp/
-research/
-clawai/
-.kimi/
-.codebuddy/
-src/rag_retrieval.egg-info/
-src/src/
+*.gguf
 *.bundle
 *.pid
 *.run
-*.gguf
+ocr_outputs/
+archive/
 
-# Compiled Go binaries
-src/backend/go-services/gateway
-src/backend/go-services/websocket
-src/backend/go-services/main
-
-# AI tool private configs (IDE/assistant - local only)
+# ============================================================
+# AI 工具本地配置（IDE/助手 - 仅本地）
+# ============================================================
 .aiassistant/
 .claude/
+.kimi/
+.codebuddy/
 .kilo/
 .opencode/
 .windsurf/
 
-# Accidental terminal output files (shell fragments that became filenames)
-":\", cols)"
-":', cols)"
-":', cur.fetchone())"
-columns:')
-e
-e()
-elect
-ycopg2
-"ycopg2.connect*"
-ys
-"sword*"
-"t='localhost'*"
-tdout.strip():
-"of -ti*"
-"on, subprocess*"
-"pect --format*"
-"= cur.*"
-"-a --format*"
-"e SystemExit*"
-"ordinal_position*"
-ocr-gpu
-pathlib
-SystemExit(0)
-"-ti:*"
-true
-orchestrator.log
-mcp_err.log
+# ============================================================
+# 嵌入子仓库 / 临时目录
+# ============================================================
+trash/
+llama.cpp/
+research/
+clawai/
 
-# Backup files
-*.bak
+# ============================================================
+# 编译产物
+# ============================================================
+src/backend/go-services/gateway
+src/backend/go-services/websocket
+src/backend/go-services/main
 
-# Qlty config
-.qlty/
-
-# Eval reports
+# ============================================================
+# 项目特定
+# ============================================================
+backups/
+demos/
+recordings/
+scripts/
 reports/
-
 src/backend/retrieval-service/app/临时文件.md
 
-# Project assets (non-source)
-/backups/
-/demos/
-/recordings/
-/scripts/
+# ============================================================
+# 备份文件
+# ============================================================
+*.bak
