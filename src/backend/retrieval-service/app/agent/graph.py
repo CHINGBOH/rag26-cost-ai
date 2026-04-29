@@ -366,6 +366,63 @@ def _prune_chunks_for_query(
     return chunks
 
 
+def _gather_blindspots_for_chunks(chunks: list) -> list[dict]:
+    """For (doc_id, page) tuples present in chunks, fetch any blindspot rows
+    so the agent response can disclose chart/figure pages near the cited
+    evidence. Returns up to 5 entries — purely advisory, never blocks.
+    """
+    if not chunks:
+        return []
+    pairs: set[tuple[str, int]] = set()
+    for c in chunks:
+        d = c.get("doc_id")
+        p = c.get("page_number") or c.get("page") or 0
+        if d and p:
+            try:
+                pairs.add((d, int(p)))
+            except Exception:
+                continue
+    if not pairs:
+        return []
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                # Find blindspots whose doc_id is in our chunk set; show
+                # nearby pages too (±2) since charts often reference text.
+                doc_ids = list({d for d, _ in pairs})
+                placeholders = ",".join(["%s"] * len(doc_ids))
+                cur.execute(
+                    f"""SELECT doc_id, file_name, page, kind, reason,
+                               image_count, text_chars
+                          FROM ingest_blindspots
+                         WHERE doc_id IN ({placeholders})
+                         ORDER BY doc_id, page LIMIT 50""",
+                    doc_ids,
+                )
+                rows = cur.fetchall()
+            out: list[dict] = []
+            for d, fn, pg, kind, reason, ic, tc in rows:
+                # Only include blindspots whose page is within ±2 of any cited page
+                near = any(d == cd and abs(pg - cp) <= 2 for cd, cp in pairs)
+                if not near:
+                    continue
+                out.append({
+                    "doc_id": d, "file_name": fn, "page": pg,
+                    "kind": kind, "reason": reason,
+                    "image_count": ic, "text_chars": tc,
+                })
+                if len(out) >= 5:
+                    break
+            return out
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.warning(f"[gather_blindspots] failed: {e}")
+        return []
+
+
 def _enrich_chunks_with_filename(chunks: list) -> list:
     """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
     if not chunks:
@@ -3418,6 +3475,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "retrieved_chunks": all_chunks,
             "presentation": presentation,
             "presentation_policy": state.get("presentation_policy"),
+            "data_gaps": _gather_blindspots_for_chunks(all_chunks),
         }
 
     direct_answer = _build_rule_based_fallback_answer(query, all_chunks)
@@ -3445,6 +3503,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "retrieved_chunks": all_chunks,
             "presentation": presentation,
             "presentation_policy": state.get("presentation_policy"),
+            "data_gaps": _gather_blindspots_for_chunks(all_chunks),
         }
 
     try:
@@ -3506,6 +3565,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "presentation": presentation,
         "presentation_policy": state.get("presentation_policy"),
         "followup_suggestions": followup_suggestions,
+        "data_gaps": _gather_blindspots_for_chunks(all_chunks),
     }
 
 

@@ -424,6 +424,7 @@ async def agent_query(request: AgentRequest):
             "runtime": result.get("llm_runtime", {}),
             "presentation": result.get("presentation"),
             "followup_suggestions": result.get("followup_suggestions") or [],
+            "data_gaps": result.get("data_gaps") or [],
         }
     except Exception as e:
         logger.error(f"Agent pipeline error: {e}")
@@ -577,6 +578,13 @@ async def agent_query_stream(request: AgentStreamRequest):
                     followups = []
                 if followups:
                     yield _sse_event("followup_suggestions", {"suggestions": followups})
+                try:
+                    from app.agent.graph import _gather_blindspots_for_chunks as _gbs
+                    data_gaps = _gbs(list(retrieved_chunks_accum or []))
+                except Exception:
+                    data_gaps = []
+                if data_gaps:
+                    yield _sse_event("data_gaps", {"gaps": data_gaps})
                 yield _sse_event(
                     "done",
                     {
@@ -590,6 +598,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "route_mode": current_runtime.get("route_mode") or llm_config.get("route_mode"),
                         "presentation": current_presentation,
                         "followup_suggestions": followups,
+                        "data_gaps": data_gaps,
                     },
                 )
                 break

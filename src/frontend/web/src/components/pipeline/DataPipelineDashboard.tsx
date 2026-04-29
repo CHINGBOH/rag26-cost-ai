@@ -166,10 +166,12 @@ export const DataPipelineDashboard: React.FC = () => {
         const progress = j.progress_pct ?? 50;
 
         if (j.status === 'done') {
+          const blindspotCount = (j.blindspots || []).length;
+          const blindspotLabel = blindspotCount > 0 ? ` · ⚠️ ${blindspotCount}处图表盲洞` : '';
           setUploadQueue(prev => prev.map(f =>
             f.id === fileInfo.id ? {
               ...f, status: 'completed', progress: 100,
-              stage: `完成 · ${j.chunks_pg ?? 0} chunks · ${j.extractor || '?'}`,
+              stage: `完成 · ${j.chunks_pg ?? 0} chunks · ${j.extractor || '?'}${blindspotLabel}`,
               result: j, endTime: Date.now(),
             } : f
           ));
