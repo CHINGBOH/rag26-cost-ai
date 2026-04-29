@@ -4866,3 +4866,510 @@ def stats_overview() -> str:
     finally:
         if conn is not None:
             _put_pg_conn(conn)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Round 3: Active RAG penetration tools (graph + proactive)
+# ════════════════════════════════════════════════════════════════════════
+
+import re as _re_r3
+
+_CN_TERM_RE = _re_r3.compile(r"[\u4e00-\u9fff][\u4e00-\u9fff\w]{1,7}")
+_STOPWORDS_R3 = {
+    "我们", "他们", "可以", "进行", "包括", "如下", "以及", "等等", "不过",
+    "因此", "所以", "如果", "虽然", "但是", "同时", "或者", "并且", "其中",
+    "应当", "需要", "不能", "可能", "不得", "应该", "要求", "通过", "采用",
+    "本节", "本章", "本规", "本标", "本条", "说明", "本表", "本款",
+    "什么", "怎么", "哪些", "哪个", "如何", "为何", "多少",
+}
+
+def _extract_terms(text: str, min_len: int = 2, max_len: int = 8) -> list:
+    """从中文文本里抽 2-8 字术语，去停用词。先按助词拆，再滑窗。"""
+    if not text:
+        return []
+    # 按常见助词/疑问词切段，避免长跨界 term
+    segments = _re_r3.split(r"[的中和或与是以为及对到从在由把被让所对于关于以及通过根据按照另外另一这一那些这些任何什么怎么哪些哪个如何为何多少\s\W]+", text)
+    out = []
+    seen = set()
+    for seg in segments:
+        if not seg:
+            continue
+        # 在段内用原 regex 抽
+        for w in _CN_TERM_RE.findall(seg):
+            if min_len <= len(w) <= max_len and w not in _STOPWORDS_R3 and w not in seen:
+                seen.add(w)
+                out.append(w)
+        # 段本身若是合法长度也加入
+        if min_len <= len(seg) <= max_len and seg not in seen and seg not in _STOPWORDS_R3 and _re_r3.match(r"^[\u4e00-\u9fff]+$", seg):
+            seen.add(seg)
+            out.insert(0, seg)  # 整段优先级更高
+    return out
+
+
+@tool
+def concept_neighbors(concept: str, hops: int = 1, top_k: int = 15) -> str:
+    """图谱穿透：给定概念，返回语义+结构相关概念。
+    实现：embedding 近邻 chunk → 抽 catalog path 节点 + 关键词；hops>=2 时迭代扩展。
+    Args: concept 概念词；hops 跳数 1-2；top_k 返回数量
+    Returns: JSON {seed, neighbors:[{term,score,source}]}
+    """
+    if not concept or not concept.strip():
+        return json.dumps({"error": "concept is required"})
+    hops = max(1, min(int(hops or 1), 2))
+    top_k = max(1, min(int(top_k or 15), 50))
+
+    vec = _get_embedding(concept.strip())
+    if not vec:
+        return json.dumps({"error": "embedding failed"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+            cur.execute(
+                """
+                SELECT id, content, section, path, depth,
+                       1 - (embedding <=> %s::vector) AS score
+                FROM text_chunks
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT 30
+                """,
+                (vec_lit, vec_lit),
+            )
+            rows = cur.fetchall()
+
+        scores = {}  # term -> {score, source}
+        for cid, content, section, path, depth, sim in rows:
+            sim = float(sim or 0)
+            # catalog path 节点 (e.g. "1/2/3" or "建筑/安装/电气")
+            if path:
+                for part in str(path).split("/"):
+                    part = part.strip()
+                    if part and part != concept and len(part) >= 2:
+                        s = scores.setdefault(part, {"score": 0, "source": "catalog"})
+                        s["score"] = max(s["score"], sim * 0.95)
+            # section 标题
+            if section and section != concept:
+                s = scores.setdefault(str(section), {"score": 0, "source": "section"})
+                s["score"] = max(s["score"], sim * 0.9)
+            # 内容里的术语
+            for term in _extract_terms(content[:400]):
+                if term == concept or concept in term:
+                    continue
+                s = scores.setdefault(term, {"score": 0, "source": "term"})
+                s["score"] = max(s["score"], sim * 0.7)
+
+        # hop 2: 用 top-3 邻居自动扩展
+        if hops >= 2 and scores:
+            top_seeds = sorted(scores.items(), key=lambda x: -x[1]["score"])[:3]
+            for seed, _ in top_seeds:
+                vec2 = _get_embedding(seed)
+                if not vec2:
+                    continue
+                vec_lit2 = "[" + ",".join(f"{x:.6f}" for x in vec2) + "]"
+                conn2 = _get_pg_conn()
+                try:
+                    with conn2.cursor() as cur:
+                        cur.execute(
+                            "SELECT content, 1 - (embedding <=> %s::vector) "
+                            "FROM text_chunks WHERE embedding IS NOT NULL "
+                            "ORDER BY embedding <=> %s::vector LIMIT 5",
+                            (vec_lit2, vec_lit2),
+                        )
+                        for content, sim2 in cur.fetchall():
+                            for term in _extract_terms(content[:200]):
+                                if term in (concept, seed):
+                                    continue
+                                s = scores.setdefault(term, {"score": 0, "source": "hop2"})
+                                s["score"] = max(s["score"], float(sim2) * 0.5)
+                finally:
+                    _put_pg_conn(conn2)
+
+        ranked = sorted(
+            [{"term": k, "score": round(v["score"], 4), "source": v["source"]} for k, v in scores.items()],
+            key=lambda x: -x["score"],
+        )[:top_k]
+        return json.dumps({"seed": concept, "hops": hops, "neighbors": ranked}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[concept_neighbors] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def concept_path(from_concept: str, to_concept: str, max_hops: int = 4) -> str:
+    """语义桥：找两个概念间的桥梁概念链（embedding 空间插值）。
+    Args: from_concept 起点；to_concept 终点；max_hops 最大跳数 2-6
+    Returns: JSON {from, to, path:[{step,term,sim_to_target}]}
+    """
+    if not from_concept or not to_concept:
+        return json.dumps({"error": "both concepts required"})
+    max_hops = max(2, min(int(max_hops or 4), 6))
+
+    v_from = _get_embedding(from_concept.strip())
+    v_to = _get_embedding(to_concept.strip())
+    if not v_from or not v_to:
+        return json.dumps({"error": "embedding failed"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        path = [{"step": 0, "term": from_concept, "sim_to_target": 0.0}]
+        current_vec = v_from
+        visited = {from_concept, to_concept}
+
+        for step in range(1, max_hops + 1):
+            # 朝目标插值：每步取 step/(max_hops) 比例朝 v_to
+            alpha = step / (max_hops + 1)
+            interp = [(1 - alpha) * a + alpha * b for a, b in zip(current_vec, v_to)]
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in interp) + "]"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT content, section, 1 - (embedding <=> %s::vector) AS sim "
+                    "FROM text_chunks WHERE embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT 8",
+                    (vec_lit, vec_lit),
+                )
+                rows = cur.fetchall()
+
+            picked = None
+            for content, section, sim in rows:
+                candidates = []
+                if section:
+                    candidates.append(str(section))
+                candidates.extend(_extract_terms(content[:300])[:5])
+                for cand in candidates:
+                    if cand and cand not in visited and 2 <= len(cand) <= 12:
+                        picked = (cand, float(sim))
+                        break
+                if picked:
+                    break
+            if not picked:
+                break
+            term, sim = picked
+            visited.add(term)
+            # sim to target
+            vec_term = _get_embedding(term)
+            sim_target = 0.0
+            if vec_term:
+                num = sum(a * b for a, b in zip(vec_term, v_to))
+                da = sum(a * a for a in vec_term) ** 0.5
+                db = sum(b * b for b in v_to) ** 0.5
+                if da and db:
+                    sim_target = num / (da * db)
+            path.append({"step": step, "term": term, "sim_to_target": round(sim_target, 4)})
+            current_vec = vec_term or interp
+            if sim_target > 0.85:
+                break
+
+        path.append({"step": len(path), "term": to_concept, "sim_to_target": 1.0})
+        return json.dumps({"from": from_concept, "to": to_concept, "path": path}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[concept_path] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def entity_cooccur(entity: str, top_k: int = 20) -> str:
+    """共现分析：找与指定实体在同一 chunk 中频繁共现的术语。
+    Args: entity 实体词；top_k 返回数量
+    Returns: JSON {entity, cooccur:[{term,count,sample_chunk_id}]}
+    """
+    if not entity or not entity.strip():
+        return json.dumps({"error": "entity is required"})
+    top_k = max(1, min(int(top_k or 20), 100))
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, content FROM text_chunks "
+                "WHERE content ILIKE %s LIMIT 200",
+                (f"%{entity}%",),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            return json.dumps({"entity": entity, "cooccur": [], "note": "no chunk contains this entity"}, ensure_ascii=False)
+
+        counts = {}  # term -> [count, sample_chunk_id]
+        for cid, content in rows:
+            for term in _extract_terms(content):
+                if term == entity or entity in term or term in entity:
+                    continue
+                if term not in counts:
+                    counts[term] = [0, cid]
+                counts[term][0] += 1
+
+        ranked = sorted(
+            [{"term": k, "count": v[0], "sample_chunk_id": v[1]} for k, v in counts.items()],
+            key=lambda x: -x["count"],
+        )[:top_k]
+        return json.dumps(
+            {"entity": entity, "containing_chunks": len(rows), "cooccur": ranked},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[entity_cooccur] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def upstream_downstream(item: str, direction: str = "both") -> str:
+    """上下游：给定物料/概念，找其 catalog 父/子/兄弟节点 + 文本中的因果短语。
+    Args: item 名称；direction 'up' | 'down' | 'both' (默认)
+    Returns: JSON {item, parents, children, siblings, causal_phrases}
+    """
+    if not item or not item.strip():
+        return json.dumps({"error": "item is required"})
+    direction = (direction or "both").lower()
+    if direction not in ("up", "down", "both"):
+        direction = "both"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            # catalog hits
+            cur.execute(
+                "SELECT id, file_name, chapter_id, title, path, depth "
+                "FROM catalog_index WHERE title ILIKE %s LIMIT 10",
+                (f"%{item}%",),
+            )
+            cat_hits = cur.fetchall()
+
+            parents, children, siblings = [], [], []
+            for cid, fname, chap, title, path, depth in cat_hits:
+                if not path:
+                    continue
+                # parent: prefix of path
+                if direction in ("up", "both"):
+                    cur.execute(
+                        "SELECT title, path, depth FROM catalog_index "
+                        "WHERE file_name=%s AND %s LIKE path || '/%%' AND depth = %s "
+                        "LIMIT 5",
+                        (fname, path, max(0, (depth or 1) - 1)),
+                    )
+                    for t, p, d in cur.fetchall():
+                        if t and t != title:
+                            parents.append({"title": t, "path": p, "depth": d})
+                if direction in ("down", "both"):
+                    cur.execute(
+                        "SELECT title, path, depth FROM catalog_index "
+                        "WHERE file_name=%s AND path LIKE %s AND depth = %s LIMIT 10",
+                        (fname, path + "/%", (depth or 0) + 1),
+                    )
+                    for t, p, d in cur.fetchall():
+                        children.append({"title": t, "path": p, "depth": d})
+                    cur.execute(
+                        "SELECT title, path FROM catalog_index "
+                        "WHERE file_name=%s AND depth=%s AND path != %s "
+                        "AND path LIKE %s LIMIT 8",
+                        (fname, depth, path, "/".join(path.split("/")[:-1]) + "/%"),
+                    )
+                    for t, p in cur.fetchall():
+                        if t and t != title:
+                            siblings.append({"title": t, "path": p})
+
+            # causal phrases from chunks
+            cur.execute(
+                "SELECT content FROM text_chunks WHERE content ILIKE %s LIMIT 30",
+                (f"%{item}%",),
+            )
+            phrases = []
+            patterns = [
+                _re_r3.compile(rf"({item}[^。;；,，]{{0,30}}?(?:由|包含|包括|含有|组成|构成)[^。;；]{{2,40}})"),
+                _re_r3.compile(rf"((?:由|用于|应用于|适用于)[^。;；]{{2,30}}?{item}[^。;；,，]{{0,20}})"),
+                _re_r3.compile(rf"({item}[^。;；,，]{{0,20}}?(?:用于|适用于|对应)[^。;；]{{2,30}})"),
+            ]
+            seen_phr = set()
+            for (content,) in cur.fetchall():
+                for pat in patterns:
+                    for m in pat.findall(content)[:3]:
+                        m = m.strip()
+                        if m and m not in seen_phr and len(m) <= 80:
+                            seen_phr.add(m)
+                            phrases.append(m)
+                if len(phrases) >= 12:
+                    break
+
+        return json.dumps(
+            {
+                "item": item,
+                "direction": direction,
+                "parents": parents[:6],
+                "children": children[:12],
+                "siblings": siblings[:8],
+                "causal_phrases": phrases[:12],
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[upstream_downstream] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+_QUESTION_TEMPLATES = [
+    "{e}的定义/概念是什么？",
+    "{e}的计算规则/公式是什么？",
+    "{e}的适用范围/条件是什么？",
+    "{e}有哪些类型/分类？",
+    "{e}的标准依据/规范来源？",
+    "{e}的常见单位/计量方式？",
+    "{e}与相关概念的区别？",
+    "{e}的典型应用场景？",
+]
+
+
+@tool
+def expand_question(question: str, n: int = 5) -> str:
+    """问题展开：把一个问题拆成 N 个子问题（实体 × 5W1H 模板）。
+    Args: question 原问题；n 子问数量 (1-10)
+    Returns: JSON {question, sub_questions:[...]}
+    """
+    if not question or not question.strip():
+        return json.dumps({"error": "question is required"})
+    n = max(1, min(int(n or 5), 10))
+
+    entities = _extract_terms(question, min_len=2, max_len=10)[:4]
+    if not entities:
+        return json.dumps({"question": question, "sub_questions": [question], "note": "no entity extracted"}, ensure_ascii=False)
+
+    subs = []
+    seen = set()
+    # 主实体 × 多模板
+    main = entities[0]
+    for tpl in _QUESTION_TEMPLATES:
+        q = tpl.format(e=main)
+        if q not in seen:
+            seen.add(q)
+            subs.append(q)
+        if len(subs) >= n:
+            break
+    # 其它实体 × 1-2 个模板
+    if len(subs) < n:
+        for ent in entities[1:]:
+            for tpl in _QUESTION_TEMPLATES[:3]:
+                q = tpl.format(e=ent)
+                if q not in seen:
+                    seen.add(q)
+                    subs.append(q)
+                if len(subs) >= n:
+                    break
+            if len(subs) >= n:
+                break
+
+    return json.dumps({"question": question, "entities": entities, "sub_questions": subs[:n]}, ensure_ascii=False)
+
+
+@tool
+def suggest_followup(question: str, answer: str, n: int = 3) -> str:
+    """追问建议：基于问答内容，推荐 N 个更深入的追问。
+    Args: question 原问题；answer 回答文本；n 追问数量
+    Returns: JSON {followups:[...]}
+    """
+    if not question or not answer:
+        return json.dumps({"error": "question and answer required"})
+    n = max(1, min(int(n or 3), 8))
+
+    q_terms = set(_extract_terms(question))
+    a_terms = _extract_terms(answer)
+    new_entities = [t for t in a_terms if t not in q_terms][:6]
+
+    if not new_entities:
+        return json.dumps({"followups": [], "note": "no new entity in answer"}, ensure_ascii=False)
+
+    main_q_entity = next(iter(q_terms), "本主题") if q_terms else "本主题"
+    followup_tpls = [
+        "{ne} 的具体计算规则是什么？",
+        "{ne} 与 {qe} 的关系/差异是什么？",
+        "{ne} 在实际应用中需要注意哪些问题？",
+        "{ne} 有哪些子类或细分？",
+        "如何获取/确定 {ne} 的标准值？",
+    ]
+    followups = []
+    seen = set()
+    for ne in new_entities:
+        for tpl in followup_tpls:
+            q = tpl.format(ne=ne, qe=main_q_entity)
+            if q not in seen:
+                seen.add(q)
+                followups.append({"question": q, "based_on_entity": ne})
+            if len(followups) >= n:
+                break
+        if len(followups) >= n:
+            break
+
+    return json.dumps({"original": question, "followups": followups[:n]}, ensure_ascii=False)
+
+
+@tool
+def find_knowledge_gaps(question: str, threshold: float = 0.55) -> str:
+    """缺口侦测：把问题拆为子问，对每个子问做 vector_search，标出库中无法回答的部分。
+    Args: question 原问题；threshold 命中阈值 (默认 0.55)
+    Returns: JSON {gaps:[{sub_q,best_score}], covered:[...], advice}
+    """
+    if not question or not question.strip():
+        return json.dumps({"error": "question is required"})
+    threshold = float(threshold or 0.55)
+
+    # 先展开
+    expanded = json.loads(expand_question.invoke({"question": question, "n": 6}))
+    subs = expanded.get("sub_questions", [])
+    if not subs:
+        return json.dumps({"error": "could not expand"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        gaps, covered = [], []
+        for sub in subs:
+            vec = _get_embedding(sub)
+            if not vec:
+                continue
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 - (embedding <=> %s::vector) FROM text_chunks "
+                    "WHERE embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT 1",
+                    (vec_lit, vec_lit),
+                )
+                row = cur.fetchone()
+            best = float(row[0]) if row else 0.0
+            entry = {"sub_question": sub, "best_score": round(best, 4)}
+            if best < threshold:
+                gaps.append(entry)
+            else:
+                covered.append(entry)
+
+        advice = (
+            f"知识库覆盖 {len(covered)}/{len(subs)} 子问。建议补充以下方向资料："
+            + "; ".join(g["sub_question"] for g in gaps[:3])
+            if gaps
+            else f"知识库完整覆盖该问题的 {len(covered)} 个子方向。"
+        )
+        return json.dumps(
+            {"question": question, "threshold": threshold, "covered": covered, "gaps": gaps, "advice": advice},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[find_knowledge_gaps] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)

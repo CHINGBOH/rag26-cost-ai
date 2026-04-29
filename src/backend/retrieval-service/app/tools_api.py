@@ -59,6 +59,15 @@ _CATEGORIES: Dict[str, str] = {
     "fetch_chunk":       "data",
     "similar_chunks":    "data",
     "stats_overview":    "data",
+    # ── round 3: graph penetration ──────────────────────────────
+    "concept_neighbors":   "graph",
+    "concept_path":        "graph",
+    "entity_cooccur":      "graph",
+    "upstream_downstream": "graph",
+    # ── round 3: proactive cognition ────────────────────────────
+    "expand_question":     "proactive",
+    "suggest_followup":    "proactive",
+    "find_knowledge_gaps": "proactive",
 }
 
 _EXAMPLES: Dict[str, Dict[str, Any]] = {
@@ -86,6 +95,15 @@ _EXAMPLES: Dict[str, Dict[str, Any]] = {
     "fetch_chunk":     {"chunk_id": "tc_1", "with_neighbors": True},
     "similar_chunks":  {"chunk_id": "tc_1", "top_k": 5},
     "stats_overview":  {},
+    # ── graph examples ──────────────────────────────────────────
+    "concept_neighbors":   {"concept": "送配电装置系统调试", "hops": 1, "top_k": 12},
+    "concept_path":        {"from_concept": "送配电装置系统调试", "to_concept": "防腐蚀工程", "max_hops": 4},
+    "entity_cooccur":      {"entity": "送配电装置", "top_k": 15},
+    "upstream_downstream": {"item": "送配电装置系统调试", "direction": "both"},
+    # ── proactive examples ──────────────────────────────────────
+    "expand_question":     {"question": "送配电装置系统调试的计算规则是什么?", "n": 5},
+    "suggest_followup":    {"question": "送配电装置系统调试的计算规则是什么?", "answer": "按系统调试的电压等级和回路数计算工程量。", "n": 3},
+    "find_knowledge_gaps": {"question": "送配电装置系统调试的计算规则是什么?", "threshold": 0.55},
 }
 
 
