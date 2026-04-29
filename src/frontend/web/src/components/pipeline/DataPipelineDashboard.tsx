@@ -168,10 +168,25 @@ export const DataPipelineDashboard: React.FC = () => {
         if (j.status === 'done') {
           const blindspotCount = (j.blindspots || []).length;
           const blindspotLabel = blindspotCount > 0 ? ` · ⚠️ ${blindspotCount}处图表盲洞` : '';
+          // Phase J: cross-DB audit so the dashboard tells the truth about persistence.
+          let auditLabel = '';
+          let auditOk = true;
+          try {
+            const ar = await authFetch(`/api/v1/pipeline/audit/${jobId}`);
+            if (ar.ok) {
+              const a = await ar.json();
+              auditOk = !!a.ok;
+              const c = a.counts || {};
+              auditLabel = auditOk
+                ? ` · ✅ pg=${c.pg_text_chunks} qd=${c.qdrant_points} neo=${c.neo4j_chunks}`
+                : ` · ❌ DB漂移: pg=${c.pg_text_chunks}/qd=${c.qdrant_points}/neo=${c.neo4j_chunks}`;
+            }
+          } catch (e) { /* audit best-effort */ }
           setUploadQueue(prev => prev.map(f =>
             f.id === fileInfo.id ? {
-              ...f, status: 'completed', progress: 100,
-              stage: `完成 · ${j.chunks_pg ?? 0} chunks · ${j.extractor || '?'}${blindspotLabel}`,
+              ...f, status: auditOk ? 'completed' : 'failed', progress: 100,
+              stage: `完成 · ${j.chunks_pg ?? 0} chunks · ${j.extractor || '?'}${blindspotLabel}${auditLabel}`,
+              error: auditOk ? undefined : '三库一致性校验失败',
               result: j, endTime: Date.now(),
             } : f
           ));
