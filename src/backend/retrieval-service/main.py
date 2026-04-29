@@ -30,6 +30,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router, set_services
+from app.tools_api import router as tools_router
 from app.pipeline import UnifiedRetrievalPipeline
 from infrastructure.adapters.unified import UnifiedStore
 
@@ -80,3 +81,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(tools_router)
