@@ -78,18 +78,41 @@ src/backend/go-services/gateway
 src/backend/go-services/websocket
 src/backend/go-services/main
 
-# Accidental terminal output files
+# AI tool private configs (IDE/assistant - local only)
+.aiassistant/
+.claude/
+.kilo/
+.opencode/
+.windsurf/
+
+# Accidental terminal output files (shell fragments that became filenames)
 ":\", cols)"
 ":', cols)"
 ":', cur.fetchone())"
 columns:')
 e
 e()
+elect
 ycopg2
-"ycopg2.connect(*"
+"ycopg2.connect*"
 ys
-"sword_here*"
+"sword*"
 "t='localhost'*"
+tdout.strip():
+"of -ti*"
+"on, subprocess*"
+"pect --format*"
+"= cur.*"
+"-a --format*"
+"e SystemExit*"
+"ordinal_position*"
+ocr-gpu
+pathlib
+SystemExit(0)
+"-ti:*"
+true
+orchestrator.log
+mcp_err.log
 
 # Backup files
 *.bak
@@ -100,14 +123,6 @@ ys
 # Eval reports
 reports/
 
-# Temp / scratch files at repo root
-AGENTS\ copy.md
-:", cols)
-:', cols)
-:', cur.fetchone())
-sword_here psql -h localhost -U rag_user -d rag_db -c SELECT column_name, data_type FROM information_schema.columns WHERE table_name='fee_rates' ORDER BY ordinal_position;
-ycopg2.connect(host='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
-t='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
 src/backend/retrieval-service/app/临时文件.md
 
 # Project assets (non-source)
