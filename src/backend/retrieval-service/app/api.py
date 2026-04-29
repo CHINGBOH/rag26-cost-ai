@@ -829,14 +829,13 @@ async def health_detail():
     http_services = {
         "python_legacy": "http://localhost:8000/health",
         "retrieval": "http://localhost:8002/health",
-        "llama_server": "http://localhost:8080/health",  # actual llama-server
         "ocr": "http://localhost:8001/health",
         "qdrant": "http://localhost:6333/healthz",
-        "go_gateway": "http://localhost:8090/health",
+        "go_gateway": "http://localhost:8080/health",
         "nodejs": "http://localhost:3001/health",
     }
     results = {}
-    async with httpx.AsyncClient(timeout=2.0) as client:
+    async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
         for name, url in http_services.items():
             t0 = time.monotonic()
             try:
