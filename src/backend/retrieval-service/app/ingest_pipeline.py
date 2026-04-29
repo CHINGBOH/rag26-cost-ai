@@ -171,14 +171,141 @@ def extract_text_file(path: Path, doc_id: str) -> tuple[list[Block], str]:
     return blocks, "text"
 
 
+def extract_csv(path: Path, doc_id: str) -> tuple[list[Block], str]:
+    """CSV — one Block per row, plus a header summary block."""
+    import csv
+    blocks: list[Block] = []
+    rows: list[list[str]] = []
+    with open(path, newline="", encoding="utf-8", errors="ignore") as fh:
+        # try utf-8-sig in case of BOM
+        try:
+            reader = csv.reader(fh)
+            for row in reader:
+                rows.append([(c or "").strip() for c in row])
+        except Exception as e:
+            raise RuntimeError(f"csv parse failed: {e}")
+
+    if not rows:
+        return [], "csv"
+
+    header = rows[0]
+    blocks.append(Block(
+        doc_id=doc_id, page=1, block_id="hdr",
+        type="caption", text="表头: " + " | ".join(header),
+        metadata={"row": 0, "header": header},
+    ))
+    for ri, row in enumerate(rows[1:], start=1):
+        if not any(row):
+            continue
+        # render as "key: val | key: val" for embedding-friendliness
+        cells = [f"{header[i] if i < len(header) else f'col{i}'}: {v}"
+                 for i, v in enumerate(row) if v]
+        blocks.append(Block(
+            doc_id=doc_id, page=1, block_id=f"row{ri}",
+            type="table_row", text=" | ".join(cells),
+            metadata={"row": ri},
+        ))
+    return blocks, "csv"
+
+
+def extract_xlsx(path: Path, doc_id: str) -> tuple[list[Block], str]:
+    """Excel — each sheet → caption block + one table_row block per data row."""
+    import openpyxl
+    wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+    blocks: list[Block] = []
+    page = 0
+    try:
+        for sname in wb.sheetnames:
+            page += 1
+            ws = wb[sname]
+            rows_iter = ws.iter_rows(values_only=True)
+            try:
+                header_raw = next(rows_iter)
+            except StopIteration:
+                continue
+            header = [str(c) if c is not None else "" for c in header_raw]
+            blocks.append(Block(
+                doc_id=doc_id, page=page, block_id=f"sheet{page}_hdr",
+                type="caption", text=f"工作表 [{sname}] 表头: " + " | ".join(h for h in header if h),
+                metadata={"sheet": sname, "row": 0, "header": header},
+            ))
+            for ri, row in enumerate(rows_iter, start=1):
+                cells_raw = [("" if v is None else str(v)).strip() for v in row]
+                if not any(cells_raw):
+                    continue
+                cells = [f"{header[i] if i < len(header) else f'col{i}'}: {v}"
+                         for i, v in enumerate(cells_raw) if v]
+                if not cells:
+                    continue
+                blocks.append(Block(
+                    doc_id=doc_id, page=page, block_id=f"sheet{page}_r{ri}",
+                    type="table_row", text=" | ".join(cells),
+                    metadata={"sheet": sname, "row": ri},
+                ))
+    finally:
+        wb.close()
+    return blocks, "xlsx"
+
+
+def _extract_pdf_tables(path: Path, doc_id: str) -> list[Block]:
+    """pdfplumber-based table extraction; merges per page, robust to failures."""
+    blocks: list[Block] = []
+    try:
+        import pdfplumber
+    except Exception:
+        return blocks
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            for pi, page in enumerate(pdf.pages, start=1):
+                try:
+                    tables = page.extract_tables() or []
+                except Exception:
+                    continue
+                for ti, tbl in enumerate(tables):
+                    if not tbl or not any(any(c for c in r) for r in tbl):
+                        continue
+                    header = [str(c or "").strip() for c in tbl[0]]
+                    blocks.append(Block(
+                        doc_id=doc_id, page=pi,
+                        block_id=f"p{pi}_t{ti}_hdr",
+                        type="caption",
+                        text=f"表 {pi}-{ti+1} 表头: " + " | ".join(h for h in header if h),
+                        metadata={"table": ti, "row": 0, "header": header},
+                    ))
+                    for ri, row in enumerate(tbl[1:], start=1):
+                        cells_raw = [str(c or "").strip() for c in row]
+                        if not any(cells_raw):
+                            continue
+                        cells = [f"{header[i] if i < len(header) else f'col{i}'}: {v}"
+                                 for i, v in enumerate(cells_raw) if v]
+                        if not cells:
+                            continue
+                        blocks.append(Block(
+                            doc_id=doc_id, page=pi,
+                            block_id=f"p{pi}_t{ti}_r{ri}",
+                            type="table_row",
+                            text=" | ".join(cells),
+                            metadata={"table": ti, "row": ri},
+                        ))
+    except Exception as e:
+        logger.warning("pdfplumber table extraction failed: %s", e)
+    return blocks
+
+
 def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | None:
-    """Try PyMuPDF first; if pages have very little text, signal caller to OCR."""
+    """Try PyMuPDF first; if pages have very little text, signal caller to OCR.
+
+    Streams page-by-page so 905M files don't blow up memory.
+    Also pulls native tables via pdfplumber and merges into the block stream
+    (sorted by page, with text first, then tables — chunker preserves order).
+    """
     try:
         import fitz  # PyMuPDF
     except Exception:
         return None
     blocks: list[Block] = []
     total_text_chars = 0
+    n_pages = 0
     try:
         with fitz.open(str(path)) as doc:
             n_pages = doc.page_count
@@ -186,7 +313,6 @@ def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | Non
                 page = doc.load_page(pi)
                 txt = page.get_text("text") or ""
                 total_text_chars += len(txt)
-                # naive paragraph split per page
                 for bi, para in enumerate(p.strip() for p in txt.split("\n\n")):
                     if para and len(para) > 4:
                         blocks.append(Block(
@@ -197,10 +323,20 @@ def extract_pdf_native(path: Path, doc_id: str) -> tuple[list[Block], str] | Non
     except Exception as e:
         logger.warning("pymupdf failed: %s", e)
         return None
-    # heuristic: <= 30 chars/page average → likely scanned, defer to OCR
-    if blocks and (total_text_chars / max(1, n_pages)) >= 30:
-        return blocks, "pymupdf"
-    return None  # signal scan / needs OCR
+    if not blocks or (total_text_chars / max(1, n_pages)) < 30:
+        return None  # signal scan / needs OCR
+
+    # native PDF: also try to pull tables (best-effort, never fatal)
+    try:
+        tbl_blocks = _extract_pdf_tables(path, doc_id)
+        if tbl_blocks:
+            blocks.extend(tbl_blocks)
+            blocks.sort(key=lambda b: (b.page, 0 if b.type == "text" else 1))
+            logger.info("pdfplumber added %d table blocks", len(tbl_blocks))
+    except Exception as e:
+        logger.warning("table extraction skipped: %s", e)
+
+    return blocks, "pymupdf"
 
 
 async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str) -> tuple[list[Block], str]:
@@ -240,17 +376,19 @@ async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str) 
 
 # ────────────────────────────── chunking ──────────────────────────────
 def chunk_blocks(blocks: list[Block], max_chars: int = 400) -> list[Block]:
-    """Merge small blocks within the same page; split overly long ones.
-    Each output Block keeps its page number.
+    """Page-aware chunker.
+
+    - text blocks: merged within page until max_chars.
+    - table_row / caption / figure: kept as their own chunk so retrieval
+      can pinpoint a row without diluting the embedding.
     """
     out: list[Block] = []
     cur_buf: list[str] = []
     cur_page = -1
-    cur_idx = 0
     cur_doc_id = ""
 
     def flush():
-        nonlocal cur_buf, cur_page, cur_idx, cur_doc_id
+        nonlocal cur_buf, cur_page, cur_doc_id
         if cur_buf:
             txt = "\n\n".join(cur_buf)
             out.append(Block(
@@ -262,6 +400,17 @@ def chunk_blocks(blocks: list[Block], max_chars: int = 400) -> list[Block]:
 
     for b in blocks:
         cur_doc_id = b.doc_id
+        # non-text blocks: emit as-is, bypass buffer
+        if b.type != "text":
+            flush()
+            out.append(Block(
+                doc_id=b.doc_id, page=b.page,
+                block_id=f"chunk_{len(out)}",
+                type=b.type, text=b.text,
+                metadata=b.metadata,
+            ))
+            cur_page = b.page
+            continue
         if b.page != cur_page:
             flush()
             cur_page = b.page
@@ -275,7 +424,6 @@ def chunk_blocks(blocks: list[Block], max_chars: int = 400) -> list[Block]:
             if len(b.text) <= max_chars:
                 cur_buf = [b.text]
             else:
-                # hard split very long block
                 for k in range(0, len(b.text), max_chars):
                     out.append(Block(
                         doc_id=b.doc_id, page=b.page,
@@ -379,6 +527,10 @@ async def run_ingest_job(job_id: str) -> None:
         extractor = ""
         if suffix in (".txt", ".md"):
             blocks, extractor = extract_text_file(file_path, doc_id)
+        elif suffix == ".csv":
+            blocks, extractor = extract_csv(file_path, doc_id)
+        elif suffix in (".xlsx", ".xlsm"):
+            blocks, extractor = extract_xlsx(file_path, doc_id)
         elif suffix == ".pdf":
             res = extract_pdf_native(file_path, doc_id)
             if res:

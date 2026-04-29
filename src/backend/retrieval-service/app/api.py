@@ -1641,7 +1641,10 @@ async def pipeline_upload(file: UploadFile = File(...), background_tasks: Backgr
     suffix = _PlPath(safe_name).suffix.lower()
     mime_map = {".pdf": "application/pdf", ".png": "image/png",
                 ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                ".txt": "text/plain", ".md": "text/markdown"}
+                ".txt": "text/plain", ".md": "text/markdown",
+                ".csv": "text/csv",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12"}
     mime = mime_map.get(suffix, "application/octet-stream")
 
     # generate job_id first so the saved file name is unique
