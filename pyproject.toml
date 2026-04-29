@@ -64,7 +64,7 @@ dev = [
     "datamodel-code-generator>=0.25.0",
     "mypy>=1.8.0",
     "ruff>=0.2.0",
-    "black>=24.0.0",
+    "black>=26.3.1",
 ]
 
 [tool.black]
