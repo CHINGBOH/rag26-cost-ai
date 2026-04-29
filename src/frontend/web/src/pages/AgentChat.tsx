@@ -1077,7 +1077,12 @@ export const AgentChat: React.FC = () => {
             <WelcomeScreen onQuickAsk={(q) => sendMessage(q, config)} />
           ) : (
             messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} sessionId={sessionId} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                sessionId={sessionId}
+                onFollowupClick={(q) => sendMessage(q, config)}
+              />
             ))
           )}
           {isLoading && <StreamingBubble />}
@@ -1160,10 +1165,20 @@ const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickA
 
 /* ── Message Bubble ──────────────────────────────────── */
 
-const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }> = ({
-  message,
-  sessionId,
-}) => {
+const SOURCE_LABELS: Record<string, string> = {
+  llm_followup: '追问',
+  graph_neighbor: '图谱邻居',
+  graph_upstream: '上游',
+  graph_downstream: '下游',
+  gap: '缺口',
+};
+const labelSource = (s: string): string => SOURCE_LABELS[s] || s || '';
+
+const MessageBubble: React.FC<{
+  message: ChatMessage;
+  sessionId: string | null;
+  onFollowupClick?: (q: string) => void;
+}> = ({ message, sessionId, onFollowupClick }) => {
   const [showDetail, setShowDetail] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
 
@@ -1258,6 +1273,25 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
                 {showDetail ? '收起 ▲' : '详情 ▼'}
               </button>
             )}
+          </div>
+        )}
+
+        {message.role === 'assistant' && message.followups && message.followups.length > 0 && (
+          <div className="followup-chips">
+            <div className="followup-label">🔗 顺着这条线继续探</div>
+            <div className="followup-list">
+              {message.followups.slice(0, 6).map((f, i) => (
+                <button
+                  key={i}
+                  className={`followup-chip src-${(f.source || 'llm').replace(/[^a-z_]/g, '')}`}
+                  title={f.reason || f.source}
+                  onClick={() => onFollowupClick?.(f.question)}
+                >
+                  <span className="chip-q">{f.question}</span>
+                  <span className="chip-src">{labelSource(f.source)}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

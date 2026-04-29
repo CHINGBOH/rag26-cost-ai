@@ -420,6 +420,7 @@ async def agent_query(request: AgentRequest):
             "iterations": result.get("iterations", 0),
             "runtime": result.get("llm_runtime", {}),
             "presentation": result.get("presentation"),
+            "followup_suggestions": result.get("followup_suggestions") or [],
         }
     except Exception as e:
         logger.error(f"Agent pipeline error: {e}")
@@ -540,6 +541,7 @@ async def agent_query_stream(request: AgentStreamRequest):
         final_answer = ""
         total_iterations = 0
         seen_chunk_ids: set[str] = set()
+        retrieved_chunks_accum: list[dict[str, Any]] = []
         current_runtime: dict[str, Any] = {}
         current_plan: list[str] = []
         current_presentation: dict[str, Any] | None = None
@@ -558,6 +560,20 @@ async def agent_query_stream(request: AgentStreamRequest):
 
             if kind == "done":
                 elapsed_ms = int((loop.time() - start_time) * 1000)
+                # Round 7: compute followup chips here so they ship with `done`
+                try:
+                    from app.agent.graph import build_followup_suggestions as _build_followups
+                    followups = _build_followups(
+                        request.query.strip(),
+                        list(retrieved_chunks_accum or []),
+                        final_answer or "",
+                        max_n=5,
+                    )
+                except Exception as _e:
+                    logger.debug(f"[stream] followups failed: {_e}")
+                    followups = []
+                if followups:
+                    yield _sse_event("followup_suggestions", {"suggestions": followups})
                 yield _sse_event(
                     "done",
                     {
@@ -570,6 +586,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "engine": current_runtime.get("engine"),
                         "route_mode": current_runtime.get("route_mode") or llm_config.get("route_mode"),
                         "presentation": current_presentation,
+                        "followup_suggestions": followups,
                     },
                 )
                 break
@@ -652,6 +669,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                     if chunk_id in seen_chunk_ids:
                         continue
                     seen_chunk_ids.add(chunk_id)
+                    retrieved_chunks_accum.append(c)
                     yield _sse_event("retrieval_result", normalized)
                 # tool call results
                 for msg in node_output.get("messages", []):

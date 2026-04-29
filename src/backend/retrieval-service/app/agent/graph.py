@@ -2896,6 +2896,17 @@ def planner_node(state: RAGAgentState) -> dict:
                 logger.info(f"[planner] price compare override: {period1} vs {period2} target='{target}'")
 
     logger.info(f"[planner] plan={steps}")
+
+    # —— Round 7: exploratory-query proactive seed ——
+    # 若问题带"影响/关系/有哪些/上下游/相关/穿透/涉及"等发散词且当前 plan 较短，
+    # 前置 proactive_explore，把图谱邻居/上下游摸出来再下钻。
+    EXPLORATORY_RE = re.compile(r"(影响|有哪些|包括|穿透|相关|上下游|上游|下游|联系|依赖|关系|涉及)")
+    if EXPLORATORY_RE.search(query) and len(steps) <= 2:
+        first = (steps[0] if steps else "").lower()
+        if "proactive_explore" not in first and "概念地图" not in (steps[0] if steps else ""):
+            steps = [f"调用 proactive_explore 抽取『{query}』核心概念与图谱邻居/上下游"] + steps
+            logger.info("[planner] exploratory query detected, prepended proactive_explore step")
+
     # Channel seed：将 system + user 注入 messages，executor_node 追加
     seed_messages = [
         SystemMessage(content=_REACT_SYSTEM),
@@ -3445,6 +3456,8 @@ def synthesize_node(state: RAGAgentState) -> dict:
 
     _log_agent_run(state, final_answer, evaluation, runtime, all_chunks)
 
+    followup_suggestions = build_followup_suggestions(query, all_chunks, final_answer, max_n=5)
+
     return {
         "messages": [AIMessage(content=final_answer)],
         "final_answer": final_answer,
@@ -3455,7 +3468,88 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "retrieved_chunks": all_chunks,
         "presentation": presentation,
         "presentation_policy": state.get("presentation_policy"),
+        "followup_suggestions": followup_suggestions,
     }
+
+
+def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int = 5) -> list[dict]:
+    """生成"链式穿透"用的追问 chips。
+    Returns: list of {question: str, source: str, reason: str}.
+    Sources: llm_followup, graph_neighbor, graph_upstream, graph_downstream, gap.
+    所有调用都在 try 内 — 工具失败/图谱缺数据时静默返回部分结果。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(q: str, source: str, reason: str) -> None:
+        q = (q or "").strip().rstrip("?？。.! ")
+        if not q or q in seen or len(q) > 80:
+            return
+        seen.add(q)
+        out.append({"question": q, "source": source, "reason": reason})
+
+    def _call(tool_or_fn, **kwargs):
+        if hasattr(tool_or_fn, "invoke"):
+            return tool_or_fn.invoke(kwargs)
+        return tool_or_fn(**kwargs)
+
+    try:
+        from app.agent.tools import suggest_followup as _suggest_followup
+        fu_raw = _call(_suggest_followup, question=query, answer=(answer or "")[:1200], n=max_n)
+        fu = json.loads(fu_raw) if isinstance(fu_raw, str) else (fu_raw or {})
+        for s in (fu or {}).get("followups", []) or []:
+            if isinstance(s, dict):
+                _add(s.get("question") or s.get("text") or "", "llm_followup",
+                     f"基于实体：{s.get('based_on_entity','')}" if s.get('based_on_entity') else "基于答案的追问")
+            else:
+                _add(str(s), "llm_followup", "基于答案的追问")
+    except Exception as e:
+        logger.debug(f"[followup] suggest_followup failed: {e}")
+
+    try:
+        from app.agent.tools import proactive_explore as _proactive
+        pe_raw = _call(_proactive, question=query, max_concepts=2, neighbor_top_k=4)
+        pe = json.loads(pe_raw) if isinstance(pe_raw, str) else (pe_raw or {})
+        for c in (pe or {}).get("concepts", []) or []:
+            cname = (c.get("concept") or "").strip()
+            if not cname:
+                continue
+            for nb in (c.get("neighbors") or [])[:2]:
+                nm = (nb.get("name") if isinstance(nb, dict) else "") or (nb.get("concept") if isinstance(nb, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{cname}与{nm}有什么关系", "graph_neighbor", f"图谱邻居：{nm}")
+            for up in (c.get("upstream") or [])[:1]:
+                nm = (up.get("name") if isinstance(up, dict) else "") or (up.get("concept") if isinstance(up, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{nm}是如何影响{cname}的", "graph_upstream", f"上游：{nm}")
+            for dn in (c.get("downstream") or [])[:1]:
+                nm = (dn.get("name") if isinstance(dn, dict) else "") or (dn.get("concept") if isinstance(dn, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{cname}对{nm}的影响是什么", "graph_downstream", f"下游：{nm}")
+            if len(out) >= max_n + 4:
+                break
+        for fq in (pe or {}).get("followups", []) or []:
+            if isinstance(fq, str):
+                _add(fq, "llm_followup", "扩散追问")
+    except Exception as e:
+        logger.debug(f"[followup] proactive_explore failed: {e}")
+
+    try:
+        from app.agent.tools import find_knowledge_gaps as _gaps
+        gp_raw = _call(_gaps, question=query, threshold=0.55)
+        gp = json.loads(gp_raw) if isinstance(gp_raw, str) else (gp_raw or {})
+        for g in (gp or {}).get("gaps", []) or []:
+            if isinstance(g, dict):
+                q = g.get("question") or g.get("sub_q") or g.get("text") or ""
+                score = g.get("best_score")
+                reason = f"知识缺口（命中 {score:.2f}）" if isinstance(score, (int, float)) else "知识缺口"
+            else:
+                q, reason = str(g), "知识缺口"
+            _add(q, "gap", reason)
+    except Exception as e:
+        logger.debug(f"[followup] find_knowledge_gaps failed: {e}")
+
+    return out[:max_n]
 
 
 def _log_agent_run(state: dict, final_answer: str, evaluation: dict, runtime: dict, all_chunks: list) -> None:
