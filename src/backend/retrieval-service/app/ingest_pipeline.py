@@ -506,14 +506,18 @@ def record_blindspot(job_id: str, doc_id: str, file_name: str, page: int,
 
 def extract_pdf_native(path: Path, doc_id: str,
                        job_id: str | None = None,
-                       file_name: str = "") -> tuple[list[Block], str] | None:
+                       file_name: str = "",
+                       force_scan_fallback: bool = False) -> tuple[list[Block], str] | None:
     """Try PyMuPDF first; if pages have very little text, signal caller to OCR.
 
-    Streams page-by-page so 905M files don't blow up memory.
-    Also pulls native tables via pdfplumber and merges into the block stream
-    (sorted by page, with text first, then tables — chunker preserves order).
-    Pages with images but very little text are recorded as blindspots so the
-    agent can disclose data gaps instead of confabulating chart values.
+    Streams page-by-page so 905M files don't blow up memory. Pulls native
+    tables via pdfplumber and merges into the block stream. Pages with images
+    but very little text are recorded as blindspots.
+
+    When ``force_scan_fallback`` is True, returns whatever sparse text we got
+    plus a placeholder block per empty page (so chunker has something) and
+    flags every page as a scan_no_ocr blindspot. Used when OCR service is
+    unreachable so the job finishes degraded rather than failing the topology.
     """
     try:
         import fitz  # PyMuPDF
@@ -554,7 +558,32 @@ def extract_pdf_native(path: Path, doc_id: str,
         logger.warning("pymupdf failed: %s", e)
         return None
     if not blocks or (total_text_chars / max(1, n_pages)) < 30:
-        return None  # signal scan / needs OCR
+        if not force_scan_fallback:
+            return None  # signal scan / needs OCR
+        # Degraded path: surface whatever sparse text we got + placeholders
+        # for empty pages, and flag every page as scan_no_ocr.
+        logger.warning("native fallback: %d pages, %d total chars (avg %.1f) — degraded mode",
+                       n_pages, total_text_chars, total_text_chars / max(1, n_pages))
+        seen_pages = {b.page for b in blocks}
+        for pi in range(1, n_pages + 1):
+            if pi not in seen_pages:
+                blocks.append(Block(
+                    doc_id=doc_id, page=pi,
+                    block_id=f"p{pi}_scan_placeholder",
+                    type="caption",
+                    text=f"[第{pi}页：扫描图未OCR，原始文本为空]",
+                    metadata={"scan_no_ocr": True},
+                ))
+        if job_id:
+            existing_pages = {bs["page"] for bs in blindspots}
+            for pi in range(1, n_pages + 1):
+                if pi in existing_pages:
+                    continue
+                blindspots.append({
+                    "page": pi, "kind": "scan_no_ocr",
+                    "reason": "OCR service unreachable; native PDF text is sparse",
+                    "image_count": 0, "text_chars": 0,
+                })
 
     # native PDF: also try to pull tables (best-effort, never fatal)
     try:
@@ -579,15 +608,25 @@ def extract_pdf_native(path: Path, doc_id: str,
     return blocks, "pymupdf"
 
 
-async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str) -> tuple[list[Block], str]:
+async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str,
+                                       job_id: str | None = None) -> tuple[list[Block], str]:
+    """Call OCR service, then convert PaddleOCR result -> IngestDocument
+    -> legacy Block stream. Consumes text_blocks / tables / figures so
+    PPStructure output is no longer thrown away.
+
+    On unreachable OCR / non-2xx response, degrades to extract_pdf_native
+    with force_scan_fallback=True so the pipeline never hard-fails.
+    """
     import httpx
+    from app.ingest_schema import from_paddle_ocr_json, to_legacy_blocks
+
     ocr_url = os.environ.get("OCR_SERVICE_URL", "http://localhost:8001")
     suffix = path.suffix.lower()
     endpoint = "/ocr/pdf" if suffix == ".pdf" else "/ocr/image"
-    blocks: list[Block] = []
-    pages_seen = 0
+
     try:
-        async with httpx.AsyncClient(timeout=600.0) as client:
+        async with httpx.AsyncClient(timeout=600.0,
+                                     transport=httpx.AsyncHTTPTransport(proxy=None)) as client:
             with open(path, "rb") as fh:
                 r = await client.post(
                     f"{ocr_url}{endpoint}",
@@ -596,21 +635,59 @@ async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str) 
         if r.status_code != 200:
             raise RuntimeError(f"OCR HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
-        pages = data.get("pages") or []
-        pages_seen = len(pages)
-        for pi, p in enumerate(pages):
-            txt = p.get("text") or p.get("ocr_text") or ""
-            page_no = p.get("page") or (pi + 1)
-            for bi, para in enumerate(s.strip() for s in txt.split("\n\n")):
-                if para and len(para) > 4:
-                    blocks.append(Block(
-                        doc_id=doc_id, page=page_no,
-                        block_id=f"p{page_no}_b{bi}",
-                        type="text", text=para,
-                        metadata={"ocr": True},
-                    ))
     except Exception as e:
-        raise RuntimeError(f"ocr extract failed: {e}")
+        logger.warning("OCR unreachable / failed (%s); falling back to native + scan_no_ocr blindspots",
+                       type(e).__name__)
+        if suffix == ".pdf":
+            res = extract_pdf_native(path, doc_id, job_id=job_id, file_name=file_name,
+                                     force_scan_fallback=True)
+            if res:
+                blocks, _extractor = res
+                return blocks, "scan_no_ocr_fallback"
+        # Image with no OCR: emit one caption block + a blindspot so the
+        # job finishes degraded instead of crashing.
+        if job_id:
+            try:
+                record_blindspot(
+                    job_id=job_id, doc_id=doc_id, file_name=file_name,
+                    page=1, kind="scan_no_ocr",
+                    reason="OCR service unreachable; image cannot be parsed",
+                    image_count=1, text_chars=0,
+                )
+            except Exception:
+                pass
+        return [Block(
+            doc_id=doc_id, page=1, block_id="p1_scan_placeholder",
+            type="caption",
+            text=f"[图像 {file_name}：OCR 服务不可达，未识别文字]",
+            metadata={"scan_no_ocr": True},
+        )], "scan_no_ocr_fallback"
+
+    # Convert via schema → blocks
+    doc = from_paddle_ocr_json(data, doc_id=doc_id, file_name=file_name)
+    blocks = to_legacy_blocks(doc)
+
+    # Persist blindspots for any page that has only figure/caption blocks
+    # (pure chart pages) so the agent can disclose data gaps.
+    if job_id:
+        for page in doc.pages:
+            text_blocks = [b for b in page.blocks if b.type == "text" and len(b.text.strip()) >= 20]
+            fig_blocks = [b for b in page.blocks if b.type == "figure"]
+            if fig_blocks and not text_blocks:
+                try:
+                    record_blindspot(
+                        job_id=job_id, doc_id=doc_id, file_name=file_name,
+                        page=page.page,
+                        kind="chart" if len(fig_blocks) == 1 else "figure",
+                        reason=f"OCR found {len(fig_blocks)} figure(s) but no text on page",
+                        image_count=len(fig_blocks),
+                        text_chars=sum(len((b.text or "").strip()) for b in page.blocks),
+                    )
+                except Exception as e:
+                    logger.debug("blindspot record skipped: %s", e)
+
+    logger.info("OCR adapter: %d pages -> %d blocks (text/table/figure split)",
+                len(doc.pages), len(blocks))
     return blocks, "ocr_paddle"
 
 
@@ -777,9 +854,11 @@ async def run_ingest_job(job_id: str) -> None:
                 blocks, extractor = res
             else:
                 # scanned PDF → OCR
-                blocks, extractor = await extract_pdf_or_image_via_ocr(file_path, doc_id, file_name)
+                blocks, extractor = await extract_pdf_or_image_via_ocr(
+                    file_path, doc_id, file_name, job_id=job_id)
         elif suffix in (".png", ".jpg", ".jpeg"):
-            blocks, extractor = await extract_pdf_or_image_via_ocr(file_path, doc_id, file_name)
+            blocks, extractor = await extract_pdf_or_image_via_ocr(
+                file_path, doc_id, file_name, job_id=job_id)
         else:
             raise RuntimeError(f"unsupported extension: {suffix}")
 
