@@ -6,8 +6,11 @@ FastAPI 路由定义
 import uuid
 import re
 import logging
+import os
+import time
+import json
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
 from datetime import datetime
 from langchain_core.messages import HumanMessage
 
@@ -1424,3 +1427,259 @@ def _diagnose_blindspot(members: list[dict], avg_chunks: float, avg_conf: float)
     if avg_conf < 0.4:
         return "命中但答非所问 — chunk 与问题语义错位，建议优化 chunk 切分或父节摘要"
     return "答案质量弱 — 综合表现偏低，需进一步分析"
+
+
+# ── Agent traces (#67) ────────────────────────────────────────────────────────
+
+@router.get("/api/v1/agent/traces")
+async def list_agent_traces(limit: int = 50):
+    from app.agent.trace import list_traces
+    return {"traces": list_traces(limit=max(1, min(200, int(limit))))}
+
+
+@router.get("/api/v1/agent/trace/{trace_id}")
+async def get_agent_trace(trace_id: str):
+    from app.agent.trace import get_trace
+    t = get_trace(trace_id)
+    if not t:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="trace not found")
+    return t
+
+
+# ── OCR pipeline (#63) ────────────────────────────────────────────────────────
+
+import asyncio as _pl_asyncio
+import shutil as _pl_shutil
+import uuid as _pl_uuid
+from pathlib import Path as _PlPath
+
+_PIPELINE_DIR = _PlPath(os.environ.get("RAG_PIPELINE_JOBS_DIR",
+                                        "/home/l/rag-dashboard/data/pipeline_jobs"))
+_PIPELINE_DIR.mkdir(parents=True, exist_ok=True)
+_UPLOAD_DIR = _PlPath(os.environ.get("RAG_PIPELINE_UPLOAD_DIR",
+                                      "/home/l/rag-dashboard/data/uploads"))
+_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _pl_write(job_id: str, payload: dict) -> None:
+    try:
+        (_PIPELINE_DIR / f"{job_id}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, default=str)
+        )
+    except Exception as e:
+        logger.warning(f"[pipeline] write {job_id}: {e}")
+
+
+def _pl_read(job_id: str) -> dict | None:
+    fp = _PIPELINE_DIR / f"{job_id}.json"
+    if not fp.exists():
+        return None
+    try:
+        return json.loads(fp.read_text())
+    except Exception:
+        return None
+
+
+def _pl_update(job_id: str, **patch) -> None:
+    cur = _pl_read(job_id) or {}
+    cur.update(patch)
+    cur["updated_ts"] = time.time()
+    _pl_write(job_id, cur)
+
+
+async def _run_pipeline_job(job_id: str, file_path: str, file_name: str) -> None:
+    """Background pipeline: OCR → chunk → embed → ingest. Best-effort, robust."""
+    import httpx as _httpx
+    started = time.time()
+    _pl_update(job_id, status="ocr", stage_started_ts=started, file_path=file_path)
+    text = ""
+    ocr_pages = 0
+    suffix = file_path.lower()
+
+    # Stage 1: OCR (only for image/pdf). For .txt/.md just read.
+    try:
+        if suffix.endswith((".txt", ".md")):
+            text = _PlPath(file_path).read_text(encoding="utf-8", errors="ignore")
+        elif suffix.endswith((".pdf", ".png", ".jpg", ".jpeg")):
+            ocr_url = os.environ.get("OCR_SERVICE_URL", "http://localhost:8001")
+            endpoint = "/ocr/pdf" if suffix.endswith(".pdf") else "/ocr/image"
+            try:
+                async with _httpx.AsyncClient(timeout=180.0) as client:
+                    with open(file_path, "rb") as fh:
+                        r = await client.post(
+                            f"{ocr_url}{endpoint}",
+                            files={"file": (file_name, fh)},
+                        )
+                if r.status_code == 200:
+                    data = r.json()
+                    pages = data.get("pages") or []
+                    text_parts = []
+                    for p in pages:
+                        t = p.get("text") or p.get("ocr_text") or ""
+                        if t:
+                            text_parts.append(t)
+                    text = "\n\n".join(text_parts)
+                    ocr_pages = len(pages)
+                else:
+                    _pl_update(job_id, ocr_warning=f"OCR returned {r.status_code}: {r.text[:200]}")
+            except Exception as oe:
+                _pl_update(job_id, ocr_warning=f"OCR call failed: {oe}", ocr_unavailable=True)
+                # Fallback: skip OCR, treat as empty if PDF; for unsupported formats abort
+                text = ""
+        else:
+            _pl_update(job_id, status="failed", error=f"unsupported extension: {suffix}")
+            return
+    except Exception as e:
+        _pl_update(job_id, status="failed", error=f"ocr stage failed: {e}")
+        return
+
+    if not text.strip():
+        _pl_update(
+            job_id,
+            status="failed",
+            error="no extractable text (OCR unavailable or empty document)",
+            ocr_pages=ocr_pages,
+        )
+        return
+
+    _pl_update(job_id, status="ingest", text_chars=len(text), ocr_pages=ocr_pages)
+
+    # Stage 2: ingest into PG + Qdrant. Use existing rag_pipeline if available.
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn, _get_embedding_svc
+        chunks = _split_text_for_pipeline(text, max_chars=400)
+        emb = _get_embedding_svc()
+        conn = _get_pg_conn()
+        try:
+            conn.autocommit = False
+            with conn.cursor() as cur:
+                # ensure document_registry row exists
+                doc_id = job_id
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO document_registry (doc_id, file_name, total_chunks, ingested_at)
+                        VALUES (%s, %s, %s, NOW())
+                        ON CONFLICT (doc_id) DO UPDATE SET total_chunks = EXCLUDED.total_chunks
+                        """,
+                        (doc_id, file_name, len(chunks)),
+                    )
+                except Exception:
+                    conn.rollback()
+
+                inserted = 0
+                for i, chunk in enumerate(chunks):
+                    try:
+                        vec = emb.encode(chunk)
+                        try:
+                            vec_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+                        except Exception:
+                            vec_list = list(vec)
+                        cur.execute(
+                            """
+                            INSERT INTO text_chunks (doc_id, file_name, chunk_index, content,
+                                                     section, metadata, embedding, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, NOW())
+                            """,
+                            (doc_id, file_name, i, chunk, "",
+                             json.dumps({"source": "pipeline_upload", "job_id": job_id}),
+                             vec_list),
+                        )
+                        inserted += 1
+                    except Exception as ce:
+                        conn.rollback()
+                        logger.warning(f"[pipeline {job_id}] chunk {i} insert failed: {ce}")
+                conn.commit()
+        finally:
+            _put_pg_conn(conn)
+
+        _pl_update(
+            job_id,
+            status="done",
+            chunks_total=len(chunks),
+            chunks_inserted=inserted,
+            doc_id=doc_id,
+            duration_ms=int((time.time() - started) * 1000),
+        )
+    except Exception as e:
+        _pl_update(job_id, status="failed", error=f"ingest failed: {e}",
+                   duration_ms=int((time.time() - started) * 1000))
+
+
+def _split_text_for_pipeline(text: str, max_chars: int = 400) -> list[str]:
+    """Naive paragraph-aware splitter (no external deps)."""
+    paragraphs = [p.strip() for p in text.replace("\r", "").split("\n\n") if p.strip()]
+    out: list[str] = []
+    buf = ""
+    for p in paragraphs:
+        if not buf:
+            buf = p
+        elif len(buf) + len(p) + 2 <= max_chars:
+            buf = buf + "\n\n" + p
+        else:
+            out.append(buf)
+            if len(p) <= max_chars:
+                buf = p
+            else:
+                # hard split long paragraph
+                for k in range(0, len(p), max_chars):
+                    out.append(p[k:k + max_chars])
+                buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+@router.post("/api/v1/pipeline/upload")
+async def pipeline_upload(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    """Accept a file (pdf/image/txt/md), kick off OCR → chunk → embed → ingest pipeline."""
+    job_id = _pl_uuid.uuid4().hex[:16]
+    fname = file.filename or f"upload_{job_id}.bin"
+    safe_name = "".join(c for c in fname if c.isalnum() or c in "._-")[:120] or f"u_{job_id}"
+    dest = _UPLOAD_DIR / f"{job_id}_{safe_name}"
+    try:
+        with open(dest, "wb") as fh:
+            _pl_shutil.copyfileobj(file.file, fh)
+    except Exception as e:
+        return {"ok": False, "error": f"save failed: {e}"}
+    finally:
+        await _pl_asyncio.shield(_pl_asyncio.sleep(0))
+    size = dest.stat().st_size if dest.exists() else 0
+    _pl_write(job_id, {
+        "job_id": job_id,
+        "file_name": fname,
+        "file_size": size,
+        "status": "queued",
+        "created_ts": time.time(),
+    })
+    if background_tasks is None:
+        # Fallback: run inline in another thread
+        _pl_asyncio.create_task(_run_pipeline_job(job_id, str(dest), fname))
+    else:
+        background_tasks.add_task(_run_pipeline_job, job_id, str(dest), fname)
+    return {"ok": True, "job_id": job_id, "file_name": fname, "size": size, "status": "queued"}
+
+
+@router.get("/api/v1/pipeline/jobs")
+async def list_pipeline_jobs(limit: int = 50):
+    if not _PIPELINE_DIR.exists():
+        return {"jobs": []}
+    files = sorted(_PIPELINE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = files[: max(1, min(200, int(limit)))]
+    jobs = []
+    for fp in files:
+        try:
+            jobs.append(json.loads(fp.read_text()))
+        except Exception:
+            continue
+    return {"jobs": jobs}
+
+
+@router.get("/api/v1/pipeline/job/{job_id}")
+async def get_pipeline_job(job_id: str):
+    j = _pl_read(job_id)
+    if not j:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="job not found")
+    return j

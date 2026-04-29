@@ -226,3 +226,105 @@ export async function getLearningBlindspots(minSize = 2): Promise<BlindspotRespo
     return r.ok ? r.json() : null;
   } catch { return null; }
 }
+
+// ── Agent traces (R9) ────────────────────────────────────────────────────────
+
+export interface AgentTraceSummary {
+  trace_id: string;
+  query: string;
+  started_ts: number;
+  ended_ts?: number;
+  duration_ms?: number;
+  node_count: number;
+  answer_preview?: string;
+  query_type?: string;
+  iterations?: number;
+}
+
+export interface AgentTraceNode {
+  version: number;
+  node: string;
+  ts: number;
+  latency_ms: number;
+  iteration_at_entry?: number;
+  delta_keys: string[];
+  delta_summary: Record<string, unknown>;
+  tool_calls: Array<{ tool: string; args?: unknown; status?: string; duration_ms?: number }>;
+  error?: string;
+}
+
+export interface AgentTrace {
+  trace_id: string;
+  query: string;
+  started_ts: number;
+  ended_ts?: number;
+  duration_ms?: number;
+  nodes: AgentTraceNode[];
+  query_type?: string;
+  iterations?: number;
+  answer_preview?: string;
+}
+
+export async function getAgentTraces(limit = 30): Promise<AgentTraceSummary[]> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/agent/traces?limit=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.traces || [];
+  } catch { return []; }
+}
+
+export async function getAgentTrace(id: string): Promise<AgentTrace | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/agent/trace/${id}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Pipeline jobs (R10) ──────────────────────────────────────────────────────
+
+export interface PipelineJob {
+  job_id: string;
+  file_name: string;
+  file_size?: number;
+  status: 'queued' | 'ocr' | 'chunk' | 'embed' | 'ingest' | 'done' | 'failed';
+  created_ts: number;
+  updated_ts?: number;
+  duration_ms?: number;
+  ocr_pages?: number;
+  text_chars?: number;
+  chunks_total?: number;
+  chunks_inserted?: number;
+  doc_id?: string;
+  error?: string;
+  ocr_unavailable?: boolean;
+}
+
+export async function pipelineUpload(file: File): Promise<{ ok: boolean; job_id?: string; error?: string }> {
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/upload`, { method: 'POST', body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: d.detail || `HTTP ${r.status}` };
+    return { ok: true, job_id: d.job_id };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'network error' };
+  }
+}
+
+export async function getPipelineJobs(limit = 50): Promise<PipelineJob[]> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/jobs?limit=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.jobs || [];
+  } catch { return []; }
+}
+
+export async function getPipelineJob(id: string): Promise<PipelineJob | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/job/${id}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}

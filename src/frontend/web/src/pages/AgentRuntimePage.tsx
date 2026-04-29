@@ -12,6 +12,10 @@ import {
 } from 'recharts';
 import { useAgent } from '../hooks/useAgent';
 import { useRunStore } from '../stores/useRunStore';
+import {
+  getAgentTraces, getAgentTrace,
+  AgentTraceSummary, AgentTrace,
+} from '../services/metricsApi';
 import './AgentRuntimePage.css';
 
 const HISTORY_KEY = 'rag.agent.runtime.history.v1';
@@ -73,6 +77,29 @@ export function AgentRuntimePage() {
   const [input, setInput] = useState('安装工程消耗量标准中送配电装置系统调试的计算规则是什么?');
   const [history, setHistory] = useState<RunSnapshot[]>(() => loadHistory());
   const [viewing, setViewing] = useState<RunSnapshot | null>(null);
+
+  // R9: server-side traces (persisted node trajectory)
+  const [serverTraces, setServerTraces] = useState<AgentTraceSummary[]>([]);
+  const [selectedTrace, setSelectedTrace] = useState<AgentTrace | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      const list = await getAgentTraces(30);
+      if (alive) setServerTraces(list);
+    };
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  const handleSelectTrace = async (id: string) => {
+    setTraceLoading(true);
+    const t = await getAgentTrace(id);
+    setSelectedTrace(t);
+    setTraceLoading(false);
+  };
 
   // 当一次 run 完成时，把当前 useRunStore 快照写入历史
   useEffect(() => {
@@ -314,6 +341,103 @@ export function AgentRuntimePage() {
               <pre className="answer-box">{display.answer}</pre>
             ) : (
               <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
+            )}
+          </section>
+
+          {/* R9: Node Trajectory — server-persisted per-node version/latency/delta */}
+          <section className="panel">
+            <div className="panel-head">
+              <h3>
+                节点轨迹 · Node Trajectory
+                {selectedTrace && (
+                  <span className="muted small" style={{ marginLeft: 8 }}>
+                    trace {selectedTrace.trace_id.slice(0, 8)} · {selectedTrace.nodes.length} 节点 · {selectedTrace.duration_ms ?? 0}ms
+                  </span>
+                )}
+              </h3>
+              {selectedTrace && (
+                <button className="link-danger" onClick={() => setSelectedTrace(null)}>关闭</button>
+              )}
+            </div>
+            {traceLoading ? (
+              <p className="muted small">加载中…</p>
+            ) : !selectedTrace ? (
+              <p className="muted small">从下方"服务端历史"选择一次运行查看节点级 version / latency / state-delta / tool 调用。</p>
+            ) : (
+              <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
+                {selectedTrace.nodes.map((n) => (
+                  <li key={n.version} style={{
+                    border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 6,
+                    background: n.error ? '#fef2f2' : '#fff',
+                  }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ background: '#0ea5e9', color: '#fff', padding: '1px 7px', borderRadius: 8, fontSize: 11 }}>
+                        v{n.version}
+                      </span>
+                      <code style={{ color: '#0f172a', fontWeight: 600 }}>{n.node}</code>
+                      <span className="muted small">{n.latency_ms}ms</span>
+                      {n.iteration_at_entry != null && (
+                        <span className="muted small">iter={n.iteration_at_entry}</span>
+                      )}
+                      {n.tool_calls.length > 0 && (
+                        <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '1px 6px', borderRadius: 6, fontSize: 11 }}>
+                          {n.tool_calls.length} tool
+                        </span>
+                      )}
+                      {n.error && <span style={{ color: '#dc2626', fontSize: 12 }}>⚠ {n.error}</span>}
+                    </div>
+                    {n.delta_keys.length > 0 && (
+                      <div className="muted small" style={{ marginTop: 4 }}>
+                        Δ {n.delta_keys.map((k) => {
+                          const summary = (n.delta_summary || {})[k];
+                          return (
+                            <code key={k} style={{ marginRight: 6, background: '#f1f5f9', padding: '0 4px', borderRadius: 3 }}>
+                              {k}{summary != null ? `=${typeof summary === 'object' ? JSON.stringify(summary) : String(summary)}` : ''}
+                            </code>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {n.tool_calls.length > 0 && (
+                      <div className="muted small" style={{ marginTop: 4 }}>
+                        {n.tool_calls.map((tc, i) => (
+                          <span key={i} style={{ marginRight: 8 }}>
+                            🔧 <code>{tc.tool}</code>{tc.duration_ms != null ? ` (${tc.duration_ms}ms)` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          {/* R9: Server Trace History */}
+          <section className="panel">
+            <div className="panel-head">
+              <h3>服务端历史 · Server Traces <span className="muted">({serverTraces.length})</span></h3>
+            </div>
+            {serverTraces.length === 0 ? (
+              <p className="muted small">暂无服务端持久化轨迹。运行一次 agent 即可生成。</p>
+            ) : (
+              <ul className="history-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
+                {serverTraces.map((t) => (
+                  <li
+                    key={t.trace_id}
+                    className={selectedTrace?.trace_id === t.trace_id ? 'active' : ''}
+                    onClick={() => handleSelectTrace(t.trace_id)}
+                  >
+                    <div className="hist-q">{t.query}</div>
+                    <div className="hist-meta">
+                      <span>{new Date(t.started_ts * 1000).toLocaleTimeString()}</span>
+                      <span>{t.node_count} 节点</span>
+                      {t.iterations != null && <span>{t.iterations} 迭代</span>}
+                      {t.duration_ms != null && <span>{t.duration_ms}ms</span>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
         </main>

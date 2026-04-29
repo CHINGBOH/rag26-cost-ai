@@ -3870,17 +3870,19 @@ def build_agent_graph(checkpointer=None):
     """
     g = StateGraph(RAGAgentState)
 
-    g.add_node("query_analysis", query_analysis_node)
-    g.add_node("intent_guard_node", intent_guard_node)
-    g.add_node("navigator_node", navigator_node)
-    g.add_node("planner_node", planner_node)
-    g.add_node("executor_node", executor_node)
-    g.add_node("tool_node", tool_node)
-    g.add_node("chapter_resolver", chapter_resolver_node)
-    g.add_node("synthesize_node", synthesize_node)
-    g.add_node("contract_verifier_node", contract_verifier_node)
-    g.add_node("corrective_action_node", corrective_action_node)
-    g.add_node("presentation_policy_node", presentation_policy_node)
+    from app.agent.trace import wrap_node as _tw
+
+    g.add_node("query_analysis", _tw("query_analysis", query_analysis_node))
+    g.add_node("intent_guard_node", _tw("intent_guard_node", intent_guard_node))
+    g.add_node("navigator_node", _tw("navigator_node", navigator_node))
+    g.add_node("planner_node", _tw("planner_node", planner_node))
+    g.add_node("executor_node", _tw("executor_node", executor_node))
+    g.add_node("tool_node", _tw("tool_node", tool_node))
+    g.add_node("chapter_resolver", _tw("chapter_resolver", chapter_resolver_node))
+    g.add_node("synthesize_node", _tw("synthesize_node", synthesize_node))
+    g.add_node("contract_verifier_node", _tw("contract_verifier_node", contract_verifier_node))
+    g.add_node("corrective_action_node", _tw("corrective_action_node", corrective_action_node))
+    g.add_node("presentation_policy_node", _tw("presentation_policy_node", presentation_policy_node))
 
     g.set_entry_point("query_analysis")
 

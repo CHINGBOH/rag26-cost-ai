@@ -71,3 +71,6 @@ class RAGAgentState(TypedDict):
     root_cause_node: str                     # 重放目标节点，由 trace_root_cause 设定
     tool_fallback_level: int                 # 工具降级深度，default 0
     used_tool_categories: list[str]          # 已尝试工具类别，防重复
+
+    # Trace recorder (#67)
+    trace_id: str
