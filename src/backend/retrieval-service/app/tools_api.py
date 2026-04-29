@@ -50,6 +50,15 @@ _CATEGORIES: Dict[str, str] = {
     "price_trend":       "pricing",
     "calculator":        "compute",
     "python_eval":       "compute",
+    # ── schema-aware data backbone (domain-neutral) ─────────────
+    "list_tables":       "data",
+    "describe_table":    "data",
+    "sql_query":         "data",
+    "aggregate_query":   "data",
+    "list_documents":    "data",
+    "fetch_chunk":       "data",
+    "similar_chunks":    "data",
+    "stats_overview":    "data",
 }
 
 _EXAMPLES: Dict[str, Dict[str, Any]] = {
@@ -68,6 +77,15 @@ _EXAMPLES: Dict[str, Dict[str, Any]] = {
     "price_trend":     {"material_name": "水泥", "start_month": "2025-10", "end_month": "2026-01"},
     "calculator":      {"expression": "1234 * 0.85"},
     "python_eval":     {"code": "result = 1 + 1", "chunks_json": "[]"},
+    # ── data backbone examples ──────────────────────────────────
+    "list_tables":     {},
+    "describe_table":  {"table": "price_records"},
+    "sql_query":       {"sql": "SELECT material_name, price_tax_included FROM price_records WHERE year_month='2026-01' LIMIT 10", "max_rows": 10},
+    "aggregate_query": {"table": "price_records", "group_by": "year_month", "agg": "avg", "agg_column": "price_tax_included", "where": "", "order_desc": True, "top_k": 12},
+    "list_documents":  {"name_like": "", "limit": 20},
+    "fetch_chunk":     {"chunk_id": "tc_1", "with_neighbors": True},
+    "similar_chunks":  {"chunk_id": "tc_1", "top_k": 5},
+    "stats_overview":  {},
 }
 
 

@@ -4409,3 +4409,460 @@ def get_catalog_map(query: str, top_k: int = 12) -> str:
     finally:
         if conn is not None:
             _put_pg_conn(conn)
+
+
+# ===========================================================================
+# Schema-aware domain-neutral data backbone tools
+# ---------------------------------------------------------------------------
+# These tools are deliberately field-name-agnostic so the same agent toolbox
+# works on any structured corpus (construction prices today, annual reports
+# tomorrow). They introspect schema instead of hardcoding column names.
+# ===========================================================================
+
+# Whitelist of tables this toolbox is allowed to query. Add new domain tables
+# here; nothing outside the whitelist is reachable through these tools.
+_QUERYABLE_TABLES = {
+    "text_chunks",
+    "catalog_index",
+    "document_registry",
+    "price_records",
+    "fee_rates",
+    "trend_points",
+    "trend_relations",
+}
+
+# Forbidden SQL keywords (case-insensitive) for sql_query. Anything matching
+# is rejected before reaching PG. Read-only role would be ideal but rag_user
+# is a single shared role so we enforce at the application layer.
+_SQL_FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|"
+    r"COPY|CREATE|MERGE|VACUUM|ANALYZE|REINDEX|CLUSTER|LOCK|"
+    r"SET|RESET|CALL|DO|EXECUTE|PREPARE|DEALLOCATE|LISTEN|NOTIFY|"
+    r"BEGIN|COMMIT|ROLLBACK|SAVEPOINT)\b",
+    re.IGNORECASE,
+)
+
+
+def _safe_table(table: str) -> str | None:
+    """Return canonical table name if whitelisted, else None."""
+    t = (table or "").strip().lower()
+    if t in _QUERYABLE_TABLES:
+        return t
+    return None
+
+
+@tool
+def list_tables() -> str:
+    """列出工具箱可查询的所有表及行数。领域无关，自描述数据库内容。"""
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        results = []
+        with conn.cursor() as cur:
+            for tbl in sorted(_QUERYABLE_TABLES):
+                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                row_count = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=%s",
+                    (tbl,),
+                )
+                cols = [r[0] for r in cur.fetchall()]
+                results.append({
+                    "table": tbl,
+                    "row_count": int(row_count or 0),
+                    "column_count": len(cols),
+                    "columns_preview": cols[:6],
+                })
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[list_tables] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def describe_table(table: str) -> str:
+    """给定表名返回完整字段列表（名称、类型、是否可空）。用于 agent 写查询前自我探索。"""
+    canonical = _safe_table(table)
+    if canonical is None:
+        return json.dumps({"error": f"table '{table}' not in whitelist"})
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=%s "
+                "ORDER BY ordinal_position",
+                (canonical,),
+            )
+            cols = [
+                {
+                    "name": r[0],
+                    "type": r[1],
+                    "nullable": (r[2] == "YES"),
+                    "default": r[3],
+                }
+                for r in cur.fetchall()
+            ]
+            cur.execute(f"SELECT COUNT(*) FROM {canonical}")
+            row_count = int(cur.fetchone()[0] or 0)
+        return json.dumps(
+            {"table": canonical, "row_count": row_count, "columns": cols},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[describe_table] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def sql_query(sql: str, max_rows: int = 50) -> str:
+    """执行只读 SELECT。安全约束：单条 SELECT、禁 DDL/DML、强制 LIMIT≤200。
+
+    例：SELECT material_name, price FROM price_records WHERE year_month='2026-01' LIMIT 10
+    换皮场景：SELECT company, revenue FROM annual_reports WHERE year=2024 LIMIT 10
+    """
+    if not sql or not sql.strip():
+        return json.dumps({"error": "empty sql"})
+
+    cleaned = sql.strip().rstrip(";").strip()
+
+    # 必须以 SELECT 或 WITH 开头
+    head = cleaned[:6].upper()
+    if head not in ("SELECT", "WITH  ") and not cleaned.upper().startswith("WITH "):
+        if not cleaned.upper().startswith("SELECT"):
+            return json.dumps({"error": "only SELECT/WITH queries are allowed"})
+
+    # 禁多语句
+    if ";" in cleaned:
+        return json.dumps({"error": "multiple statements forbidden"})
+
+    # 禁危险关键字
+    if _SQL_FORBIDDEN.search(cleaned):
+        return json.dumps({"error": "forbidden keyword detected"})
+
+    cap = max(1, min(int(max_rows or 50), 200))
+    # 若用户 SQL 已经写了 LIMIT，则保留；否则附加
+    if not re.search(r"\blimit\b", cleaned, re.IGNORECASE):
+        cleaned = f"{cleaned} LIMIT {cap}"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(cleaned)
+            cols = [d[0] for d in (cur.description or [])]
+            rows = cur.fetchmany(cap)
+            data = [
+                {col: (v.isoformat() if hasattr(v, "isoformat") else v)
+                 for col, v in zip(cols, row)}
+                for row in rows
+            ]
+        return json.dumps(
+            {"columns": cols, "row_count": len(data), "rows": data},
+            ensure_ascii=False, default=str,
+        )
+    except Exception as e:
+        logger.error(f"[sql_query] error: {e} sql={cleaned[:200]}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn, error=True)
+
+
+@tool
+def aggregate_query(
+    table: str,
+    group_by: str = "",
+    agg: str = "count",
+    agg_column: str = "",
+    where: str = "",
+    order_desc: bool = True,
+    top_k: int = 20,
+) -> str:
+    """通用结构化聚合。agg ∈ {count,sum,avg,min,max}。where 是无引号的安全片段（仅 = 比较）。
+
+    例 1（建筑造价）: aggregate_query(table='price_records', group_by='year_month', agg='avg', agg_column='price_tax_included')
+    例 2（年报场景）: aggregate_query(table='annual_reports',  group_by='industry',   agg='sum', agg_column='revenue')
+    """
+    canonical = _safe_table(table)
+    if canonical is None:
+        return json.dumps({"error": f"table '{table}' not in whitelist"})
+
+    agg_lower = (agg or "count").strip().lower()
+    if agg_lower not in {"count", "sum", "avg", "min", "max"}:
+        return json.dumps({"error": f"unsupported agg '{agg}'"})
+
+    # column safety: alphanumeric/underscore only
+    def _safe_col(c: str) -> bool:
+        return bool(c) and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", c))
+
+    group = (group_by or "").strip()
+    if group and not _safe_col(group):
+        return json.dumps({"error": "invalid group_by"})
+
+    if agg_lower != "count":
+        if not _safe_col(agg_column):
+            return json.dumps({"error": "agg_column required for non-count"})
+        agg_expr = f"{agg_lower.upper()}({agg_column})"
+    else:
+        agg_expr = "COUNT(*)"
+
+    # WHERE: very limited; only equality of safe column to a literal
+    where_sql = ""
+    where_params: list = []
+    if where:
+        m = re.fullmatch(
+            r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^';]{0,80})'\s*",
+            where,
+        )
+        if not m:
+            return json.dumps({"error": "where must be: col='value' (single equality)"})
+        where_sql = f"WHERE {m.group(1)} = %s"
+        where_params = [m.group(2)]
+
+    cap = max(1, min(int(top_k or 20), 200))
+    direction = "DESC" if order_desc else "ASC"
+
+    if group:
+        sql = (
+            f"SELECT {group} AS bucket, {agg_expr} AS value "
+            f"FROM {canonical} {where_sql} "
+            f"GROUP BY {group} ORDER BY value {direction} LIMIT {cap}"
+        )
+    else:
+        sql = f"SELECT {agg_expr} AS value FROM {canonical} {where_sql}"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, where_params)
+            cols = [d[0] for d in (cur.description or [])]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return json.dumps(
+            {"sql": sql, "rows": rows, "row_count": len(rows)},
+            ensure_ascii=False, default=str,
+        )
+    except Exception as e:
+        logger.error(f"[aggregate_query] error: {e} sql={sql}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn, error=True)
+
+
+@tool
+def list_documents(
+    name_like: str = "",
+    limit: int = 20,
+) -> str:
+    """列出已入库文档（document_registry）。可按文件名模糊过滤。领域无关。"""
+    cap = max(1, min(int(limit or 20), 100))
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            # 自适应字段：取所有列再返回，确保换皮场景仍有用
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='document_registry' "
+                "ORDER BY ordinal_position"
+            )
+            all_cols = [r[0] for r in cur.fetchall()]
+            select_list = ", ".join(all_cols) if all_cols else "*"
+            params: list = []
+            where = ""
+            if name_like and "file_name" in all_cols:
+                where = "WHERE file_name ILIKE %s"
+                params.append(f"%{name_like}%")
+            cur.execute(
+                f"SELECT {select_list} FROM document_registry {where} LIMIT %s",
+                params + [cap],
+            )
+            cols = [d[0] for d in (cur.description or [])]
+            rows = [
+                {c: (v.isoformat() if hasattr(v, "isoformat") else v)
+                 for c, v in zip(cols, r)}
+                for r in cur.fetchall()
+            ]
+        return json.dumps({"row_count": len(rows), "rows": rows},
+                          ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[list_documents] error: {e}")
+        return json.dumps({"error": str(e), "rows": []})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def fetch_chunk(chunk_id: str, with_neighbors: bool = True) -> str:
+    """按 chunk_id 取完整 chunk，可同时返回同文档前后 2 条邻居。
+
+    chunk_id 可为 'tc_123' 或纯数字。
+    """
+    raw_id = (chunk_id or "").strip()
+    if raw_id.startswith("tc_"):
+        raw_id = raw_id[3:]
+    if not raw_id.isdigit():
+        return json.dumps({"error": "invalid chunk_id"})
+    pk = int(raw_id)
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, doc_id, page_number, content, metadata "
+                "FROM text_chunks WHERE id=%s",
+                (pk,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return json.dumps({"error": "not found"})
+            main = {
+                "chunk_id": f"tc_{row[0]}",
+                "doc_id": str(row[1] or ""),
+                "page_number": row[2],
+                "content": row[3] or "",
+                "metadata": row[4] or {},
+            }
+            neighbors: list = []
+            if with_neighbors:
+                cur.execute(
+                    "SELECT id, page_number, content FROM text_chunks "
+                    "WHERE doc_id=%s AND id<>%s "
+                    "ORDER BY ABS(id-%s) LIMIT 4",
+                    (row[1], pk, pk),
+                )
+                for n in cur.fetchall():
+                    neighbors.append({
+                        "chunk_id": f"tc_{n[0]}",
+                        "page_number": n[1],
+                        "content": (n[2] or "")[:300],
+                    })
+        return json.dumps({"chunk": main, "neighbors": neighbors},
+                          ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[fetch_chunk] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def similar_chunks(chunk_id: str, top_k: int = 5) -> str:
+    """给定 chunk_id 用 pgvector 找余弦最相似的其它 chunk。用于推荐/去重/盲点发现。"""
+    raw_id = (chunk_id or "").strip()
+    if raw_id.startswith("tc_"):
+        raw_id = raw_id[3:]
+    if not raw_id.isdigit():
+        return json.dumps({"error": "invalid chunk_id"})
+    pk = int(raw_id)
+    cap = max(1, min(int(top_k or 5), 20))
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT embedding FROM text_chunks WHERE id=%s", (pk,))
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                return json.dumps({"error": "chunk has no embedding"})
+            emb = row[0]
+            cur.execute(
+                "SELECT id, doc_id, page_number, content, "
+                "1 - (embedding <=> %s::vector) AS score "
+                "FROM text_chunks "
+                "WHERE id<>%s AND embedding IS NOT NULL "
+                "ORDER BY embedding <=> %s::vector LIMIT %s",
+                (emb, pk, emb, cap),
+            )
+            results = []
+            for r in cur.fetchall():
+                results.append({
+                    "chunk_id": f"tc_{r[0]}",
+                    "doc_id": str(r[1] or ""),
+                    "page_number": r[2],
+                    "content": (r[3] or "")[:400],
+                    "score": round(float(r[4] or 0), 4),
+                })
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[similar_chunks] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def stats_overview() -> str:
+    """库内全局体检：每表行数、向量覆盖率、最早/最晚时间。无参数。"""
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        out: dict = {"tables": {}}
+        with conn.cursor() as cur:
+            for tbl in sorted(_QUERYABLE_TABLES):
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    out["tables"][tbl] = {"rows": int(cur.fetchone()[0] or 0)}
+                except Exception:
+                    out["tables"][tbl] = {"rows": 0}
+
+            # 向量覆盖率
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE embedding IS NOT NULL),"
+                    " COUNT(*) FROM text_chunks"
+                )
+                with_e, total = cur.fetchone()
+                out["embedding_coverage"] = {
+                    "with_embedding": int(with_e or 0),
+                    "total_chunks": int(total or 0),
+                    "ratio": round((with_e or 0) / max(int(total or 1), 1), 3),
+                }
+            except Exception:
+                pass
+
+            # 时间维度（如果存在 year_month / created_at 等）
+            for tbl, col in [
+                ("price_records", "year_month"),
+                ("trend_points", "year_month"),
+                ("document_registry", "created_at"),
+            ]:
+                try:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s AND column_name=%s",
+                        (tbl, col),
+                    )
+                    if cur.fetchone():
+                        cur.execute(f"SELECT MIN({col}), MAX({col}) FROM {tbl}")
+                        lo, hi = cur.fetchone()
+                        out.setdefault("time_ranges", {})[tbl] = {
+                            "column": col,
+                            "min": str(lo) if lo else None,
+                            "max": str(hi) if hi else None,
+                        }
+                except Exception:
+                    pass
+
+        return json.dumps(out, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[stats_overview] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)

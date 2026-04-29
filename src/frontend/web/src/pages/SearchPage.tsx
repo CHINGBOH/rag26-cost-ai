@@ -43,6 +43,7 @@ interface InvokeResponse {
 
 const CATEGORY_LABELS: Record<string, string> = {
   retrieval: '检索',
+  data: '数据',
   pricing: '价格',
   compute: '计算',
   other: '其它',
