@@ -1741,6 +1741,138 @@ async def retry_pipeline_job(job_id: str, background_tasks: BackgroundTasks = No
     return {"ok": True, "job_id": job_id, "status": "queued"}
 
 
+@router.get("/api/v1/pipeline/audit/{job_id}")
+async def audit_pipeline_job(job_id: str):
+    """Cross-DB consistency audit for an ingest job.
+
+    Verifies that PG `text_chunks`, Qdrant points, and Neo4j `(:Chunk)` counts
+    agree for this doc_id. Surfaces drift as `db_drift` blindspots so the
+    dashboard tells the truth instead of confabulating "100% complete".
+    """
+    import httpx
+    from app import ingest_pipeline as ipl
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    job = ipl.job_get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    doc_id = job.get("doc_id")
+    file_name = job.get("file_name", "")
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="job has no doc_id")
+
+    checks: list[dict] = []
+    pg_count = 0
+    qdrant_count = 0
+    neo4j_chunk_count = 0
+    neo4j_pricerow_count = 0
+    zero_norm_count = 0
+
+    # PG
+    try:
+        c = _get_pg_conn()
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM text_chunks WHERE doc_id=%s", (doc_id,))
+                pg_count = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(*) FROM text_chunks "
+                    "WHERE doc_id=%s AND embedding IS NULL", (doc_id,))
+                zero_norm_count = int(cur.fetchone()[0])
+        finally:
+            _put_pg_conn(c)
+        checks.append({"name": "pg_text_chunks", "ok": True, "count": pg_count})
+    except Exception as e:
+        checks.append({"name": "pg_text_chunks", "ok": False, "error": str(e)[:200]})
+
+    # Qdrant — count points with payload.doc_id == doc_id (scroll, not exact-count)
+    transport = httpx.AsyncHTTPTransport(proxy=None)
+    qurl = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    qcoll = os.environ.get("QDRANT_INGEST_COLLECTION", "document_chunks")
+    try:
+        async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
+            offset = None
+            seen = 0
+            for _ in range(50):
+                body = {"limit": 256, "with_payload": False,
+                        "filter": {"must": [{"key": "doc_id",
+                                             "match": {"value": doc_id}}]}}
+                if offset is not None:
+                    body["offset"] = offset
+                r = await client.post(f"{qurl}/collections/{qcoll}/points/scroll",
+                                      json=body)
+                r.raise_for_status()
+                data = r.json().get("result", {})
+                pts = data.get("points", []) or []
+                seen += len(pts)
+                offset = data.get("next_page_offset")
+                if not offset:
+                    break
+            qdrant_count = seen
+        checks.append({"name": "qdrant_points", "ok": True, "count": qdrant_count})
+    except Exception as e:
+        checks.append({"name": "qdrant_points", "ok": False, "error": str(e)[:200]})
+
+    # Neo4j
+    try:
+        drv = ipl._neo4j_session()
+        if drv is not None:
+            with drv.session() as ses:
+                rec = ses.run("MATCH (:Document {doc_id:$d})-[:HAS_CHUNK]->(c:Chunk) "
+                              "RETURN count(c) as n", d=doc_id).single()
+                neo4j_chunk_count = int(rec["n"]) if rec else 0
+                rec2 = ses.run("MATCH (:Document {doc_id:$d})-[:HAS_TABLE]->(:Table)-[:HAS_ROW]->(p:PriceRow) "
+                               "RETURN count(p) as n", d=doc_id).single()
+                neo4j_pricerow_count = int(rec2["n"]) if rec2 else 0
+            drv.close()
+            checks.append({"name": "neo4j_chunks", "ok": True, "count": neo4j_chunk_count})
+            checks.append({"name": "neo4j_price_rows", "ok": True, "count": neo4j_pricerow_count})
+        else:
+            checks.append({"name": "neo4j_chunks", "ok": False, "error": "driver unavailable"})
+    except Exception as e:
+        checks.append({"name": "neo4j_chunks", "ok": False, "error": str(e)[:200]})
+
+    # consistency rules
+    drifts: list[dict] = []
+    if pg_count and qdrant_count and qdrant_count != pg_count:
+        drifts.append({"kind": "qdrant_drift",
+                       "reason": f"pg={pg_count} qdrant={qdrant_count}"})
+    if pg_count and neo4j_chunk_count and neo4j_chunk_count != pg_count:
+        drifts.append({"kind": "neo4j_drift",
+                       "reason": f"pg={pg_count} neo4j={neo4j_chunk_count}"})
+    if zero_norm_count > 0:
+        drifts.append({"kind": "embedding_missing",
+                       "reason": f"{zero_norm_count} chunks without embedding"})
+
+    for d in drifts:
+        try:
+            ipl.record_blindspot(job_id, doc_id, file_name, page=0,
+                                 kind=f"db_drift:{d['kind']}", reason=d["reason"])
+        except Exception:
+            pass
+
+    overall_ok = (pg_count > 0
+                  and (qdrant_count == pg_count)
+                  and (neo4j_chunk_count == pg_count)
+                  and zero_norm_count == 0)
+
+    return {
+        "job_id": job_id,
+        "doc_id": doc_id,
+        "file_name": file_name,
+        "ok": overall_ok,
+        "counts": {
+            "pg_text_chunks": pg_count,
+            "qdrant_points": qdrant_count,
+            "neo4j_chunks": neo4j_chunk_count,
+            "neo4j_price_rows": neo4j_pricerow_count,
+            "embedding_missing": zero_norm_count,
+        },
+        "checks": checks,
+        "drifts": drifts,
+    }
+
+
 @router.get("/api/v1/pipeline/health")
 async def pipeline_health():
     """Probe upstream services so the ops dashboard tells the truth."""
