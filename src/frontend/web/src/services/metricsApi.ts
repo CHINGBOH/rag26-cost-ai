@@ -157,3 +157,72 @@ export async function getLearningGaps(limit = 30): Promise<LearningGap[]> {
     return [];
   }
 }
+
+// ── System ───────────────────────────────────────────────────────────────────
+
+export interface SystemVersion {
+  git_sha: string;
+  git_branch: string;
+  python_version: string;
+  platform: string;
+  service_start_ts: number;
+}
+
+export interface SystemConfig {
+  llm: { provider: string; model: string; route?: string; base_url?: string; max_tokens?: number; temperature?: number };
+  embedding: { model: string; backend?: string; dim?: number };
+  retrieval: { default_top_k?: number; score_threshold?: number; max_iterations?: number; rrf_k?: number };
+  stores: Record<string, string>;
+}
+
+export interface SystemKb {
+  chunks_total: number | null;
+  documents_total: number | null;
+  concepts_total: number | null;
+  relations_total: number | null;
+  price_records_total: number | null;
+  chunks_by_source: Array<{ source: string; count: number }>;
+  latest_chunk_ts: string | null;
+  error?: string;
+}
+
+export async function getSystemVersion(): Promise<SystemVersion | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/version`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+export async function getSystemConfig(): Promise<SystemConfig | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/config`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+export async function getSystemKb(): Promise<SystemKb | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/kb`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Blind-spot clusters ──────────────────────────────────────────────────────
+
+export interface BlindspotCluster {
+  representative: string;
+  size: number;
+  members: Array<{ query: string; ts: string; quality: string; confidence: number }>;
+  diagnosis: string;
+}
+
+export interface BlindspotResponse {
+  clusters: BlindspotCluster[];
+  total_bad: number;
+  note?: string;
+}
+
+export async function getLearningBlindspots(minSize = 2): Promise<BlindspotResponse | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/blindspots?min_size=${minSize}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}

@@ -1133,3 +1133,294 @@ async def ops_metrics(window_sec: int = 60):
         "qps_buckets": buckets,
         "total_recorded": len(all_recent),
     }
+
+
+# ── System Endpoints (real config / kb stats / version) ──────────────────────
+
+import subprocess as _subp_sys
+import platform as _plat_sys
+
+
+@router.get("/api/v1/system/version")
+async def system_version():
+    """Git commit hash, build time, python version, service start time."""
+    try:
+        sha = _subp_sys.check_output(
+            ["git", "-C", "/home/l/rag-dashboard", "rev-parse", "--short", "HEAD"],
+            stderr=_subp_sys.DEVNULL, timeout=2,
+        ).decode().strip()
+    except Exception:
+        sha = "unknown"
+    try:
+        branch = _subp_sys.check_output(
+            ["git", "-C", "/home/l/rag-dashboard", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=_subp_sys.DEVNULL, timeout=2,
+        ).decode().strip()
+    except Exception:
+        branch = "unknown"
+    return {
+        "git_sha": sha,
+        "git_branch": branch,
+        "python_version": _plat_sys.python_version(),
+        "platform": _plat_sys.platform(),
+        "service_start_ts": _SERVICE_START_TS,
+    }
+
+
+_SERVICE_START_TS = _time_ops.time()
+
+
+@router.get("/api/v1/system/config")
+async def system_config():
+    """Currently effective LLM/embedding/retrieval config — env-aware."""
+    return {
+        "llm": {
+            "provider": _os_learn.environ.get("LLM_PROVIDER", "deepseek"),
+            "model": _os_learn.environ.get("LLM_MODEL", "deepseek-chat"),
+            "route": _os_learn.environ.get("LLM_ROUTE", "deepseek"),
+            "base_url": _os_learn.environ.get("LLM_BASE_URL", "https://api.deepseek.com"),
+            "max_tokens": int(_os_learn.environ.get("LLM_MAX_TOKENS", "2048")),
+            "temperature": float(_os_learn.environ.get("LLM_TEMPERATURE", "0.0")),
+        },
+        "embedding": {
+            "model": _os_learn.environ.get("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5"),
+            "backend": _os_learn.environ.get("EMBEDDING_BACKEND", "local"),
+            "dim": int(_os_learn.environ.get("EMBEDDING_DIM", "1024")),
+        },
+        "retrieval": {
+            "default_top_k": int(_os_learn.environ.get("DEFAULT_TOP_K", "8")),
+            "score_threshold": float(_os_learn.environ.get("SCORE_THRESHOLD", "0.6")),
+            "max_iterations": int(_os_learn.environ.get("MAX_ITERATIONS", "3")),
+            "rrf_k": int(_os_learn.environ.get("RRF_K", "60")),
+        },
+        "stores": {
+            "postgres": _os_learn.environ.get("POSTGRES_HOST", "localhost"),
+            "qdrant": _os_learn.environ.get("QDRANT_HOST", "localhost"),
+            "neo4j": _os_learn.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        },
+    }
+
+
+@router.get("/api/v1/system/kb")
+async def system_kb():
+    """Knowledge base statistics — document count, chunks, vector count, latest ingest."""
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+    out: dict = {}
+    conn = None
+    def _q(cur, sql, default=None):
+        try:
+            cur.execute(sql)
+            r = cur.fetchone()
+            return r[0] if r else default
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return default
+
+    try:
+        conn = _get_pg_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            out["chunks_total"] = _q(cur, "SELECT COUNT(*) FROM text_chunks")
+            out["documents_total"] = _q(cur, "SELECT COUNT(*) FROM document_registry")
+            if out["documents_total"] is None:
+                out["documents_total"] = _q(cur, "SELECT COUNT(DISTINCT doc_id) FROM text_chunks")
+            out["concepts_total"] = _q(cur, "SELECT COUNT(*) FROM canonical_concepts")
+            if out["concepts_total"] is None:
+                out["concepts_total"] = _q(cur, "SELECT COUNT(*) FROM catalog_index")
+            out["relations_total"] = _q(cur, "SELECT COUNT(*) FROM concept_relations")
+            if out["relations_total"] is None:
+                out["relations_total"] = _q(cur, "SELECT COUNT(*) FROM trend_relations")
+            out["price_records_total"] = _q(cur, "SELECT COUNT(*) FROM price_records")
+            try:
+                cur.execute("""
+                    SELECT COALESCE(metadata->>'source','unknown') AS src, COUNT(*)
+                    FROM text_chunks GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+                """)
+                out["chunks_by_source"] = [{"source": r[0], "count": r[1]} for r in cur.fetchall()]
+            except Exception:
+                conn.rollback() if conn else None
+                out["chunks_by_source"] = []
+            try:
+                cur.execute("SELECT MAX(created_at) FROM text_chunks")
+                row = cur.fetchone()
+                out["latest_chunk_ts"] = row[0].isoformat() if row and row[0] else None
+            except Exception:
+                conn.rollback() if conn else None
+                out["latest_chunk_ts"] = None
+    except Exception as e:
+        out["error"] = str(e)
+    finally:
+        if conn:
+            _put_pg_conn(conn)
+    return out
+
+
+# ── Prometheus /metrics ───────────────────────────────────────────────────────
+
+try:
+    from prometheus_client import (
+        Counter as _PromCounter,
+        Histogram as _PromHistogram,
+        generate_latest as _prom_generate,
+        CONTENT_TYPE_LATEST as _PROM_CT,
+    )
+    _PROM_AVAILABLE = True
+except Exception:
+    _PROM_AVAILABLE = False
+
+
+if _PROM_AVAILABLE:
+    RAG_TOOL_TOTAL = _PromCounter(
+        "rag_tool_invocations_total", "Tool invocation count", ["tool", "status"]
+    )
+    RAG_TOOL_LATENCY = _PromHistogram(
+        "rag_tool_latency_seconds", "Tool latency seconds", ["tool"],
+        buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+    )
+    RAG_AGENT_RUNS_TOTAL = _PromCounter(
+        "rag_agent_runs_total", "Agent run count", ["quality"]
+    )
+    RAG_AGENT_LATENCY = _PromHistogram(
+        "rag_agent_latency_seconds", "Agent end-to-end latency",
+        buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+    )
+
+
+def prom_record_tool(tool: str, status: str, latency_s: float) -> None:
+    """Called from tool wrappers — no-op if prom unavailable."""
+    if not _PROM_AVAILABLE:
+        return
+    try:
+        RAG_TOOL_TOTAL.labels(tool=tool, status=status).inc()
+        RAG_TOOL_LATENCY.labels(tool=tool).observe(max(0.0, latency_s))
+    except Exception:
+        pass
+
+
+def prom_record_agent(quality: str, latency_s: float) -> None:
+    if not _PROM_AVAILABLE:
+        return
+    try:
+        RAG_AGENT_RUNS_TOTAL.labels(quality=quality or "unknown").inc()
+        RAG_AGENT_LATENCY.observe(max(0.0, latency_s))
+    except Exception:
+        pass
+
+
+@router.get("/metrics")
+async def prom_metrics():
+    """Prometheus scrape endpoint."""
+    from fastapi.responses import Response
+    if not _PROM_AVAILABLE:
+        return Response("# prometheus_client unavailable\n", media_type="text/plain")
+    return Response(_prom_generate(), media_type=_PROM_CT)
+
+
+# ── Learning blind-spot clustering ────────────────────────────────────────────
+
+@router.get("/api/v1/learning/blindspots")
+async def learning_blindspots(min_size: int = 2, max_clusters: int = 8):
+    """Cluster failed/weak agent queries to surface "topic-level" blind spots.
+
+    Strategy: load failure/weak runs from agent_runs.jsonl, embed each query,
+    cluster via simple cosine threshold linkage (no extra deps), return clusters
+    with representative query + similar queries + chunk_count stats.
+    """
+    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=1000)
+    bad = [r for r in runs if r.get("quality") in ("failure", "weak") or r.get("refused")]
+    seen_q: dict[str, dict] = {}
+    for r in bad:
+        q = (r.get("query") or "").strip()
+        if not q:
+            continue
+        if q in seen_q:
+            seen_q[q]["count"] += 1
+        else:
+            seen_q[q] = {
+                "query": q,
+                "count": 1,
+                "quality": r.get("quality"),
+                "refused": bool(r.get("refused")),
+                "confidence": (r.get("evaluation") or {}).get("confidence", 0),
+                "chunks_count": r.get("chunks_count", 0),
+                "ts": r.get("ts"),
+            }
+    queries = list(seen_q.values())
+    if len(queries) < min_size:
+        return {"clusters": [], "total_bad": len(queries), "note": "not enough bad runs to cluster"}
+
+    try:
+        from app.agent.tools import _get_embedding_svc  # type: ignore
+        emb_svc = _get_embedding_svc()
+        vecs = [emb_svc.encode(q["query"]) for q in queries]
+    except Exception as e:
+        # fallback: token-jaccard similarity
+        logger.warning(f"[blindspots] embedding unavailable: {e}; using jaccard fallback")
+        vecs = None
+
+    import math
+    def cos(a, b):
+        s = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return s / (na * nb) if na and nb else 0.0
+
+    def jaccard(a: str, b: str) -> float:
+        sa, sb = set(a), set(b)
+        u = sa | sb
+        return len(sa & sb) / len(u) if u else 0.0
+
+    clusters: list[list[int]] = []
+    threshold = 0.78 if vecs else 0.45
+    for i in range(len(queries)):
+        placed = False
+        for c in clusters:
+            rep = c[0]
+            sim = cos(vecs[i], vecs[rep]) if vecs else jaccard(queries[i]["query"], queries[rep]["query"])
+            if sim >= threshold:
+                c.append(i)
+                placed = True
+                break
+        if not placed:
+            clusters.append([i])
+
+    clusters.sort(key=lambda c: -len(c))
+    out = []
+    for c in clusters[:max_clusters]:
+        if len(c) < min_size:
+            continue
+        members = [queries[i] for i in c]
+        members.sort(key=lambda m: -m["count"])
+        rep = members[0]
+        avg_chunks = sum(m["chunks_count"] for m in members) / len(members)
+        avg_conf = sum(m["confidence"] for m in members) / len(members)
+        out.append({
+            "size": len(members),
+            "representative": rep["query"],
+            "queries": [m["query"] for m in members[:8]],
+            "refused_count": sum(1 for m in members if m["refused"]),
+            "avg_chunks": round(avg_chunks, 1),
+            "avg_confidence": round(avg_conf, 3),
+            "diagnosis": _diagnose_blindspot(members, avg_chunks, avg_conf),
+        })
+    return {
+        "clusters": out,
+        "total_bad": len(queries),
+        "method": "embedding-cosine" if vecs else "jaccard-fallback",
+        "threshold": threshold,
+    }
+
+
+def _diagnose_blindspot(members: list[dict], avg_chunks: float, avg_conf: float) -> str:
+    """Return a short heuristic explanation of likely root cause."""
+    refuse_n = sum(1 for m in members if m["refused"])
+    if refuse_n / len(members) >= 0.7:
+        return "高频拒绝回答 — 知识库可能完全缺失该主题资料，建议补充文档"
+    if avg_chunks < 2:
+        return "检索命中过少 — 检索召回不足，建议丰富同义词/扩展chunk metadata"
+    if avg_conf < 0.4:
+        return "命中但答非所问 — chunk 与问题语义错位，建议优化 chunk 切分或父节摘要"
+    return "答案质量弱 — 综合表现偏低，需进一步分析"

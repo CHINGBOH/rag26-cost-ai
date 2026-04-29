@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { checkHealth, askAgent, HealthResponse } from '../services/agentApi';
+import { getSystemConfig, getSystemKb, getSystemVersion, SystemConfig, SystemKb, SystemVersion } from '../services/metricsApi';
 import { PageHeader } from '../components/common/PageHeader';
 import { StatusDot } from '../components/common/StatusDot';
 import './SystemPage.css';
@@ -29,6 +30,9 @@ const SERVICE_LABELS: Record<string, string> = {
 
 export const SystemPage: React.FC = () => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [config, setConfig] = useState<SystemConfig | null>(null);
+  const [kb, setKb] = useState<SystemKb | null>(null);
+  const [version, setVersion] = useState<SystemVersion | null>(null);
   const [testQuery, setTestQuery] = useState('');
   const [testRecords, setTestRecords] = useState<TestRecord[]>([]);
   const [testing, setTesting] = useState(false);
@@ -40,6 +44,15 @@ export const SystemPage: React.FC = () => {
     };
     fetch();
     const t = setInterval(fetch, 15000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const [c, k, v] = await Promise.all([getSystemConfig(), getSystemKb(), getSystemVersion()]);
+      setConfig(c); setKb(k); setVersion(v);
+    })();
+    const t = setInterval(async () => { setKb(await getSystemKb()); }, 30000);
     return () => clearInterval(t);
   }, []);
 
@@ -116,6 +129,35 @@ export const SystemPage: React.FC = () => {
           ) : (
             <p className="loading-text">连接中…</p>
           )}
+        </div>
+
+        <div className="sys-card">
+          <h2>知识库统计</h2>
+          {kb ? (
+            <div className="sys-stats-grid">
+              <div className="stat-item"><div className="stat-value">{kb.documents_total ?? '—'}</div><div className="stat-label">文档</div></div>
+              <div className="stat-item"><div className="stat-value">{kb.chunks_total ?? '—'}</div><div className="stat-label">Chunks</div></div>
+              <div className="stat-item"><div className="stat-value">{kb.concepts_total ?? '—'}</div><div className="stat-label">概念/目录</div></div>
+              <div className="stat-item"><div className="stat-value">{kb.price_records_total ?? '—'}</div><div className="stat-label">价格记录</div></div>
+            </div>
+          ) : <p className="loading-text">加载中…</p>}
+          {kb?.latest_chunk_ts && (
+            <p className="empty-hint" style={{ marginTop: 8 }}>
+              最近入库：{new Date(kb.latest_chunk_ts).toLocaleString('zh-CN')}
+            </p>
+          )}
+        </div>
+
+        <div className="sys-card">
+          <h2>运行时配置</h2>
+          {config ? (
+            <div className="sys-health-list">
+              <div className="sys-health-row"><span className="sys-health-name">LLM</span><span className="sys-health-val">{config.llm.provider} / {config.llm.model}</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">Embedding</span><span className="sys-health-val">{config.embedding.model} ({config.embedding.dim}d)</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">Top-K</span><span className="sys-health-val">{config.retrieval.default_top_k} · 阈值 {config.retrieval.score_threshold}</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">Max Iter</span><span className="sys-health-val">{config.retrieval.max_iterations}</span></div>
+            </div>
+          ) : <p className="loading-text">加载中…</p>}
         </div>
 
         <div className="sys-card">
@@ -203,6 +245,12 @@ export const SystemPage: React.FC = () => {
           <span className="param-hint">Agent 最大 ReAct 轮次（调整后在上方测试区验证效果）</span>
         </div>
       </div>
+
+      {version && (
+        <div className="sys-card full-width" style={{ fontSize: 12, opacity: 0.75 }}>
+          <span>版本 <code>{version.git_sha}</code> · 分支 <code>{version.git_branch}</code> · Python {version.python_version} · 启动 {new Date(version.service_start_ts * 1000).toLocaleString('zh-CN')}</span>
+        </div>
+      )}
     </div>
   );
 };

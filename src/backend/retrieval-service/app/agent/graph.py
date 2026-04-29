@@ -3209,7 +3209,28 @@ _prebuilt_tool_node = ToolNode(REACT_TOOLS)
 
 def tool_node(state: RAGAgentState) -> dict:
     """LangGraph ToolNode 处理工具调用和 ToolMessage 组装；补充 chunk 收集和 fallback 检测。"""
+    import time as _t_prom
+    _prom_t0 = _t_prom.perf_counter()
+    _prom_calls = []
+    try:
+        for _m in reversed(state.get("messages") or []):
+            if getattr(_m, "tool_calls", None):
+                _prom_calls = [tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?") for tc in _m.tool_calls]
+                break
+    except Exception:
+        _prom_calls = []
     result = _prebuilt_tool_node.invoke(state)
+    try:
+        from app.api import prom_record_tool as _prt
+        _dt = _t_prom.perf_counter() - _prom_t0
+        if _prom_calls:
+            per = _dt / max(1, len(_prom_calls))
+            for _n in _prom_calls:
+                _prt(_n or "unknown", "ok", per)
+        else:
+            _prt("tool_node", "ok", _dt)
+    except Exception:
+        pass
     previous_chunks = list(state.get("retrieved_chunks") or [])
     all_chunks = list(previous_chunks)
     category_hints = list(state.get("category_hints") or [])
@@ -3455,6 +3476,22 @@ def synthesize_node(state: RAGAgentState) -> dict:
     )
 
     _log_agent_run(state, final_answer, evaluation, runtime, all_chunks)
+
+    try:
+        from app.api import prom_record_agent as _pra
+        _conf = float((evaluation or {}).get("confidence") or 0)
+        _ig = float((evaluation or {}).get("information_gain") or 0)
+        _refused = any(m in final_answer for m in ["无法直接回答","无法回答","无法提供","无法分析","不足以回答","未提供","无相关数据","未包含"])
+        if _refused or not all_chunks:
+            _q = "failure"
+        elif _conf < 0.5 or _ig < 0.3:
+            _q = "weak"
+        else:
+            _q = "good"
+        _lat = (runtime or {}).get("total_latency_s") or 0.0
+        _pra(_q, float(_lat))
+    except Exception:
+        pass
 
     followup_suggestions = build_followup_suggestions(query, all_chunks, final_answer, max_n=5)
 

@@ -12,9 +12,11 @@ import {
   getLearningSummary,
   getLearningRuns,
   getLearningGaps,
+  getLearningBlindspots,
   LearningSummary,
   LearningRun,
   LearningGap,
+  BlindspotCluster,
 } from '../services/metricsApi';
 import './LearningPage.css';
 
@@ -24,19 +26,22 @@ export const LearningPage: React.FC = () => {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [runs, setRuns] = useState<LearningRun[]>([]);
   const [gaps, setGaps] = useState<LearningGap[]>([]);
+  const [blindspots, setBlindspots] = useState<BlindspotCluster[]>([]);
   const [filter, setFilter] = useState<QualityFilter>('all');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
-    const [s, r, g] = await Promise.all([
+    const [s, r, g, b] = await Promise.all([
       getLearningSummary(),
       getLearningRuns(50, filter === 'all' ? undefined : filter),
       getLearningGaps(20),
+      getLearningBlindspots(2),
     ]);
     setSummary(s);
     setRuns(r);
     setGaps(g);
+    setBlindspots(b?.clusters || []);
     setLoading(false);
   };
 
@@ -122,6 +127,39 @@ export const LearningPage: React.FC = () => {
                       <p className="gap-preview">{g.answer_preview}</p>
                     </details>
                   )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* 盲点聚类 */}
+        <section className="learn-card learn-gaps">
+          <div className="learn-card-head">
+            <h3>盲点聚类 <span className="muted">({blindspots.length})</span></h3>
+            <span className="muted small">语义相近的失败问题分组，提示批量短板</span>
+          </div>
+          {blindspots.length === 0 ? (
+            <p className="empty">尚未形成可聚合的盲点（需 ≥ 2 个相近失败问题）。</p>
+          ) : (
+            <ul className="gap-list">
+              {blindspots.map((c, i) => (
+                <li key={i} className="gap-item q-failure">
+                  <div className="gap-q">代表问题：{c.representative}</div>
+                  <div className="gap-meta">
+                    <span className="badge q-failure">规模 {c.size}</span>
+                    <span className="muted small">{c.diagnosis}</span>
+                  </div>
+                  <details>
+                    <summary className="muted small">展开成员问题</summary>
+                    <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+                      {c.members.map((m, j) => (
+                        <li key={j} className="muted small" style={{ listStyle: 'disc' }}>
+                          [{m.quality}] {m.query} <span style={{ opacity: 0.6 }}>({m.confidence.toFixed(2)})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 </li>
               ))}
             </ul>
