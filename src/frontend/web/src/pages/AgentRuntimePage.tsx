@@ -1,0 +1,335 @@
+/**
+ * Agent Runtime — 透视 agent 内部运行：channel / state / tool call 实时面板
+ *
+ * 数据来自 useRunStore（由 useAgent 的 SSE 流实时填充）。
+ * 完成后的 run 自动落到 localStorage（最多 50 条），可回放。
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import { useAgent } from '../hooks/useAgent';
+import { useRunStore } from '../stores/useRunStore';
+import './AgentRuntimePage.css';
+
+const HISTORY_KEY = 'rag.agent.runtime.history.v1';
+const HISTORY_MAX = 50;
+
+interface RunSnapshot {
+  id: string;
+  query: string;
+  answer: string;
+  ts: number;
+  durationMs: number;
+  iterations: number;
+  toolCalls: Array<{
+    tool: string;
+    args: Record<string, unknown>;
+    result?: unknown;
+    duration_ms?: number;
+    status: string;
+  }>;
+  planSteps: string[];
+  queryAnalysis: { intent: string; sub_queries?: string[] } | null;
+  chunkCount: number;
+  runtime: { provider?: string; model?: string; routeMode?: string } | null;
+}
+
+function loadHistory(): RunSnapshot[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(snaps: RunSnapshot[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(snaps.slice(0, HISTORY_MAX)));
+  } catch {
+    /* noop */
+  }
+}
+
+function fmtArgs(args: Record<string, unknown>): string {
+  if (!args) return '{}';
+  try {
+    const compact = JSON.stringify(args);
+    return compact.length > 280 ? compact.slice(0, 280) + '…' : compact;
+  } catch {
+    return String(args);
+  }
+}
+
+function fmtResult(r: unknown): string {
+  if (r == null) return '—';
+  if (typeof r === 'string') return r.length > 600 ? r.slice(0, 600) + '…' : r;
+  try {
+    const s = JSON.stringify(r, null, 2);
+    return s.length > 1200 ? s.slice(0, 1200) + '…' : s;
+  } catch {
+    return String(r);
+  }
+}
+
+export function AgentRuntimePage() {
+  const { isLoading, sendMessage, cancelStream } = useAgent();
+  const run = useRunStore();
+
+  const [input, setInput] = useState('安装工程消耗量标准中送配电装置系统调试的计算规则是什么?');
+  const [history, setHistory] = useState<RunSnapshot[]>(() => loadHistory());
+  const [viewing, setViewing] = useState<RunSnapshot | null>(null);
+
+  // 当一次 run 完成时，把当前 useRunStore 快照写入历史
+  useEffect(() => {
+    if (run.isStreaming) return;
+    if (!run.runId) return;
+    if (!run.streamingAnswer && run.toolCalls.length === 0) return;
+
+    const exists = history.find((h) => h.id === run.runId);
+    if (exists) return;
+
+    const snap: RunSnapshot = {
+      id: run.runId,
+      query: input.trim(),
+      answer: run.streamingAnswer,
+      ts: Date.now(),
+      durationMs: run.finalLatencyMs,
+      iterations: run.finalIterations,
+      toolCalls: run.toolCalls.map((tc) => ({
+        tool: tc.tool,
+        args: tc.args,
+        result: tc.result,
+        duration_ms: tc.duration_ms,
+        status: tc.status,
+      })),
+      planSteps: run.planSteps,
+      queryAnalysis: run.queryAnalysis
+        ? { intent: run.queryAnalysis.intent, sub_queries: run.queryAnalysis.sub_queries }
+        : null,
+      chunkCount: run.retrievalChunks.length,
+      runtime: run.runtimeInfo
+        ? {
+            provider: run.runtimeInfo.provider,
+            model: run.runtimeInfo.model,
+            routeMode: run.runtimeInfo.routeMode,
+          }
+        : null,
+    };
+    const next = [snap, ...history].slice(0, HISTORY_MAX);
+    setHistory(next);
+    saveHistory(next);
+  }, [run.isStreaming, run.runId]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const live = !viewing;
+  const display = viewing
+    ? {
+        query: viewing.query,
+        answer: viewing.answer,
+        toolCalls: viewing.toolCalls,
+        planSteps: viewing.planSteps,
+        queryAnalysis: viewing.queryAnalysis,
+        chunkCount: viewing.chunkCount,
+        durationMs: viewing.durationMs,
+        iterations: viewing.iterations,
+        runtime: viewing.runtime,
+        isStreaming: false,
+      }
+    : {
+        query: input,
+        answer: run.streamingAnswer,
+        toolCalls: run.toolCalls as RunSnapshot['toolCalls'],
+        planSteps: run.planSteps,
+        queryAnalysis: run.queryAnalysis
+          ? { intent: run.queryAnalysis.intent, sub_queries: run.queryAnalysis.sub_queries }
+          : null,
+        chunkCount: run.retrievalChunks.length,
+        durationMs: run.finalLatencyMs,
+        iterations: run.finalIterations,
+        runtime: run.runtimeInfo,
+        isStreaming: run.isStreaming,
+      };
+
+  const channel = useMemo(
+    () => ({
+      query: display.query,
+      query_type: display.queryAnalysis?.intent || '',
+      sub_queries: display.queryAnalysis?.sub_queries || [],
+      plan: display.planSteps,
+      iteration: display.iterations,
+      tool_calls_count: display.toolCalls.length,
+      retrieved_chunks: display.chunkCount,
+      runtime: display.runtime || {},
+      streaming: display.isStreaming,
+      answer_chars: (display.answer || '').length,
+    }),
+    [display],
+  );
+
+  const handleRun = () => {
+    if (!input.trim() || isLoading) return;
+    setViewing(null);
+    sendMessage(input.trim());
+  };
+
+  const handleClearHistory = () => {
+    if (!confirm('清空本地运行历史？')) return;
+    setHistory([]);
+    saveHistory([]);
+    setViewing(null);
+  };
+
+  return (
+    <div className="runtime-page">
+      <header className="runtime-header">
+        <div>
+          <h1>Agent Runtime</h1>
+          <p className="muted">
+            实时观察 agent 的 channel / state / tool call 流。LangGraph ReAct 内部一切透明。
+          </p>
+        </div>
+        <div className="runtime-stats">
+          <span>工具调用 {display.toolCalls.length}</span>
+          <span>检索片段 {display.chunkCount}</span>
+          <span>迭代 {display.iterations}</span>
+          {display.durationMs > 0 && <span>{display.durationMs}ms</span>}
+        </div>
+      </header>
+
+      <section className="runtime-input">
+        <textarea
+          rows={2}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="输入问题，按 Ctrl/⌘+Enter 提交"
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleRun();
+          }}
+        />
+        <div className="runtime-input-actions">
+          {isLoading ? (
+            <button className="btn-cancel" onClick={cancelStream}>
+              中止
+            </button>
+          ) : (
+            <button className="btn-run" onClick={handleRun} disabled={!input.trim()}>
+              ▶ 运行
+            </button>
+          )}
+          {viewing && (
+            <button className="btn-back" onClick={() => setViewing(null)}>
+              ← 返回实时
+            </button>
+          )}
+        </div>
+      </section>
+
+      <div className="runtime-grid">
+        {/* LEFT: history */}
+        <aside className="runtime-history">
+          <div className="panel-head">
+            <h3>历史运行 <span className="muted">({history.length})</span></h3>
+            {history.length > 0 && (
+              <button className="link-danger" onClick={handleClearHistory}>清空</button>
+            )}
+          </div>
+          {history.length === 0 ? (
+            <p className="muted small">暂无历史。完成一次运行后会自动归档。</p>
+          ) : (
+            <ul className="history-list">
+              {history.map((h) => (
+                <li
+                  key={h.id}
+                  className={viewing?.id === h.id ? 'active' : ''}
+                  onClick={() => setViewing(h)}
+                >
+                  <div className="hist-q">{h.query}</div>
+                  <div className="hist-meta">
+                    <span>{new Date(h.ts).toLocaleTimeString()}</span>
+                    <span>{h.toolCalls.length} 工具</span>
+                    <span>{h.iterations} 迭代</span>
+                    <span>{h.durationMs}ms</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
+
+        {/* CENTER: channel + tool timeline */}
+        <main className="runtime-center">
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Channel · 共享状态</h3>
+              {live && display.isStreaming && <span className="dot live" />}
+            </div>
+            <pre className="channel-box">{JSON.stringify(channel, null, 2)}</pre>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Plan · 规划步骤</h3>
+            </div>
+            {display.planSteps.length === 0 ? (
+              <p className="muted small">无 plan（直答 / 简单意图 / 未到 planner 节点）。</p>
+            ) : (
+              <ol className="plan-list">
+                {display.planSteps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Tool Calls · {display.toolCalls.length} 次</h3>
+            </div>
+            {display.toolCalls.length === 0 ? (
+              <p className="muted small">本次运行未调用 ReAct 工具（agent 直接走了线性管道）。</p>
+            ) : (
+              <ul className="tool-list">
+                {display.toolCalls.map((tc, i) => (
+                  <li key={i} className={`tool-card status-${tc.status}`}>
+                    <div className="tool-head">
+                      <span className="tool-idx">#{i + 1}</span>
+                      <code className="tool-name">{tc.tool}</code>
+                      <span className={`tool-status status-${tc.status}`}>{tc.status}</span>
+                      {tc.duration_ms != null && (
+                        <span className="muted small">{tc.duration_ms}ms</span>
+                      )}
+                    </div>
+                    <div className="tool-args">
+                      <span className="muted">args:</span>{' '}
+                      <code>{fmtArgs(tc.args)}</code>
+                    </div>
+                    {tc.result != null && (
+                      <details>
+                        <summary>result</summary>
+                        <pre>{fmtResult(tc.result)}</pre>
+                      </details>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h3>Final Answer</h3>
+            </div>
+            {display.answer ? (
+              <pre className="answer-box">{display.answer}</pre>
+            ) : (
+              <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
+            )}
+          </section>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export default AgentRuntimePage;

@@ -11,6 +11,7 @@ import { initTheme } from './config/theme';
 // Core pages
 import { AgentChat } from './pages/AgentChat';
 import { AgentManagePage } from './pages/AgentManagePage';
+import { AgentRuntimePage } from './pages/AgentRuntimePage';
 import { SearchPage } from './pages/SearchPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { SystemPage } from './pages/SystemPage';
@@ -27,6 +28,7 @@ import './styles/theme.css';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Agent' },
+  { path: '/runtime', label: '运行时' },
   { path: '/search', label: '检索' },
   { path: '/pipeline', label: '管道' },
   { path: '/ops', label: '运维' },
@@ -74,6 +76,7 @@ export default function App() {
         <main className="app-main">
           <Routes>
             <Route path="/" element={<AgentChat />} />
+            <Route path="/runtime" element={<AgentRuntimePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/ops" element={<OpsPage />} />
