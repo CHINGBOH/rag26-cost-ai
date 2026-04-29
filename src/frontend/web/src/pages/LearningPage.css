@@ -88,3 +88,15 @@
   color: var(--text-muted);
   line-height: 1.55;
 }
+
+/* ── Mobile ──────────────────────── */
+
+@media (max-width: 768px) {
+  .learning-page          { padding: 0 16px 32px; }
+  .learn-placeholder-card { padding: 24px 20px; }
+}
+
+@media (max-width: 480px) {
+  .learning-page          { padding: 0 12px 24px; }
+  .learn-pipeline-outline { grid-template-columns: 1fr; }
+}

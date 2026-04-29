@@ -207,3 +207,13 @@
 
 .agent-status-dot.active    { color: #10b981; }
 .agent-status-dot.completed { color: var(--text-muted, #999); }
+
+/* ── Mobile ──────────────────────── */
+
+@media (max-width: 768px) {
+  .agent-manage-page { padding: 0 16px 32px; }
+}
+
+@media (max-width: 480px) {
+  .agent-manage-page { padding: 0 12px 24px; }
+}

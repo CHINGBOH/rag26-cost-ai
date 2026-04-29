@@ -245,3 +245,24 @@
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ── Mobile ──────────────────────── */
+
+@media (max-width: 768px) {
+  .system-page { padding: 0 16px 32px; }
+
+  .test-bar { flex-wrap: wrap; }
+  .test-input { min-width: 0; }
+  .test-input { font-size: 16px; } /* prevent iOS zoom */
+
+  .sys-stats-grid { grid-template-columns: 1fr 1fr; }
+
+  .param-slider { width: 120px; }
+}
+
+@media (max-width: 480px) {
+  .system-page   { padding: 0 12px 24px; }
+  .sys-card      { padding: 16px; }
+  .test-btn,
+  .clear-records-btn { min-height: 44px; }
+}
