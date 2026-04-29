@@ -48,6 +48,133 @@ def _release(conn):
     _put_pg_conn(conn)
 
 
+# ────────────────────────────── Qdrant + Neo4j helpers ──────────────────────────────
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_INGEST_COLLECTION", "document_chunks")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASS = os.getenv("NEO4J_PASSWORD", "password")
+
+
+def _qdrant_point_id(doc_id: str, chunk_index: int) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}#{chunk_index}"))
+
+
+def qdrant_upsert(doc_id: str, file_name: str, chunk_index: int,
+                  text: str, vec: list[float], page: int, block_type: str,
+                  job_id: str) -> bool:
+    """Upsert one point. Stable id ⇒ idempotent."""
+    import httpx
+    pid = _qdrant_point_id(doc_id, chunk_index)
+    body = {"points": [{
+        "id": pid,
+        "vector": vec,
+        "payload": {
+            "doc_id": doc_id, "file_name": file_name,
+            "chunk_index": chunk_index, "page": page,
+            "block_type": block_type, "text": text[:500],
+            "job_id": job_id,
+        },
+    }]}
+    try:
+        with httpx.Client(timeout=10.0, transport=httpx.HTTPTransport(proxy=None)) as cli:
+            r = cli.put(f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points?wait=true",
+                        json=body)
+            r.raise_for_status()
+        return True
+    except Exception as e:
+        logger.warning("qdrant upsert failed (%s#%s): %s", doc_id, chunk_index, e)
+        return False
+
+
+def _neo4j_session():
+    try:
+        from neo4j import GraphDatabase  # type: ignore
+    except Exception as e:
+        logger.warning("neo4j driver unavailable: %s", e)
+        return None
+    try:
+        drv = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+        drv.verify_connectivity()
+        return drv
+    except Exception as e:
+        logger.warning("neo4j connect failed: %s", e)
+        return None
+
+
+# Lightweight regex-based entity extractor.
+_MATERIAL_DICT = [
+    "中砂", "粗砂", "细砂", "水泥", "钢筋", "混凝土", "砂浆", "电缆", "电线",
+    "脚手架", "模板", "门窗", "管道", "保温", "防水", "瓷砖", "腻子", "涂料",
+]
+
+
+def _extract_entities(text: str) -> list[dict]:
+    """Return [{type, name}] entities found via regex/dict."""
+    import re
+    ents: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _MATERIAL_DICT:
+        if m in text:
+            k = ("Material", m)
+            if k not in seen:
+                seen.add(k)
+                ents.append({"type": "Material", "name": m})
+    # Year-month
+    for ym in re.findall(r"(20\d{2})[-年./]?\s*(\d{1,2})\s*月?", text):
+        name = f"{ym[0]}-{int(ym[1]):02d}"
+        k = ("Period", name)
+        if k not in seen:
+            seen.add(k)
+            ents.append({"type": "Period", "name": name})
+    # Section ids like 1.1, 2.3.4
+    for sec in re.findall(r"(?<![\d.])\d+(?:\.\d+){1,3}(?![\d.])", text):
+        k = ("Section", sec)
+        if k not in seen:
+            seen.add(k)
+            ents.append({"type": "Section", "name": sec})
+    return ents[:20]
+
+
+def neo4j_write_chunk(driver, doc_id: str, file_name: str,
+                      chunk_index: int, text: str, page: int,
+                      block_type: str) -> int:
+    """MERGE Document, Chunk, and entity relationships. Returns triples written."""
+    if driver is None:
+        return 0
+    ents = _extract_entities(text)
+    chunk_uid = f"{doc_id}#{chunk_index}"
+    cypher = """
+    MERGE (d:Document {doc_id: $doc_id})
+      ON CREATE SET d.file_name = $file_name
+      ON MATCH  SET d.file_name = $file_name
+    MERGE (c:Chunk {uid: $cuid})
+      ON CREATE SET c.doc_id = $doc_id, c.chunk_index = $cidx, c.page = $page,
+                    c.block_type = $btype, c.text = left($text, 200)
+      ON MATCH  SET c.page = $page, c.block_type = $btype, c.text = left($text, 200)
+    MERGE (d)-[:HAS_CHUNK]->(c)
+    WITH c
+    UNWIND $ents AS e
+      CALL {
+        WITH c, e
+        MERGE (n:Entity {type: e.type, name: e.name})
+        MERGE (c)-[:MENTIONS]->(n)
+        RETURN count(*) AS x
+      }
+    RETURN sum(x) AS rels
+    """
+    try:
+        with driver.session() as ses:
+            res = ses.run(cypher, doc_id=doc_id, file_name=file_name,
+                          cuid=chunk_uid, cidx=chunk_index, page=page,
+                          btype=block_type, text=text, ents=ents)
+            rec = res.single()
+            return (rec["rels"] if rec and rec.get("rels") else 0) + 2  # 2 = HAS_CHUNK + Chunk
+    except Exception as e:
+        logger.warning("neo4j write failed (%s#%s): %s", doc_id, chunk_index, e)
+        return 0
+
+
 def job_create(file_name: str, file_path: str, file_size: int, mime: str) -> str:
     job_id = uuid.uuid4().hex[:16]
     conn = _conn()
@@ -557,15 +684,58 @@ async def run_ingest_job(job_id: str) -> None:
         # 3) write to PG (with embedding) — idempotent
         inserted, embedded = write_chunks_to_pg(job_id, doc_id, file_name, chunks)
         job_update(job_id, chunks_pg=inserted, vectors_qdrant=embedded,
-                   phase="index", progress_pct=90)
+                   phase="index", progress_pct=80)
 
-        # 4) finalize
+        # 4) replicate to Qdrant + Neo4j (idempotent via write_log)
+        qdrant_ok = 0
+        triples = 0
+        neo_drv = _neo4j_session()
+        try:
+            from app.agent.tools import _get_embedding_svc
+            emb = _get_embedding_svc()
+            for i, c in enumerate(chunks):
+                # Qdrant
+                if not write_log_has(job_id, "qdrant", str(i)):
+                    try:
+                        v = emb.encode(c.text)
+                        v_list = v.tolist() if hasattr(v, "tolist") else list(v)
+                        if qdrant_upsert(doc_id, file_name, i, c.text, v_list,
+                                         c.page, c.type, job_id):
+                            write_log_put(job_id, "qdrant", str(i))
+                            qdrant_ok += 1
+                    except Exception as ee:
+                        logger.warning("qdrant chunk %s failed: %s", i, ee)
+                else:
+                    qdrant_ok += 1
+                # Neo4j
+                if neo_drv is not None:
+                    if not write_log_has(job_id, "neo4j", str(i)):
+                        n = neo4j_write_chunk(neo_drv, doc_id, file_name, i,
+                                              c.text, c.page, c.type)
+                        if n > 0:
+                            write_log_put(job_id, "neo4j", str(i))
+                            triples += n
+                    else:
+                        triples += 2  # estimate for already-written chunk
+        finally:
+            if neo_drv is not None:
+                try:
+                    neo_drv.close()
+                except Exception:
+                    pass
+
+        job_update(job_id, vectors_qdrant=qdrant_ok, triples_neo4j=triples,
+                   progress_pct=95)
+
+        # 5) finalize
         duration_ms = int((time.time() - started) * 1000)
         job_update(job_id, status="done", phase="done", progress_pct=100,
                    duration_ms=duration_ms,
                    finished_at=time.strftime("%Y-%m-%d %H:%M:%S"))
-        logger.info("job %s done: extractor=%s blocks=%d chunks=%d ms=%d",
-                    job_id, extractor, len(blocks), inserted, duration_ms)
+        logger.info("job %s done: extractor=%s blocks=%d chunks=%d "
+                    "qdrant=%d neo4j=%d ms=%d",
+                    job_id, extractor, len(blocks), inserted,
+                    qdrant_ok, triples, duration_ms)
 
     except Exception as e:
         duration_ms = int((time.time() - started) * 1000)
