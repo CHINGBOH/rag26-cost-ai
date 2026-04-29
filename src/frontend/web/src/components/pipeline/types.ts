@@ -11,6 +11,7 @@ export interface UploadFile {
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'failed';
   progress: number;
   stage?: string;
+  jobId?: string;
   result?: any;
   error?: string;
   startTime: number;

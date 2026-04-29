@@ -128,33 +128,63 @@ export const DataPipelineDashboard: React.FC = () => {
   };
 
   const uploadSingleFile = async (fileInfo: UploadFile) => {
-    setUploadQueue(prev => prev.map(f => 
-      f.id === fileInfo.id ? { ...f, status: 'uploading', progress: 0 } : f
+    setUploadQueue(prev => prev.map(f =>
+      f.id === fileInfo.id ? { ...f, status: 'uploading', progress: 5, stage: '上传中' } : f
     ));
 
     const formData = new FormData();
     formData.append('file', fileInfo.file);
-    formData.append('fileId', fileInfo.id);
 
     try {
-      const response = await authFetch('/api/pipeline/upload', {
+      const response = await authFetch('/api/v1/pipeline/upload', {
         method: 'POST',
         body: formData,
       });
-
       if (!response.ok) throw new Error(`Upload failed: ${response.statusText}`);
-
       const result = await response.json();
-      
-      if (result.success) {
-        setUploadQueue(prev => prev.map(f => 
-          f.id === fileInfo.id ? { ...f, status: 'completed', progress: 100, stage: '处理完成', result: result.data } : f
-        ));
-      } else {
-        throw new Error(result.error?.message || 'Upload failed');
+      if (!result.ok || !result.job_id) {
+        throw new Error(result.error || 'upload rejected');
       }
+      const jobId: string = result.job_id;
+
+      setUploadQueue(prev => prev.map(f =>
+        f.id === fileInfo.id ? { ...f, status: 'processing', progress: 10, stage: '排队', jobId } : f
+      ));
+
+      // poll job status until done/failed (max ~5 min)
+      const phaseLabel: Record<string, string> = {
+        queued: '排队', extract: '提取', chunk: '切片',
+        embed: '向量化', index: '入库', done: '完成', error: '失败',
+      };
+      const start = Date.now();
+      while (Date.now() - start < 5 * 60_000) {
+        await new Promise(r => setTimeout(r, 1500));
+        const jr = await authFetch(`/api/v1/pipeline/job/${jobId}`);
+        if (!jr.ok) continue;
+        const j = await jr.json();
+        const stage = phaseLabel[j.phase] || j.phase || j.status;
+        const progress = j.progress_pct ?? 50;
+
+        if (j.status === 'done') {
+          setUploadQueue(prev => prev.map(f =>
+            f.id === fileInfo.id ? {
+              ...f, status: 'completed', progress: 100,
+              stage: `完成 · ${j.chunks_pg ?? 0} chunks · ${j.extractor || '?'}`,
+              result: j, endTime: Date.now(),
+            } : f
+          ));
+          return;
+        }
+        if (j.status === 'failed') {
+          throw new Error(j.error || 'pipeline failed');
+        }
+        setUploadQueue(prev => prev.map(f =>
+          f.id === fileInfo.id ? { ...f, status: 'processing', progress, stage } : f
+        ));
+      }
+      throw new Error('pipeline timeout (>5min)');
     } catch (error: any) {
-      setUploadQueue(prev => prev.map(f => 
+      setUploadQueue(prev => prev.map(f =>
         f.id === fileInfo.id ? { ...f, status: 'failed', error: error.message, endTime: Date.now() } : f
       ));
     }

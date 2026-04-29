@@ -1633,53 +1633,131 @@ def _split_text_for_pipeline(text: str, max_chars: int = 400) -> list[str]:
 
 @router.post("/api/v1/pipeline/upload")
 async def pipeline_upload(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-    """Accept a file (pdf/image/txt/md), kick off OCR → chunk → embed → ingest pipeline."""
-    job_id = _pl_uuid.uuid4().hex[:16]
-    fname = file.filename or f"upload_{job_id}.bin"
-    safe_name = "".join(c for c in fname if c.isalnum() or c in "._-")[:120] or f"u_{job_id}"
-    dest = _UPLOAD_DIR / f"{job_id}_{safe_name}"
+    """Accept a file (pdf/image/txt/md), create PG-backed ingest job, run async."""
+    from app import ingest_pipeline as ipl
+
+    fname = file.filename or "upload.bin"
+    safe_name = "".join(c for c in fname if c.isalnum() or c in "._-")[:120] or "upload.bin"
+    suffix = _PlPath(safe_name).suffix.lower()
+    mime_map = {".pdf": "application/pdf", ".png": "image/png",
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".txt": "text/plain", ".md": "text/markdown"}
+    mime = mime_map.get(suffix, "application/octet-stream")
+
+    # generate job_id first so the saved file name is unique
+    tmp_id = _pl_uuid.uuid4().hex[:16]
+    dest = _UPLOAD_DIR / f"{tmp_id}_{safe_name}"
     try:
         with open(dest, "wb") as fh:
             _pl_shutil.copyfileobj(file.file, fh)
     except Exception as e:
         return {"ok": False, "error": f"save failed: {e}"}
-    finally:
-        await _pl_asyncio.shield(_pl_asyncio.sleep(0))
+
     size = dest.stat().st_size if dest.exists() else 0
-    _pl_write(job_id, {
-        "job_id": job_id,
-        "file_name": fname,
-        "file_size": size,
-        "status": "queued",
-        "created_ts": time.time(),
-    })
+    # create job in PG (gets its own job_id)
+    job_id = ipl.job_create(file_name=fname, file_path=str(dest),
+                            file_size=size, mime=mime)
+
+    # rename file so it carries the real job_id (cosmetic, not required)
+    final = _UPLOAD_DIR / f"{job_id}_{safe_name}"
+    try:
+        dest.rename(final)
+        ipl.job_update(job_id, file_path=str(final))
+    except Exception:
+        pass
+
     if background_tasks is None:
-        # Fallback: run inline in another thread
-        _pl_asyncio.create_task(_run_pipeline_job(job_id, str(dest), fname))
+        _pl_asyncio.create_task(ipl.run_ingest_job(job_id))
     else:
-        background_tasks.add_task(_run_pipeline_job, job_id, str(dest), fname)
-    return {"ok": True, "job_id": job_id, "file_name": fname, "size": size, "status": "queued"}
+        background_tasks.add_task(ipl.run_ingest_job, job_id)
+
+    return {"ok": True, "job_id": job_id, "file_name": fname,
+            "size": size, "status": "queued", "mime": mime}
 
 
 @router.get("/api/v1/pipeline/jobs")
-async def list_pipeline_jobs(limit: int = 50):
-    if not _PIPELINE_DIR.exists():
-        return {"jobs": []}
-    files = sorted(_PIPELINE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    files = files[: max(1, min(200, int(limit)))]
-    jobs = []
-    for fp in files:
-        try:
-            jobs.append(json.loads(fp.read_text()))
-        except Exception:
-            continue
+async def list_pipeline_jobs(limit: int = 50, status: str | None = None):
+    from app import ingest_pipeline as ipl
+    jobs = ipl.job_list(limit=max(1, min(200, int(limit))), status=status)
+    # serialize datetimes
+    for j in jobs:
+        for k in ("created_at", "updated_at", "started_at", "finished_at"):
+            if j.get(k) is not None:
+                j[k] = str(j[k])
     return {"jobs": jobs}
 
 
 @router.get("/api/v1/pipeline/job/{job_id}")
 async def get_pipeline_job(job_id: str):
-    j = _pl_read(job_id)
+    from app import ingest_pipeline as ipl
+    j = ipl.job_get(job_id)
     if not j:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="job not found")
+    for k in ("created_at", "updated_at", "started_at", "finished_at"):
+        if j.get(k) is not None:
+            j[k] = str(j[k])
     return j
+
+
+@router.post("/api/v1/pipeline/retry/{job_id}")
+async def retry_pipeline_job(job_id: str, background_tasks: BackgroundTasks = None):
+    """Re-run a failed/done job; idempotent via ingest_write_log."""
+    from app import ingest_pipeline as ipl
+    j = ipl.job_get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="job not found")
+    ipl.job_update(job_id, status="queued", phase="queued",
+                   progress_pct=0, error=None)
+    if background_tasks is None:
+        _pl_asyncio.create_task(ipl.run_ingest_job(job_id))
+    else:
+        background_tasks.add_task(ipl.run_ingest_job, job_id)
+    return {"ok": True, "job_id": job_id, "status": "queued"}
+
+
+@router.get("/api/v1/pipeline/health")
+async def pipeline_health():
+    """Probe upstream services so the ops dashboard tells the truth."""
+    import httpx
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+    health: dict = {"ok": True, "components": {}}
+
+    # bypass any SOCKS proxy for localhost probes
+    transport = httpx.AsyncHTTPTransport(proxy=None)
+
+    # PG
+    try:
+        c = _get_pg_conn()
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM ingest_jobs")
+                cur.fetchone()
+            health["components"]["postgres"] = {"ok": True}
+        finally:
+            _put_pg_conn(c)
+    except Exception as e:
+        health["components"]["postgres"] = {"ok": False, "error": str(e)[:200]}
+        health["ok"] = False
+
+    async def probe(name: str, url: str, optional: bool = False):
+        try:
+            async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
+                r = await client.get(url)
+                ok = r.status_code in (200, 401)  # 401 = neo4j auth-protected but alive
+                health["components"][name] = {"ok": ok, "status_code": r.status_code}
+                if not ok and not optional:
+                    health["ok"] = False
+        except Exception as e:
+            health["components"][name] = {"ok": False, "error": str(e)[:200]}
+            if optional:
+                health["components"][name]["note"] = "optional"
+            else:
+                health["ok"] = False
+
+    await probe("qdrant", os.environ.get("QDRANT_URL", "http://localhost:6333") + "/collections")
+    await probe("ocr",    os.environ.get("OCR_SERVICE_URL", "http://localhost:8001") + "/health",
+                optional=True)
+    await probe("neo4j",  os.environ.get("NEO4J_HTTP_URL", "http://localhost:7474"),
+                optional=True)
+
+    return health
