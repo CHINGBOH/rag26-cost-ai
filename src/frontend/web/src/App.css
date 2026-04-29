@@ -152,16 +152,60 @@ body {
 
 @media (max-width: 768px) {
   .app-nav {
-    padding: 0 16px;
-    gap: 16px;
+    padding: 0 12px;
+    gap: 0;
+    height: 52px;
+    overflow: hidden;
+  }
+
+  .nav-brand {
+    flex-shrink: 0;
+    margin-right: 8px;
   }
 
   .nav-title {
     display: none;
   }
 
+  /* Scrollable nav strip on mobile */
+  .nav-links {
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    gap: 2px;
+    /* prevent gap from collapsing flex items */
+    flex-wrap: nowrap;
+  }
+
+  .nav-links::-webkit-scrollbar {
+    display: none;
+  }
+
   .nav-link {
+    flex-shrink: 0;
+    scroll-snap-align: start;
     padding: 8px 12px;
     font-size: 13px;
+    min-height: 44px; /* touch target */
+  }
+
+  .nav-actions {
+    flex-shrink: 0;
+    margin-left: 4px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-nav {
+    padding: 0 8px;
+    height: 48px;
+  }
+
+  .nav-link {
+    padding: 6px 10px;
+    font-size: 12px;
   }
 }

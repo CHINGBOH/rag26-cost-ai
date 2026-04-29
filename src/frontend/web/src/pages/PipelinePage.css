@@ -171,3 +171,18 @@
   color: #f87171;
   border-color: rgba(220, 38, 38, 0.22);
 }
+
+/* ── Mobile ──────────────────────── */
+
+@media (max-width: 768px) {
+  .pipeline-page   { padding: 0 16px 32px; }
+  .pipeline-card   { padding: 18px; }
+
+  .upload-zone     { padding: 24px 16px; }
+}
+
+@media (max-width: 480px) {
+  .pipeline-page   { padding: 0 12px 24px; }
+
+  .health-grid     { grid-template-columns: 1fr; }
+}

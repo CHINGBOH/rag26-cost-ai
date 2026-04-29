@@ -150,3 +150,22 @@
   font-weight: 600;
   color: var(--text-primary);
 }
+
+/* ── Mobile ──────────────────────── */
+
+@media (max-width: 768px) {
+  .ops-page { padding: 0 16px 32px; }
+
+  .ops-ws-badge { font-size: 11px; padding: 4px 10px; }
+}
+
+@media (max-width: 480px) {
+  .ops-page      { padding: 0 12px 24px; }
+
+  /* 4-col → 1-col on small phones */
+  .service-grid  { grid-template-columns: repeat(2, 1fr); }
+
+  .ops-info-card { flex: 1 1 calc(50% - 6px); }
+
+  .ops-chart-card { padding: 14px; }
+}

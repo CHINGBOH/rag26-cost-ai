@@ -8,6 +8,8 @@
   display: grid;
   grid-template-columns: 280px 1fr 360px;
   height: calc(100vh - 56px);
+  /* keyboard-safe on mobile: dvh ignores virtual keyboard */
+  height: calc(100dvh - 56px);
   overflow: hidden;
 }
 
@@ -1471,11 +1473,48 @@
 @media (max-width: 768px) {
   .agent-chat-3panel {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: 1fr auto;
+    height: calc(100dvh - 52px);
   }
 
-  .left-panel { display: none; }
+  .left-panel  { display: none; }
   .right-panel { display: none; }
+
+  .chat-panel {
+    min-width: 0;
+    padding: 0 16px;
+  }
+
+  .chat-input-area {
+    padding: 8px 0 16px;
+  }
+
+  .chat-messages {
+    padding: 20px 0;
+    gap: 16px;
+  }
+
+  .message-bubble {
+    max-width: 92%;
+    font-size: 14px;
+    padding: 12px 14px;
+  }
+
+  /* Bigger tap target for send button */
+  .send-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+  }
+
+  /* Hint text hides on small screens */
+  .hint-text { display: none; }
+}
+
+@media (max-width: 480px) {
+  .agent-chat-3panel {
+    height: calc(100dvh - 48px);
+  }
 }
 
 /* ── 消息区域 ─────────────────────── */
