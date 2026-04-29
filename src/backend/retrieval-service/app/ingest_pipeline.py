@@ -136,10 +136,67 @@ def _extract_entities(text: str) -> list[dict]:
     return ents[:20]
 
 
+_HEADER_KEY_MAP = {
+    "项目": "material_name", "材料": "material_name", "材料名称": "material_name",
+    "名称": "material_name", "品名": "material_name", "工料名称": "material_name",
+    "规格": "spec", "规格型号": "spec", "型号": "spec", "规格及型号": "spec",
+    "单位": "unit", "计量单位": "unit",
+    "单价": "price", "价格": "price", "含税单价": "price", "除税单价": "price",
+    "市场价": "price", "信息价": "price", "综合单价": "price",
+    "时间": "period", "期号": "period", "年月": "period", "时期": "period",
+    "编号": "code", "代码": "code", "编码": "code",
+}
+
+
+def _parse_table_rows(cells: Any) -> list[dict[str, Any]]:
+    """Convert PaddleOCR table cells (matrix or flat dict-list) into row dicts.
+
+    First row treated as headers; remaining rows mapped by header.
+    Unrecognized headers stored as col_<idx>.
+    """
+    if not cells:
+        return []
+    matrix: list[list[str]] = []
+    if isinstance(cells[0], dict):
+        max_r = max((c.get("row", 0) for c in cells), default=-1) + 1
+        max_c = max((c.get("col", 0) for c in cells), default=-1) + 1
+        if max_r <= 0 or max_c <= 0:
+            return []
+        matrix = [["" for _ in range(max_c)] for _ in range(max_r)]
+        for c in cells:
+            r = int(c.get("row", 0)); cc = int(c.get("col", 0))
+            if 0 <= r < max_r and 0 <= cc < max_c:
+                matrix[r][cc] = str(c.get("text", "")).strip()
+    elif isinstance(cells[0], list):
+        matrix = [[str(x).strip() for x in row] for row in cells]
+    else:
+        return []
+    if len(matrix) < 2:
+        return []
+    headers = matrix[0]
+    keys: list[str] = []
+    for i, h in enumerate(headers):
+        keys.append(_HEADER_KEY_MAP.get(h.strip(), f"col_{i}"))
+    rows: list[dict[str, Any]] = []
+    for ri, row in enumerate(matrix[1:], start=1):
+        d: dict[str, Any] = {"row_index": ri}
+        for i, val in enumerate(row):
+            if i < len(keys) and val:
+                d[keys[i]] = val
+        if any(k not in ("row_index",) for k in d.keys()):
+            rows.append(d)
+    return rows
+
+
 def neo4j_write_chunk(driver, doc_id: str, file_name: str,
                       chunk_index: int, text: str, page: int,
-                      block_type: str) -> int:
-    """MERGE Document, Chunk, and entity relationships. Returns triples written."""
+                      block_type: str,
+                      metadata: dict | None = None) -> int:
+    """MERGE Document, Chunk, and entity relationships. Returns triples written.
+
+    For block_type=='table_row' with metadata['table_cells'], also materializes
+    (:Document)-[:HAS_TABLE]->(:Table)-[:HAS_ROW]->(:PriceRow) for structured query.
+    """
     if driver is None:
         return 0
     ents = _extract_entities(text)
@@ -163,13 +220,40 @@ def neo4j_write_chunk(driver, doc_id: str, file_name: str,
       }
     RETURN sum(x) AS rels
     """
+    table_rows: list[dict[str, Any]] = []
+    if block_type == "table_row" and metadata and metadata.get("table_cells"):
+        try:
+            table_rows = _parse_table_rows(metadata["table_cells"])
+        except Exception as e:
+            logger.warning("table cell parse failed (%s#%s): %s", doc_id, chunk_index, e)
+    table_cypher = """
+    MATCH (d:Document {doc_id: $doc_id})
+    MATCH (c:Chunk {uid: $cuid})
+    MERGE (t:Table {uid: $cuid})
+      ON CREATE SET t.doc_id = $doc_id, t.page = $page, t.n_rows = $n_rows
+      ON MATCH  SET t.page = $page, t.n_rows = $n_rows
+    MERGE (d)-[:HAS_TABLE]->(t)
+    MERGE (c)-[:DERIVED_FROM_TABLE]->(t)
+    WITH t
+    UNWIND $rows AS r
+      MERGE (p:PriceRow {table_uid: $cuid, row_index: r.row_index})
+      SET p += r, p.doc_id = $doc_id, p.page = $page
+      MERGE (t)-[:HAS_ROW]->(p)
+    RETURN count(*) AS n
+    """
     try:
         with driver.session() as ses:
             res = ses.run(cypher, doc_id=doc_id, file_name=file_name,
                           cuid=chunk_uid, cidx=chunk_index, page=page,
                           btype=block_type, text=text, ents=ents)
             rec = res.single()
-            return (rec["rels"] if rec and rec.get("rels") else 0) + 2  # 2 = HAS_CHUNK + Chunk
+            base = (rec["rels"] if rec and rec.get("rels") else 0) + 2
+            if table_rows:
+                res2 = ses.run(table_cypher, doc_id=doc_id, cuid=chunk_uid,
+                               page=page, n_rows=len(table_rows), rows=table_rows)
+                rec2 = res2.single()
+                base += (rec2["n"] if rec2 and rec2.get("n") else 0) + 2  # +Table+HAS_TABLE
+            return base
     except Exception as e:
         logger.warning("neo4j write failed (%s#%s): %s", doc_id, chunk_index, e)
         return 0
@@ -903,7 +987,8 @@ async def run_ingest_job(job_id: str) -> None:
                 if neo_drv is not None:
                     if not write_log_has(job_id, "neo4j", str(i)):
                         n = neo4j_write_chunk(neo_drv, doc_id, file_name, i,
-                                              c.text, c.page, c.type)
+                                              c.text, c.page, c.type,
+                                              metadata=c.metadata)
                         if n > 0:
                             write_log_put(job_id, "neo4j", str(i))
                             triples += n
