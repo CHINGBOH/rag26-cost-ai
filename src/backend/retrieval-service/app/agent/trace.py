@@ -71,10 +71,10 @@ def _extract_tool_calls(delta: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         for tc in tcs:
             if isinstance(tc, dict):
-                out.append({"name": tc.get("name") or "?",
+                out.append({"tool": tc.get("name") or "?",
                             "args": _short(tc.get("args") or {}, 200)})
             else:
-                out.append({"name": getattr(tc, "name", "?"),
+                out.append({"tool": getattr(tc, "name", "?"),
                             "args": _short(getattr(tc, "args", {}) or {}, 200)})
     return out
 
