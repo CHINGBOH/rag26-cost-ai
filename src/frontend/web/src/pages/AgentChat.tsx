@@ -33,9 +33,22 @@ import {
 import './AgentChat.css';
 
 /* ── Simple Markdown Renderer ───────────────────────── */
-/** Converts **bold**, `code`, and line-breaks to HTML. No external deps. */
+const HTML_ESCAPE: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, ch => HTML_ESCAPE[ch] || ch);
+}
+/** Converts **bold**, `code`, and line-breaks to HTML.
+ *  All input is HTML-escaped first to prevent XSS — only the whitelisted
+ *  bold/code/br tags introduced AFTER escaping remain as live HTML. */
 function renderMarkdown(text: string): string {
-  return text
+  if (text == null) return '';
+  return escapeHtml(String(text))
     // bold
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     // inline code
