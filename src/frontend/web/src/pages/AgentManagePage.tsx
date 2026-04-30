@@ -1,12 +1,16 @@
 /**
  * Agent Management Page — Task Queue + Active Agents 看板
- * 当前为 .agent/agents/ 配置文件的演示视图，数据为本地种子，
- * 待后端 agent registry / task queue 接口完成后接通真实数据。
+ * Real data sources:
+ *   - Active Agents: /api/v1/agents/registry (reads .agent/agents/*.md)
+ *   - Task Queue:    /api/v1/agents/tasks    (reads ingest_jobs)
+ * Falls back to seed data if backend is unreachable.
  */
 
 import { useState, useEffect } from 'react';
 import { PageHeader } from '../components/common/PageHeader';
 import './AgentManagePage.css';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 /* ── Types ───────────────────────────────────────────── */
 
@@ -150,27 +154,98 @@ function AgentCard({ agent }: { agent: ActiveAgent }) {
 
 /* ── Main page ───────────────────────────────────────── */
 
+function normalizeModel(raw: string | undefined): ActiveAgent['model'] {
+  const m = (raw || '').toUpperCase();
+  if (m.includes('OPUS')) return 'OPUS';
+  if (m.includes('HAIKU')) return 'HAIKU';
+  return 'SONNET';
+}
+
 export const AgentManagePage: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>(SEED_TASKS);
-  const [agents] = useState<ActiveAgent[]>(SEED_AGENTS);
+  const [agents, setAgents] = useState<ActiveAgent[]>(SEED_AGENTS);
+  const [dataSource, setDataSource] = useState<'live' | 'seed' | 'partial'>('seed');
+  const [error, setError] = useState<string | null>(null);
 
-  // Simulate runtime ticking (replace with real WebSocket/polling)
+  async function loadAll() {
+    let liveTasks = false;
+    let liveAgents = false;
+    try {
+      const r = await fetch(`${API_BASE}/api/v1/agents/registry`);
+      if (r.ok) {
+        const j = await r.json();
+        const list: ActiveAgent[] = (j.agents || []).map((a: Record<string, unknown>) => ({
+          id: String(a.id),
+          name: String(a.name || a.id),
+          role: String(a.role || ''),
+          model: normalizeModel(a.model as string | undefined),
+          description: String(a.description || a.role || ''),
+          runtimeSec: 0,
+          taskCount: 0,
+          status: 'idle' as AgentStatus,
+        }));
+        if (list.length) {
+          setAgents(list);
+          liveAgents = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[AgentManage] registry fetch failed', e);
+    }
+    try {
+      const r = await fetch(`${API_BASE}/api/v1/agents/tasks?limit=50`);
+      if (r.ok) {
+        const j = await r.json();
+        const list: Task[] = (j.tasks || []).map((t: Record<string, unknown>) => ({
+          id: String(t.id),
+          label: String(t.label || t.id),
+          tag: String(t.tag || 'ingest'),
+          status: (t.status as TaskStatus) || 'pending',
+        }));
+        if (list.length) {
+          setTasks(list);
+          liveTasks = true;
+        }
+      }
+    } catch (e) {
+      console.warn('[AgentManage] tasks fetch failed', e);
+    }
+    if (liveTasks && liveAgents) setDataSource('live');
+    else if (liveTasks || liveAgents) setDataSource('partial');
+    else {
+      setDataSource('seed');
+      setError('后端 /api/v1/agents/* 不可达，显示种子数据');
+    }
+  }
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setTasks((prev) => [...prev]); // trigger re-render for live feel
-    }, 30_000);
+    loadAll();
+    const interval = setInterval(loadAll, 30_000);
     return () => clearInterval(interval);
   }, []);
+
+  const sourceTag =
+    dataSource === 'live' ? '实时数据'
+    : dataSource === 'partial' ? '部分实时'
+    : '演示数据';
 
   return (
     <div className="agent-manage-page">
       <PageHeader
         title="Agents 看板"
-        subtitle="任务队列与运行中的 agent 概览"
-        actions={<span className="demo-tag">演示数据</span>}
+        subtitle={
+          dataSource === 'live'
+            ? '任务来自 ingest_jobs，agent 来自 .agent/agents/'
+            : '任务队列与运行中的 agent 概览'
+        }
+        actions={<span className="demo-tag">{sourceTag}</span>}
       />
 
-      {/* Task Queue */}
+      {error && dataSource === 'seed' && (
+        <div className="section-block" style={{ padding: '8px 12px', background: '#fff3cd', borderRadius: 4, marginBottom: 12 }}>
+          ⚠ {error}
+        </div>
+      )}      {/* Task Queue */}
       <section className="section-block">
         <h2 className="section-title">Task Queue</h2>
         <div className="task-queue-grid">

@@ -1924,3 +1924,106 @@ async def pipeline_health():
                 optional=True)
 
     return health
+
+
+# ────────────────────────── Agent registry & task queue (#74) ──────────────────────────
+
+_AGENT_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+
+
+def _parse_agent_frontmatter(text: str) -> dict:
+    """Extract YAML-style key:value pairs from the leading --- block."""
+    out: dict = {}
+    m = _AGENT_FRONTMATTER_RE.match(text)
+    if not m:
+        return out
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+@router.get("/api/v1/agents/registry")
+async def agents_registry():
+    """Real agent registry — reads .agent/agents/*.md (YAML frontmatter)."""
+    from pathlib import Path
+    # Walk up from this file to repo root: app/api.py → app → retrieval-service
+    # → backend → src → repo. Tolerate variations by searching for .agent/agents.
+    here = Path(__file__).resolve()
+    candidate = None
+    for p in here.parents:
+        c = p / ".agent" / "agents"
+        if c.is_dir():
+            candidate = c
+            break
+    if candidate is None:
+        return {"agents": [], "source": "none", "note": ".agent/agents not found"}
+
+    agents = []
+    for f in sorted(candidate.glob("*.md")):
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+            fm = _parse_agent_frontmatter(content)
+            agents.append({
+                "id": fm.get("id") or f.stem,
+                "name": fm.get("name") or f.stem,
+                "role": fm.get("role") or "",
+                "model": (fm.get("model") or "").upper().replace("CLAUDE-", "") or "SONNET",
+                "trigger": fm.get("trigger") or "",
+                "description": fm.get("trigger_description") or fm.get("role") or "",
+                "file": f.name,
+            })
+        except Exception as e:
+            logger.warning("agent registry parse %s: %s", f.name, e)
+    return {"agents": agents, "source": str(candidate), "count": len(agents)}
+
+
+@router.get("/api/v1/agents/tasks")
+async def agents_tasks(limit: int = 50):
+    """Real task queue — derived from ingest_jobs (the only real task pipeline)."""
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+    # Map ingest_jobs.status → frontend TaskStatus
+    status_map = {
+        "queued": "pending",
+        "running": "in_progress",
+        "in_progress": "in_progress",
+        "done": "completed",
+        "ready": "completed",
+        "completed": "completed",
+        "failed": "failed",
+        "error": "failed",
+    }
+    conn = None
+    tasks = []
+    try:
+        conn = _get_pg_conn()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT job_id, file_name, status, phase,
+                       COALESCE(extractor, 'ingest'), created_at
+                FROM ingest_jobs
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (max(1, min(limit, 500)),))
+            for r in cur.fetchall():
+                job_id, file_name, status, phase, extractor, created_at = r
+                tasks.append({
+                    "id": job_id,
+                    "label": (file_name or job_id)[:120],
+                    "tag": f"ingest-{extractor}" if extractor else "ingest",
+                    "status": status_map.get((status or "").lower(), "pending"),
+                    "phase": phase,
+                    "created_at": created_at.isoformat() if created_at else None,
+                })
+    except Exception as e:
+        logger.error("agents_tasks failed: %s", e)
+        return {"tasks": [], "source": "ingest_jobs", "error": str(e)[:200]}
+    finally:
+        if conn is not None:
+            try:
+                _put_pg_conn(conn)
+            except Exception:
+                pass
+    return {"tasks": tasks, "source": "ingest_jobs", "count": len(tasks)}
