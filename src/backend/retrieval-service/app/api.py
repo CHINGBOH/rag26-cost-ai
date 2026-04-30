@@ -1237,8 +1237,13 @@ async def system_kb():
         with conn.cursor() as cur:
             out["chunks_total"] = _q(cur, "SELECT COUNT(*) FROM text_chunks")
             out["documents_total"] = _q(cur, "SELECT COUNT(*) FROM document_registry")
-            if out["documents_total"] is None:
-                out["documents_total"] = _q(cur, "SELECT COUNT(DISTINCT doc_id) FROM text_chunks")
+            # Fallback: if registry is empty (None or 0) but chunks exist, count distinct doc_ids
+            if not out["documents_total"]:
+                fallback = _q(cur, "SELECT COUNT(DISTINCT doc_id) FROM text_chunks")
+                if fallback:
+                    out["documents_total"] = fallback
+            # Always expose chunk-level distinct count for cross-check
+            out["documents_in_chunks"] = _q(cur, "SELECT COUNT(DISTINCT doc_id) FROM text_chunks") or 0
             out["concepts_total"] = _q(cur, "SELECT COUNT(*) FROM canonical_concepts")
             if out["concepts_total"] is None:
                 out["concepts_total"] = _q(cur, "SELECT COUNT(*) FROM catalog_index")
