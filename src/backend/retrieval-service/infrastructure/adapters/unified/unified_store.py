@@ -247,7 +247,8 @@ class UnifiedStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, document_id, content, page_number, period, doc_type,
+                    SELECT id, doc_id, content, page_number, section,
+                           COALESCE(metadata->>'doc_type', '') AS doc_type,
                            embedding <=> %s::vector AS distance
                     FROM text_chunks
                     WHERE embedding IS NOT NULL
@@ -284,12 +285,17 @@ class UnifiedStore:
         conn = self.pg_pool.getconn()
         try:
             with conn.cursor() as cur:
+                # text_chunks has a GIN index on to_tsvector('chinese', content);
+                # use that directly instead of a non-existent tsv column.
                 cur.execute(
                     """
-                    SELECT id, document_id, content, page_number, period, doc_type,
-                           ts_rank(tsv, plainto_tsquery('simple', %s)) AS rank
+                    SELECT id, doc_id, content, page_number, section,
+                           COALESCE(metadata->>'doc_type', '') AS doc_type,
+                           ts_rank(to_tsvector('chinese', content),
+                                   plainto_tsquery('chinese', %s)) AS rank
                     FROM text_chunks
-                    WHERE tsv @@ plainto_tsquery('simple', %s)
+                    WHERE to_tsvector('chinese', content)
+                          @@ plainto_tsquery('chinese', %s)
                     ORDER BY rank DESC
                     LIMIT %s
                 """,
