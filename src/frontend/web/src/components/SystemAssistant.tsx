@@ -9,14 +9,46 @@ import { sendLLMStream, LLMMessage } from '../services/llmApi';
 import { retrieveDocs } from '../utils/docRetrieval';
 import './SystemAssistant.css';
 
-// ── Lean system prompt + doc context injected per-query ─────────────────────
-const BASE_SYSTEM_PROMPT = `你是 RAG 智库系统的专属导览助手。
-职责：解答关于本系统的工作原理、使用方法、内部机制的所有问题。
-风格：简洁通俗，不用技术术语炫技，让不懂计算机的业务用户也能看懂。
-约束：不回答与本系统无关的问题；不掌握实时运行数据（需要实时数据请去"系统运维"页面）。
+// ── Simple inline renderer: bold + numbered/bullet lists + line breaks ────────
+function renderAssistantText(text: string): string {
+  if (!text) return '';
+  return text
+    // Escape HTML entities first
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // Remove leftover markdown symbols we don't want shown
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Convert "- item" or "• item" bullet lines
+    .replace(/^[-•]\s+(.+)$/gm, '· $1')
+    // Line breaks
+    .replace(/\n/g, '<br />');
+}
 
-如果用户问题在"参考文档"里有对应内容，优先使用文档内容作答。
-如果文档里没有，可结合本系统架构常识回答，但要说明"这是一般原则"。`;
+// ── Lean system prompt + doc context injected per-query ─────────────────────
+const BASE_SYSTEM_PROMPT = `您是「RAG 智库系统」的专属导览助手，服务对象是建设工程造价领域的业务专家——他们精通工程预算、图纸审核、定额套用，但对计算机技术完全陌生，请务必做到以下几点：
+
+【称谓与礼仪】
+- 全程使用"您"，不用"你"。首次回答以"您好"开头。
+- 语气温和、耐心，多给予肯定，让用户感到被尊重、被理解。
+
+【表达风格】
+- 用建设工程行业耳熟能详的事物来打比方。例如：
+  · 把"向量数据库"比作"图纸档案室，按图纸相似度分区存放"
+  · 把"搜索召回"比作"翻定额本，先找章节再找细目"
+  · 把"置信度评分"比作"送审预算的核定比例"
+  · 把"RAG检索增强"比作"造价员在报价前必须先查询已有的工程案例库"
+  · 把"Agent工具调用"比作"造价员调用计算软件、查询规范、核对市场价"
+- 不要直接甩出英文缩写（RAG、LLM、SSE），要先用中文解释它是做什么的。
+- 避免使用 markdown 符号（**、##、---）直接输出；改用序号①②③或分行说明。
+- 回答长度适中，能说清楚就行，不要写得像技术文档。
+
+【知识边界】
+- 优先用"参考文档"中的内容回答；没有的话，用常识作答并说明"这是一般情况"。
+- 不回答与本系统完全无关的问题。
+- 不掌握实时运行数据，如需实时状态请告知用户去"系统运维"页面查看。`;
 
 const ASSISTANT_MODEL = 'deepseek-v4-flash';
 
@@ -198,8 +230,19 @@ export const SystemAssistant: React.FC = () => {
 
             {messages.map((m, i) => (
               <div key={i} className={`sa-msg sa-msg--${m.role}`}>
-                <div className="sa-msg-content">
-                  {m.content || (m.streaming ? <span className="sa-cursor">▍</span> : null)}
+                <div
+                  className="sa-msg-content"
+                  dangerouslySetInnerHTML={
+                    m.role === 'assistant' && m.content
+                      ? { __html: renderAssistantText(m.content) }
+                      : undefined
+                  }
+                >
+                  {m.role === 'user'
+                    ? m.content
+                    : !m.content && m.streaming
+                      ? <span className="sa-cursor">▍</span>
+                      : null}
                 </div>
               </div>
             ))}
