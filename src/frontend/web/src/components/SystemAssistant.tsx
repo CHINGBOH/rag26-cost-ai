@@ -1,12 +1,11 @@
 /**
  * SystemAssistant — floating chat widget explaining the RAG system internals.
- * Routes LLM calls through /api/v1/llm/chat (retrieval-service proxy)
- * so it works even when the Node.js server is not running.
+ * Routes LLM calls through /api/v1/llm/chat (retrieval-service proxy).
+ * Retrieves context from Qdrant rag_system_kb via /api/v1/system-kb/query.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sendLLMStream, LLMMessage } from '../services/llmApi';
-import { retrieveDocs } from '../utils/docRetrieval';
 import './SystemAssistant.css';
 
 // ── Simple inline renderer: bold + numbered/bullet lists + line breaks ────────
@@ -33,6 +32,27 @@ function renderAssistantText(text: string): string {
     // Line breaks
     .replace(/\n{3,}/g, '\n\n')   // collapse excessive blank lines
     .replace(/\n/g, '<br />');
+}
+
+// ── Semantic retrieval from Qdrant rag_system_kb ─────────────────────────────
+async function querySystemKB(query: string, topK = 3): Promise<string> {
+  try {
+    const resp = await fetch('/api/v1/system-kb/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+    if (!resp.ok) return '';
+    const data = await resp.json();
+    const results: Array<{ title: string; content: string; score: number }> =
+      data.results ?? [];
+    if (!results.length) return '';
+    return results
+      .map(r => `【${r.title}】\n${r.content}`)
+      .join('\n\n');
+  } catch {
+    return '';
+  }
 }
 
 // ── System prompt: natural spoken-word style, construction industry context ──
@@ -117,7 +137,7 @@ export const SystemAssistant: React.FC = () => {
     setIsStreaming(true);
 
     // Build history — inject retrieved docs as context in system message
-    const relevantDocs = retrieveDocs(text);
+    const relevantDocs = await querySystemKB(text);
     const systemContent = relevantDocs
       ? `${BASE_SYSTEM_PROMPT}\n\n以下是与本次问题相关的系统内部资料，请优先参考：\n\n${relevantDocs}`
       : BASE_SYSTEM_PROMPT;

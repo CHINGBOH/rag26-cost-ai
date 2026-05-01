@@ -2091,3 +2091,56 @@ async def llm_chat_proxy(request: LLMChatRequest):
             from fastapi import HTTPException
             raise HTTPException(status_code=502, detail=f"Empty response from LLM (HTTP {resp.status_code})")
         return resp.json()
+
+
+# ── System KB semantic query ──────────────────────────────────────────────────
+
+class SystemKBQueryRequest(BaseModel):
+    query: str
+    top_k: int = 3
+
+
+@router.post("/api/v1/system-kb/query")
+async def system_kb_query(req: SystemKBQueryRequest):
+    """
+    语义检索 rag_system_kb 集合，返回与 query 最相关的 top_k 段落。
+    SystemAssistant 导览助手调用此接口获取真实知识库内容。
+    """
+    import httpx
+
+    tei_url = os.getenv("TEI_URL", "http://localhost:8003")
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+
+    # 1. 向量化 query
+    async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+        emb_resp = await client.post(
+            f"{tei_url}/embed",
+            json={"inputs": [req.query]},
+        )
+        emb_resp.raise_for_status()
+        query_vector = emb_resp.json()[0]
+
+    # 2. Qdrant 语义检索
+    async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+        search_resp = await client.post(
+            f"{qdrant_url}/collections/rag_system_kb/points/search",
+            json={
+                "vector": query_vector,
+                "limit": req.top_k,
+                "with_payload": True,
+                "score_threshold": 0.3,
+            },
+        )
+        search_resp.raise_for_status()
+        hits = search_resp.json().get("result", [])
+
+    results = [
+        {
+            "section_id": h["payload"].get("section_id", ""),
+            "title": h["payload"].get("title", ""),
+            "content": h["payload"].get("content", ""),
+            "score": round(h["score"], 4),
+        }
+        for h in hits
+    ]
+    return {"results": results, "query": req.query}
