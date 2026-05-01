@@ -67,8 +67,8 @@ function Navigation() {
   return (
     <header className="app-nav">
       <div className="nav-brand">
-        <span className="nav-mark">四</span>
-        <span className="nav-title">造价知识库</span>
+        <span className="nav-mark">R</span>
+        <span className="nav-title">RAG 智库系统</span>
       </div>
 
       <nav className="nav-links">
