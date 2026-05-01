@@ -1111,7 +1111,7 @@ export const AgentChat: React.FC = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="输入造价相关问题…"
+                placeholder="请输入您的问题…"
                 rows={1}
                 disabled={isLoading}
               />
@@ -1163,8 +1163,8 @@ const QUICK_QUESTIONS = [
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">
     <div className="welcome-content">
-      <h1 className="welcome-title">造价知识问答</h1>
-      <p className="welcome-desc">深圳市建设工程定额 · 费率标准 · 信息价</p>
+      <h1 className="welcome-title">智能知识问答</h1>
+      <p className="welcome-desc">基于企业知识库，智能检索 · 精准解答</p>
       <div className="quick-questions">
         {QUICK_QUESTIONS.map((q, i) => (
           <button key={i} className="quick-question-btn" onClick={() => onQuickAsk(q)}>

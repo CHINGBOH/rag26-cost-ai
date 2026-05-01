@@ -83,8 +83,8 @@ export const LibraryPage: React.FC = () => {
       <div className="library-header">
         <span className="lib-icon">📚</span>
         <div className="lib-header-text">
-          <h1 className="lib-title">建设工程造价图书馆</h1>
-          <p className="lib-subtitle">深圳市定额 · 费率标准 · 信息价</p>
+          <h1 className="lib-title">企业知识库</h1>
+          <p className="lib-subtitle">智能问答 · 精准检索 · 文档管理</p>
         </div>
         {messages.length > 0 && (
           <button className="lib-new-btn" onClick={clearMessages}>新咨询</button>
@@ -136,9 +136,9 @@ export const LibraryPage: React.FC = () => {
 const LibraryWelcome: React.FC<{ onAsk: (q: string) => void }> = ({ onAsk }) => (
   <div className="lib-welcome">
     <div className="lib-avatar-large">📚</div>
-    <p className="lib-greeting">您好，我是您的造价图书馆员</p>
+    <p className="lib-greeting">您好，我是您的企业知识助理</p>
     <p className="lib-desc">
-      馆内收录深圳市建设工程计价相关文献，有任何造价问题，请直接告诉我。
+      馆内收录您上传的企业文档，有任何业务问题，请直接告诉我。
     </p>
     <div className="lib-quick-list">
       {QUICK_QUESTIONS.map((q, i) => (
