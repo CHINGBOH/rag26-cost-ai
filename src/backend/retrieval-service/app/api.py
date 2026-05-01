@@ -2144,3 +2144,126 @@ async def system_kb_query(req: SystemKBQueryRequest):
         for h in hits
     ]
     return {"results": results, "query": req.query}
+
+
+# ── Guide Agent (true LangChain tool-calling, grounded on rag_system_kb) ───────
+
+class GuideAgentRequest(BaseModel):
+    query: str
+    history: list = []
+
+
+_GUIDE_SYSTEM = """您是「RAG智库系统」的导览助手，服务的是建设工程造价行业的专家和前辈，他们对计算机了解不多。
+工作规则：
+一、每次回答前必须调用 query_guide_kb 工具查询系统内部知识库，再根据查询结果作答。
+二、只允许根据 query_guide_kb 返回的内容作答，绝不补充资料以外的信息。
+三、若工具返回内容为空，直接告知用户知识库中暂无此内容，建议换个角度重新提问。
+四、全程用"您"尊称，说话简短自然，像当面聊天，不写报告。
+五、遇到技术概念，用建筑行业的例子打比方（档案室、定额本、图纸、施工队、验收单等）。
+六、禁止任何格式符号（#、*、-、---、>、**），列举用"第一、第二、第三"，三句话能说清不说五句。"""
+
+
+@router.post("/api/v1/guide-agent/stream")
+async def guide_agent_stream(req: GuideAgentRequest):
+    """
+    系统导览 agent：LLM 自主决定如何调用 query_guide_kb 工具检索 rag_system_kb，
+    再基于真实检索结果流式生成回答。真正的 tool-calling agent，不是硬塞 prompt。
+    """
+    import httpx as _httpx
+    from langchain_core.tools import tool as _lc_tool
+    from langchain_core.messages import (
+        SystemMessage as _Sys,
+        HumanMessage as _Human,
+        AIMessage as _AI,
+        ToolMessage as _Tool,
+    )
+    from app.agent.prompts import invoke_llm_with_tools, stream_llm_response
+
+    _tei_url = os.getenv("TEI_URL", "http://localhost:8003")
+    _qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    # Use env-configured model (deepseek-chat by default) — deepseek-reasoner does not support tool_choice
+    _llm_config: dict[str, Any] = {}
+
+    @_lc_tool
+    def query_guide_kb(question: str, top_k: int = 5) -> str:
+        """查询RAG智库系统内部技术文档知识库，返回与问题相关的架构说明、工具介绍、检索流程等资料。每次回答前必须调用此工具。"""
+        try:
+            with _httpx.Client(timeout=15, trust_env=False) as client:
+                emb = client.post(f"{_tei_url}/embed", json={"inputs": [question]})
+                emb.raise_for_status()
+                vec = emb.json()[0]
+            with _httpx.Client(timeout=15, trust_env=False) as client:
+                hits_resp = client.post(
+                    f"{_qdrant_url}/collections/rag_system_kb/points/search",
+                    json={"vector": vec, "limit": top_k, "with_payload": True, "score_threshold": 0.25},
+                )
+                hits_resp.raise_for_status()
+                hits = hits_resp.json().get("result", [])
+            if not hits:
+                return "知识库中未找到相关内容。"
+            return json.dumps(
+                [{"title": h["payload"].get("title", ""), "content": h["payload"].get("content", "")} for h in hits],
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    async def event_gen():
+        yield _sse_event("progress", {"stage": "thinking", "message": "正在理解问题..."})
+        await asyncio.sleep(0)
+
+        conv: list = [_Sys(content=_GUIDE_SYSTEM)]
+        for msg in (req.history or [])[-10:]:
+            role = msg.get("role", "user") if isinstance(msg, dict) else getattr(msg, "role", "user")
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            if role == "user":
+                conv.append(_Human(content=content))
+            elif role == "assistant":
+                conv.append(_AI(content=content))
+        conv.append(_Human(content=req.query.strip()))
+
+        # Step 1: LLM decides how to call query_guide_kb (model-controlled tool use)
+        yield _sse_event("progress", {"stage": "tool_call", "message": "正在查询知识库..."})
+        await asyncio.sleep(0)
+        try:
+            ai_msg, _ = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: invoke_llm_with_tools(
+                    conv, [query_guide_kb], tool_choice="required", llm_config=_llm_config
+                ),
+            )
+        except Exception as exc:
+            yield _sse_event("error", {"message": f"工具调用失败: {exc}"})
+            return
+
+        # Step 2: Execute the tool calls the LLM made
+        tool_calls = getattr(ai_msg, "tool_calls", []) or []
+        extra_msgs: list = [ai_msg]
+        for tc in tool_calls:
+            tc_id = tc.get("id", "")
+            tc_args = tc.get("args", {})
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda a=tc_args: query_guide_kb.invoke(a)
+                )
+            except Exception as exc:
+                result = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            extra_msgs.append(_Tool(content=result, tool_call_id=tc_id))
+
+        # Step 3: Stream synthesis grounded on tool results
+        yield _sse_event("progress", {"stage": "synthesis", "message": "正在生成回答..."})
+        await asyncio.sleep(0)
+        accumulated = ""
+        try:
+            async for ev in stream_llm_response(conv + extra_msgs, llm_config=_llm_config):
+                if ev.get("type") == "token":
+                    delta = ev["delta"]
+                    accumulated += delta
+                    yield _sse_event("token", {"delta": delta})
+        except Exception as exc:
+            yield _sse_event("error", {"message": f"生成回答失败: {exc}"})
+            return
+
+        yield _sse_event("done", {"answer": accumulated})
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")

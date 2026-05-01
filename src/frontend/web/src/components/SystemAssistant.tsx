@@ -1,68 +1,77 @@
 /**
  * SystemAssistant — floating chat widget explaining the RAG system internals.
- * Routes LLM calls through /api/v1/llm/chat (retrieval-service proxy).
- * Retrieves context from Qdrant rag_system_kb via /api/v1/system-kb/query.
+ * Uses /api/v1/guide-agent/stream: true LangChain tool-calling agent backed by rag_system_kb.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { sendLLMStream, LLMMessage } from '../services/llmApi';
 import './SystemAssistant.css';
 
-// ── Simple inline renderer: bold + numbered/bullet lists + line breaks ────────
+// Strip all markdown formatting — render as plain conversational text
 function renderAssistantText(text: string): string {
   if (!text) return '';
   return text
-    // Escape HTML entities first
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    // Strip # heading markers (## Title → Title, with optional trailing space)
     .replace(/^#{1,6}\s*/gm, '')
-    // Bold: **text** → <strong>text</strong>
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Strip remaining single stars
+    .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*/g, '')
-    // Inline code: `text` → <code>text</code>
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    // Strip horizontal rules
+    .replace(/`([^`]+)`/g, '$1')
     .replace(/^---+$/gm, '')
-    // Convert "- item" / "• item" / "* item" bullet lines → plain dash-space
-    .replace(/^[-•*]\s+(.+)$/gm, '$1')
-    // Numbered lists: "1. item" → keep as-is (already natural)
-    // Line breaks
-    .replace(/\n{3,}/g, '\n\n')   // collapse excessive blank lines
+    .replace(/^[-•]\s+(.+)$/gm, '$1')
+    .replace(/\n{3,}/g, '\n\n')
     .replace(/\n/g, '<br />');
 }
 
-// ── Semantic retrieval from Qdrant rag_system_kb ─────────────────────────────
-async function querySystemKB(query: string, topK = 3): Promise<string> {
-  try {
-    const resp = await fetch('/api/v1/system-kb/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, top_k: topK }),
-    });
-    if (!resp.ok) return '';
-    const data = await resp.json();
-    const results: Array<{ title: string; content: string; score: number }> =
-      data.results ?? [];
-    if (!results.length) return '';
-    return results
-      .map(r => `【${r.title}】\n${r.content}`)
-      .join('\n\n');
-  } catch {
-    return '';
+// SSE async generator for the guide agent stream endpoint
+async function* sendGuideStream(
+  query: string,
+  history: Array<{ role: string; content: string }>,
+  signal: AbortSignal,
+): AsyncGenerator<string, void, unknown> {
+  const resp = await fetch('/api/v1/guide-agent/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, history }),
+    signal,
+  });
+  if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let currentEvent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        try {
+          const obj = JSON.parse(line.slice(6).trim());
+          if (currentEvent === 'token' && obj.delta) {
+            yield obj.delta as string;
+          } else if (currentEvent === 'error') {
+            throw new Error(obj.message ?? 'guide agent error');
+          } else if (currentEvent === 'done') {
+            return;
+          }
+        } catch (e) {
+          if (e instanceof SyntaxError) continue;
+          throw e;
+        }
+        currentEvent = '';
+      }
+    }
   }
 }
 
-// ── System prompt: natural spoken-word style, construction industry context ──
-const BASE_SYSTEM_PROMPT = `您是「RAG 智库系统」的导览助手。来问您的都是建设工程造价的前辈，对计算机一窍不通。
-
-要求：全程用"您"，开口说"您好"。说话要简短自然，像当面聊天，不要写报告。遇到技术概念就打比方，比如把数据库比作档案室、把搜索比作翻定额本。禁止用任何格式符号（#、*、-、---），列举用"第一、第二"，不要用横杠。三句话能说清的不说五句。`;
-
-const ASSISTANT_MODEL = 'deepseek-v4-flash';
-
-// Keep last N turns to avoid token bloat
 const MAX_HISTORY_TURNS = 8;
 
 interface Msg {
@@ -122,7 +131,11 @@ export const SystemAssistant: React.FC = () => {
     if (!text || isStreaming) return;
     setInput('');
 
-    // Snapshot messages before mutating state
+    // Capture history BEFORE mutating state — these are the prior completed turns
+    const historySnapshot = messages
+      .slice(-MAX_HISTORY_TURNS * 2)
+      .map(m => ({ role: m.role, content: m.content }));
+
     setMessages(prev => {
       const trimmed =
         prev.length > MAX_HISTORY_TURNS * 2
@@ -136,42 +149,32 @@ export const SystemAssistant: React.FC = () => {
     });
     setIsStreaming(true);
 
-    // Build history — inject retrieved docs as context in system message
-    const relevantDocs = await querySystemKB(text);
-    const systemContent = relevantDocs
-      ? `${BASE_SYSTEM_PROMPT}\n\n以下是与本次问题相关的系统内部资料，请优先参考：\n\n${relevantDocs}`
-      : BASE_SYSTEM_PROMPT;
-
-    const history: LLMMessage[] = [
-      { role: 'system', content: systemContent },
-      ...messages
-        .slice(-MAX_HISTORY_TURNS * 2)
-        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-      { role: 'user', content: text },
-    ];
-
     const abort = new AbortController();
     abortRef.current = abort;
     let accumulated = '';
 
     try {
-      for await (const chunk of sendLLMStream(history, {
-        temperature: 0.5,
-        maxTokens: 1400,
-        model: ASSISTANT_MODEL,
-        endpoint: '/api/v1/llm/chat',
-      })) {
+      for await (const delta of sendGuideStream(text, historySnapshot, abort.signal)) {
         if (abort.signal.aborted || !mountedRef.current) break;
-        const delta = chunk.choices[0]?.delta?.content ?? '';
-        if (delta) {
-          accumulated += delta;
-          setMessages(prev => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.streaming) next[next.length - 1] = { ...last, content: accumulated };
-            return next;
-          });
-        }
+        accumulated += delta;
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.streaming) next[next.length - 1] = { ...last, content: accumulated };
+          return next;
+        });
+      }
+    } catch (e) {
+      if (!abort.signal.aborted && mountedRef.current) {
+        const msg = e instanceof Error ? e.message : '请求失败';
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.streaming) next[next.length - 1] = { ...last, content: `（出错：${msg}）`, streaming: false };
+          return next;
+        });
+        setIsStreaming(false);
+        return;
       }
     } finally {
       if (!abort.signal.aborted && mountedRef.current) {
