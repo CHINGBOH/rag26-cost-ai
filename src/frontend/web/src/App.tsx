@@ -9,6 +9,7 @@ import { ThemeToggle } from './components/common/ThemeToggle';
 import { initTheme } from './config/theme';
 
 // Core pages
+import { LibraryPage } from './pages/LibraryPage';
 import { AgentChat } from './pages/AgentChat';
 import { AgentManagePage } from './pages/AgentManagePage';
 import { AgentRuntimePage } from './pages/AgentRuntimePage';
@@ -27,7 +28,7 @@ import './App.css';
 import './styles/theme.css';
 
 const NAV_ITEMS = [
-  { path: '/', label: '智能对话' },
+  { path: '/', label: '咨询馆员' },
   { path: '/runtime', label: '运行时' },
   { path: '/search', label: '检索' },
   { path: '/pipeline', label: '管道' },
@@ -75,7 +76,8 @@ export default function App() {
         <Navigation />
         <main className="app-main">
           <Routes>
-            <Route path="/" element={<AgentChat />} />
+            <Route path="/" element={<LibraryPage />} />
+            <Route path="/pro" element={<AgentChat />} />
             <Route path="/runtime" element={<AgentRuntimePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
