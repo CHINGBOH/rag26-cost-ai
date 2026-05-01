@@ -1,7 +1,7 @@
-/* Per-module accent themes with background patterns (LV/WhatsApp watermark style) */
-/* Base: warm parchment #F5F2EB — patterns at 8-10% nav / 4-5% body for visibility */
+/* Per-module accent themes — artistic classical watermark patterns */
+/* Base: warm parchment #F5F2EB — SVG data-URI patterns for organic elegance */
 
-/* ─── Library (咨询馆员) — cognac amber, LV diamond weave ─── */
+/* ─── Library (咨询馆员) — cognac amber, 青海波 Seigaiha fish-scale ─── */
 html[data-module="library"] {
   --page-accent:         #8B5E2B;
   --page-accent-rgb:     139, 94, 43;
@@ -15,18 +15,20 @@ html[data-module="library"] {
 }
 html[data-module="library"] .app-nav {
   background-image:
-    linear-gradient( 45deg, rgba(139, 94, 43, 0.09) 1px, transparent 1px),
-    linear-gradient(-45deg, rgba(139, 94, 43, 0.09) 1px, transparent 1px);
-  background-size: 18px 18px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,40 A40,40 0 0,1 80,40' fill='none' stroke='rgba(139,94,43,0.15)' stroke-width='1.5'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,40 A40,40 0 0,1 80,40' fill='none' stroke='rgba(139,94,43,0.10)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 40px, 80px 40px;
+  background-position: 0 0, 40px 20px;
 }
 html[data-module="library"] body {
   background-image:
-    linear-gradient( 45deg, rgba(139, 94, 43, 0.045) 1px, transparent 1px),
-    linear-gradient(-45deg, rgba(139, 94, 43, 0.045) 1px, transparent 1px);
-  background-size: 18px 18px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,40 A40,40 0 0,1 80,40' fill='none' stroke='rgba(139,94,43,0.08)' stroke-width='1.5'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,40 A40,40 0 0,1 80,40' fill='none' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 40px, 80px 40px;
+  background-position: 0 0, 40px 20px;
 }
 
-/* ─── Runtime (运行时) — deep indigo, fine crosshatch ────────── */
+/* ─── Runtime (运行时) — deep indigo, Art Deco diamond lattice ─── */
 html[data-module="runtime"] {
   --page-accent:         #5046E4;
   --page-accent-rgb:     80, 70, 228;
@@ -40,18 +42,16 @@ html[data-module="runtime"] {
 }
 html[data-module="runtime"] .app-nav {
   background-image:
-    linear-gradient(    rgba(80, 70, 228, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(80, 70, 228, 0.09) 1px, transparent 1px);
-  background-size: 16px 16px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cpath d='M30,2 L58,30 L30,58 L2,30 Z' fill='none' stroke='rgba(80,70,228,0.14)' stroke-width='1'/%3E%3Cline x1='30' y1='2' x2='30' y2='58' stroke='rgba(80,70,228,0.07)' stroke-width='0.5'/%3E%3Cline x1='2' y1='30' x2='58' y2='30' stroke='rgba(80,70,228,0.07)' stroke-width='0.5'/%3E%3C/svg%3E");
+  background-size: 60px 60px;
 }
 html[data-module="runtime"] body {
   background-image:
-    linear-gradient(    rgba(80, 70, 228, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(80, 70, 228, 0.04) 1px, transparent 1px);
-  background-size: 16px 16px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Cpath d='M30,2 L58,30 L30,58 L2,30 Z' fill='none' stroke='rgba(80,70,228,0.08)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 60px 60px;
 }
 
-/* ─── Search (检索) — deep sky blue, dot matrix ──────────────── */
+/* ─── Search (检索) — deep sky blue, 水纹 water ripple rings ─── */
 html[data-module="search"] {
   --page-accent:         #1E62C8;
   --page-accent-rgb:     30, 98, 200;
@@ -64,15 +64,21 @@ html[data-module="search"] {
   --bg-elevated:         #E5EFFC;
 }
 html[data-module="search"] .app-nav {
-  background-image: radial-gradient(rgba(30, 98, 200, 0.13) 1.5px, transparent 1.5px);
-  background-size: 22px 22px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Ccircle cx='50' cy='50' r='14' fill='none' stroke='rgba(30,98,200,0.13)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='28' fill='none' stroke='rgba(30,98,200,0.09)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='rgba(30,98,200,0.06)' stroke-width='1'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Ccircle cx='50' cy='50' r='14' fill='none' stroke='rgba(30,98,200,0.09)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='28' fill='none' stroke='rgba(30,98,200,0.06)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 100px 100px, 100px 100px;
+  background-position: 0 0, 50px 50px;
 }
 html[data-module="search"] body {
-  background-image: radial-gradient(rgba(30, 98, 200, 0.05) 1.5px, transparent 1.5px);
-  background-size: 22px 22px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Ccircle cx='50' cy='50' r='14' fill='none' stroke='rgba(30,98,200,0.07)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='28' fill='none' stroke='rgba(30,98,200,0.05)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='rgba(30,98,200,0.03)' stroke-width='1'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Ccircle cx='50' cy='50' r='14' fill='none' stroke='rgba(30,98,200,0.05)' stroke-width='1'/%3E%3Ccircle cx='50' cy='50' r='28' fill='none' stroke='rgba(30,98,200,0.03)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 100px 100px, 100px 100px;
+  background-position: 0 0, 50px 50px;
 }
 
-/* ─── Pipeline (管道) — deep teal, herringbone ──────────────── */
+/* ─── Pipeline (管道) — deep teal, 人字纹 herringbone chevron ─── */
 html[data-module="pipeline"] {
   --page-accent:         #0B7A5C;
   --page-accent-rgb:     11, 122, 92;
@@ -86,16 +92,16 @@ html[data-module="pipeline"] {
 }
 html[data-module="pipeline"] .app-nav {
   background-image:
-    repeating-linear-gradient( 60deg, rgba(11,122,92,0.09) 0px, rgba(11,122,92,0.09) 1px, transparent 1px, transparent 18px),
-    repeating-linear-gradient(-60deg, rgba(11,122,92,0.09) 0px, rgba(11,122,92,0.09) 1px, transparent 1px, transparent 18px);
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20'%3E%3Cpath d='M0,10 L10,0 L20,10 L30,0 L40,10' fill='none' stroke='rgba(11,122,92,0.14)' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M0,10 L10,20 L20,10 L30,20 L40,10' fill='none' stroke='rgba(11,122,92,0.14)' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 40px 20px;
 }
 html[data-module="pipeline"] body {
   background-image:
-    repeating-linear-gradient( 60deg, rgba(11,122,92,0.04) 0px, rgba(11,122,92,0.04) 1px, transparent 1px, transparent 18px),
-    repeating-linear-gradient(-60deg, rgba(11,122,92,0.04) 0px, rgba(11,122,92,0.04) 1px, transparent 1px, transparent 18px);
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20'%3E%3Cpath d='M0,10 L10,0 L20,10 L30,0 L40,10' fill='none' stroke='rgba(11,122,92,0.07)' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M0,10 L10,20 L20,10 L30,20 L40,10' fill='none' stroke='rgba(11,122,92,0.07)' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 40px 20px;
 }
 
-/* ─── Ops (运维) — brick orange, blueprint grid ─────────────── */
+/* ─── Ops (运维) — brick orange, 铜版线雕 fine engraving crosshatch ─── */
 html[data-module="ops"] {
   --page-accent:         #C03A10;
   --page-accent-rgb:     192, 58, 16;
@@ -109,18 +115,16 @@ html[data-module="ops"] {
 }
 html[data-module="ops"] .app-nav {
   background-image:
-    linear-gradient(    rgba(192, 58, 16, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(192, 58, 16, 0.09) 1px, transparent 1px);
-  background-size: 32px 32px;
+    repeating-linear-gradient( 45deg, rgba(192,58,16,0.11) 0px, rgba(192,58,16,0.11) 1px, transparent 1px, transparent 5px),
+    repeating-linear-gradient(-45deg, rgba(192,58,16,0.07) 0px, rgba(192,58,16,0.07) 1px, transparent 1px, transparent 5px);
 }
 html[data-module="ops"] body {
   background-image:
-    linear-gradient(    rgba(192, 58, 16, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(192, 58, 16, 0.04) 1px, transparent 1px);
-  background-size: 32px 32px;
+    repeating-linear-gradient( 45deg, rgba(192,58,16,0.06) 0px, rgba(192,58,16,0.06) 1px, transparent 1px, transparent 5px),
+    repeating-linear-gradient(-45deg, rgba(192,58,16,0.04) 0px, rgba(192,58,16,0.04) 1px, transparent 1px, transparent 5px);
 }
 
-/* ─── System (系统) — dark slate, fine micro-grid ───────────── */
+/* ─── System (系统) — dark slate, 编织纹 basket weave ─── */
 html[data-module="system"] {
   --page-accent:         #3D5068;
   --page-accent-rgb:     61, 80, 104;
@@ -134,18 +138,16 @@ html[data-module="system"] {
 }
 html[data-module="system"] .app-nav {
   background-image:
-    linear-gradient(    rgba(61, 80, 104, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(61, 80, 104, 0.09) 1px, transparent 1px);
-  background-size: 14px 14px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cline x1='0' y1='3' x2='10' y2='3' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='0' y1='7' x2='10' y2='7' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='13' y1='0' x2='13' y2='10' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='17' y1='0' x2='17' y2='10' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='10' y1='13' x2='20' y2='13' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='10' y1='17' x2='20' y2='17' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='3' y1='10' x2='3' y2='20' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3Cline x1='7' y1='10' x2='7' y2='20' stroke='rgba(61,80,104,0.12)' stroke-width='0.8'/%3E%3C/svg%3E");
+  background-size: 20px 20px;
 }
 html[data-module="system"] body {
   background-image:
-    linear-gradient(    rgba(61, 80, 104, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(61, 80, 104, 0.04) 1px, transparent 1px);
-  background-size: 14px 14px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Cline x1='0' y1='3' x2='10' y2='3' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='0' y1='7' x2='10' y2='7' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='13' y1='0' x2='13' y2='10' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='17' y1='0' x2='17' y2='10' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='10' y1='13' x2='20' y2='13' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='10' y1='17' x2='20' y2='17' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='3' y1='10' x2='3' y2='20' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3Cline x1='7' y1='10' x2='7' y2='20' stroke='rgba(61,80,104,0.06)' stroke-width='0.8'/%3E%3C/svg%3E");
+  background-size: 20px 20px;
 }
 
-/* ─── Learning (学习) — forest green, staggered dots ─────────── */
+/* ─── Learning (学习) — forest green, 卷草纹 botanical scroll wave ─── */
 html[data-module="learning"] {
   --page-accent:         #1A7A3C;
   --page-accent-rgb:     26, 122, 60;
@@ -159,20 +161,20 @@ html[data-module="learning"] {
 }
 html[data-module="learning"] .app-nav {
   background-image:
-    radial-gradient(rgba(26, 122, 60, 0.12) 1.5px, transparent 1.5px),
-    radial-gradient(rgba(26, 122, 60, 0.12) 1.5px, transparent 1.5px);
-  background-size:     26px 26px, 26px 26px;
-  background-position: 0 0, 13px 13px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,20 C20,0 40,0 40,20 C40,40 60,40 80,20' fill='none' stroke='rgba(26,122,60,0.14)' stroke-width='1.5'/%3E%3Cpath d='M20,0 C0,10 0,30 20,40' fill='none' stroke='rgba(26,122,60,0.09)' stroke-width='1'/%3E%3Cpath d='M60,0 C80,10 80,30 60,40' fill='none' stroke='rgba(26,122,60,0.09)' stroke-width='1'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,20 C20,0 40,0 40,20 C40,40 60,40 80,20' fill='none' stroke='rgba(26,122,60,0.09)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 40px, 80px 40px;
+  background-position: 0 0, 40px 20px;
 }
 html[data-module="learning"] body {
   background-image:
-    radial-gradient(rgba(26, 122, 60, 0.05) 1.5px, transparent 1.5px),
-    radial-gradient(rgba(26, 122, 60, 0.05) 1.5px, transparent 1.5px);
-  background-size:     26px 26px, 26px 26px;
-  background-position: 0 0, 13px 13px;
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,20 C20,0 40,0 40,20 C40,40 60,40 80,20' fill='none' stroke='rgba(26,122,60,0.07)' stroke-width='1.5'/%3E%3Cpath d='M20,0 C0,10 0,30 20,40' fill='none' stroke='rgba(26,122,60,0.05)' stroke-width='1'/%3E%3Cpath d='M60,0 C80,10 80,30 60,40' fill='none' stroke='rgba(26,122,60,0.05)' stroke-width='1'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='40'%3E%3Cpath d='M0,20 C20,0 40,0 40,20 C40,40 60,40 80,20' fill='none' stroke='rgba(26,122,60,0.05)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 40px, 80px 40px;
+  background-position: 0 0, 40px 20px;
 }
 
-/* ─── Agents — deep magenta, scattered dots ──────────────────── */
+/* ─── Agents — deep magenta, Art Deco 扇形 fan radiants ─── */
 html[data-module="agents"] {
   --page-accent:         #9B2E73;
   --page-accent-rgb:     155, 46, 115;
@@ -185,11 +187,13 @@ html[data-module="agents"] {
   --bg-elevated:         #F7E5F1;
 }
 html[data-module="agents"] .app-nav {
-  background-image: radial-gradient(rgba(155, 46, 115, 0.11) 1px, transparent 1px);
-  background-size: 16px 16px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cline x1='40' y1='80' x2='0' y2='20' stroke='rgba(155,46,115,0.11)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='14' y2='0' stroke='rgba(155,46,115,0.11)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='40' y2='0' stroke='rgba(155,46,115,0.11)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='66' y2='0' stroke='rgba(155,46,115,0.11)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='80' y2='20' stroke='rgba(155,46,115,0.11)' stroke-width='1'/%3E%3Cpath d='M5,80 Q40,20 75,80' fill='none' stroke='rgba(155,46,115,0.09)' stroke-width='1'/%3E%3Cpath d='M15,80 Q40,38 65,80' fill='none' stroke='rgba(155,46,115,0.09)' stroke-width='1'/%3E%3Cpath d='M25,80 Q40,55 55,80' fill='none' stroke='rgba(155,46,115,0.09)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 80px;
 }
 html[data-module="agents"] body {
-  background-image: radial-gradient(rgba(155, 46, 115, 0.05) 1px, transparent 1px);
-  background-size: 16px 16px;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cline x1='40' y1='80' x2='0' y2='20' stroke='rgba(155,46,115,0.06)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='14' y2='0' stroke='rgba(155,46,115,0.06)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='40' y2='0' stroke='rgba(155,46,115,0.06)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='66' y2='0' stroke='rgba(155,46,115,0.06)' stroke-width='1'/%3E%3Cline x1='40' y1='80' x2='80' y2='20' stroke='rgba(155,46,115,0.06)' stroke-width='1'/%3E%3Cpath d='M5,80 Q40,20 75,80' fill='none' stroke='rgba(155,46,115,0.05)' stroke-width='1'/%3E%3Cpath d='M15,80 Q40,38 65,80' fill='none' stroke='rgba(155,46,115,0.05)' stroke-width='1'/%3E%3Cpath d='M25,80 Q40,55 55,80' fill='none' stroke='rgba(155,46,115,0.05)' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 80px 80px;
 }
 
