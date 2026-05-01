@@ -137,7 +137,7 @@ export const SystemPage: React.FC = () => {
           {kb ? (
             <div className="sys-stats-grid">
               <div className="stat-item"><div className="stat-value">{kb.documents_total ?? '—'}</div><div className="stat-label">文档</div></div>
-              <div className="stat-item"><div className="stat-value">{kb.chunks_total ?? '—'}</div><div className="stat-label">Chunks</div></div>
+              <div className="stat-item"><div className="stat-value">{kb.chunks_total ?? '—'}</div><div className="stat-label">文本块</div></div>
               <div className="stat-item"><div className="stat-value">{kb.concepts_total ?? '—'}</div><div className="stat-label">概念/目录</div></div>
               <div className="stat-item"><div className="stat-value">{kb.price_records_total ?? '—'}</div><div className="stat-label">价格记录</div></div>
             </div>

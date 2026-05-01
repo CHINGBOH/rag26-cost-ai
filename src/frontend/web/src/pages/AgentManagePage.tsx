@@ -52,38 +52,49 @@ const SEED_TASKS: Task[] = [
 
 const SEED_AGENTS: ActiveAgent[] = [
   {
-    id: 'eng-001-backend-api', name: 'eng-001-backend-api', role: 'Engineering Backend',
+    id: 'eng-001-backend-api', name: 'eng-001-backend-api', role: '后端工程师',
     model: 'SONNET', status: 'active', runtimeSec: 754,
-    taskCount: 5, description: 'Implementing POST /api/todos endpoint with validation and SQLite storage',
+    taskCount: 5, description: '实现 POST /api/todos 接口，含参数校验与 SQLite 存储',
   },
   {
-    id: 'eng-002-frontend-ui', name: 'eng-002-frontend-ui', role: 'Engineering Frontend',
+    id: 'eng-002-frontend-ui', name: 'eng-002-frontend-ui', role: '前端工程师',
     model: 'SONNET', status: 'active', runtimeSec: 501,
-    taskCount: 3, description: 'Building React components for todo list with Tailwind styling',
+    taskCount: 3, description: '构建任务列表 React 组件，使用 Tailwind 样式',
   },
   {
-    id: 'qa-001-testing', name: 'qa-001-testing', role: 'QA Testing',
+    id: 'qa-001-testing', name: 'qa-001-testing', role: 'QA 测试工程师',
     model: 'HAIKU', status: 'active', runtimeSec: 345,
-    taskCount: 8, description: 'Writing unit tests for authentication module',
+    taskCount: 8, description: '为认证模块编写单元测试',
   },
   {
-    id: 'review-security-001', name: 'review-security-001', role: 'Security Review',
+    id: 'review-security-001', name: 'review-security-001', role: '安全审查员',
     model: 'OPUS', status: 'active', runtimeSec: 192,
-    taskCount: 2, description: 'Analyzing auth flow for OWASP vulnerabilities',
+    taskCount: 2, description: '分析认证流程，检查 OWASP 安全漏洞',
   },
   {
-    id: 'ops-devops-001', name: 'ops-devops-001', role: 'Operations DevOps',
+    id: 'ops-devops-001', name: 'ops-devops-001', role: '运维 DevOps',
     model: 'SONNET', status: 'active', runtimeSec: 908,
-    taskCount: 4, description: 'Configuring GitHub Actions CI/CD pipeline',
+    taskCount: 4, description: '配置 GitHub Actions CI/CD 流水线',
   },
   {
-    id: 'biz-marketing-001', name: 'biz-marketing-001', role: 'Business Marketing',
+    id: 'biz-marketing-001', name: 'biz-marketing-001', role: '业务策划',
     model: 'HAIKU', status: 'completed', runtimeSec: 393,
-    taskCount: 2, description: 'Creating landing page copy and SEO meta tags',
+    taskCount: 2, description: '撰写落地页文案与 SEO 元标签',
   },
 ];
 
 /* ── Helpers ─────────────────────────────────────────── */
+
+const ROLE_ZH: Record<string, string> = {
+  'RAG Backend Specialist': '后端专家', 'RAG Debugger': '调试专家',
+  'RAG Fullstack Engineer': '全栈工程师', 'RAG Frontend Specialist': '前端专家',
+  'RAG OpsDevOps Engineer': '运维专家', 'RAG Orchestrator': '编排指挥',
+  'RAG Project Planner': '项目规划', 'RAG QA Testing Engineer': 'QA 测试',
+  'RAG Quality Inspector': '质量审查', 'RAG Security Reviewer': '安全审查',
+  'Engineering Backend': '后端工程师', 'Engineering Frontend': '前端工程师',
+  'QA Testing': 'QA 测试', 'Security Review': '安全审查',
+  'Operations DevOps': '运维 DevOps', 'Business Marketing': '业务策划',
+};
 
 function fmtRuntime(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -137,16 +148,16 @@ function AgentCard({ agent }: { agent: ActiveAgent }) {
         <span className="agent-name">{agent.name}</span>
         <span className={`agent-model-badge ${MODEL_COLOR[agent.model]}`}>{agent.model}</span>
       </div>
-      <div className="agent-role">{agent.role}</div>
+      <div className="agent-role">{ROLE_ZH[agent.role] ?? agent.role}</div>
       <div className="agent-desc">{agent.description}</div>
       <div className="agent-meta">
-        <span>Runtime: {fmtRuntime(agent.runtimeSec)}</span>
-        <span>Tasks: {agent.taskCount}</span>
+        <span>运行时长：{fmtRuntime(agent.runtimeSec)}</span>
+        <span>任务数：{agent.taskCount}</span>
       </div>
       <div className="agent-footer">
         {agent.status === 'active'
-          ? <span className="agent-status-dot active">● Active</span>
-          : <span className="agent-status-dot completed">Completed</span>}
+          ? <span className="agent-status-dot active">● 运行中</span>
+          : <span className="agent-status-dot completed">已完成</span>}
       </div>
     </div>
   );

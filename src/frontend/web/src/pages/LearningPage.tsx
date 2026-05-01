@@ -23,6 +23,14 @@ import { fmtDateTime } from '../utils/dateUtils';
 
 type QualityFilter = 'all' | 'good' | 'weak' | 'failure';
 
+const QUALITY_ZH: Record<string, string> = {
+  good: '优质', weak: '弱', failure: '失败',
+};
+const TYPE_ZH: Record<string, string> = {
+  standard_ref: '标准查询', price: '价格查询', trend_chart: '趋势图表',
+  comparison: '对比分析', calculation: '计算推理', semantic: '语义检索',
+};
+
 export const LearningPage: React.FC = () => {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [runs, setRuns] = useState<LearningRun[]>([]);
@@ -116,7 +124,7 @@ export const LearningPage: React.FC = () => {
                 <li key={i} className={`gap-item q-${g.quality}`}>
                   <div className="gap-q">{g.query}</div>
                   <div className="gap-meta">
-                    <span className={`badge q-${g.quality}`}>{g.quality}</span>
+                    <span className={`badge q-${g.quality}`}>{QUALITY_ZH[g.quality] ?? g.quality}</span>
                     {g.refused && <span className="badge refused">拒答</span>}
                     <span className="muted small">片段 {g.chunks_count}</span>
                     <span className="muted small">置信 {g.confidence.toFixed(2)}</span>
@@ -208,7 +216,7 @@ export const LearningPage: React.FC = () => {
                 return (
                   <li key={type}>
                     <div className="bar-label">
-                      <code>{type}</code>
+                      <code>{TYPE_ZH[type] ?? type}</code>
                       <span className="muted small">{count}</span>
                     </div>
                     <div className="bar-track"><div className="bar-fill alt" style={{ width: `${pct}%` }} /></div>
@@ -257,8 +265,8 @@ export const LearningPage: React.FC = () => {
                 <tr key={i}>
                   <td className="ts-cell">{fmtDateTime(r.ts)}</td>
                   <td className="q-cell" title={r.query}>{r.query}</td>
-                  <td><code>{r.query_type || '—'}</code></td>
-                  <td><span className={`badge q-${r.quality}`}>{r.quality}</span></td>
+                  <td><code>{TYPE_ZH[r.query_type] ?? r.query_type ?? '—'}</code></td>
+                  <td><span className={`badge q-${r.quality}`}>{QUALITY_ZH[r.quality] ?? r.quality}</span></td>
                   <td className="num">{r.evaluation.confidence.toFixed(2)}</td>
                   <td className="num">{r.chunks_count}</td>
                   <td className="num">{r.iterations}</td>

@@ -209,6 +209,8 @@ interface ServiceCardProps {
 const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency }) => {
   const klass =
     status === 'healthy' ? 'healthy' : status === 'degraded' ? 'degraded' : 'unhealthy';
+  const statusLabel =
+    status === 'healthy' ? '正常' : status === 'degraded' ? '降级' : status === 'unknown' ? '未知' : '异常';
   return (
     <div className={`svc-card ${klass}`}>
       <div className="svc-card-top">
@@ -217,7 +219,7 @@ const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency 
       </div>
       <div className="svc-name">{label}</div>
       <div className="svc-meta">
-        <span className={`svc-status-label ${klass}`}>{status}</span>
+        <span className={`svc-status-label ${klass}`}>{statusLabel}</span>
         {latency > 0 && <span className="svc-latency">{latency}ms</span>}
       </div>
     </div>

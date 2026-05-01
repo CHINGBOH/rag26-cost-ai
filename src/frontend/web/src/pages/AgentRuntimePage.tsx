@@ -207,7 +207,7 @@ export function AgentRuntimePage() {
         <div>
           <h1>Agent 运行时</h1>
           <p className="muted">
-            实时观察 agent 的 channel / state / tool call 流。LangGraph ReAct 内部一切透明。
+            实时观察智能体的共享状态·规划步骤·工具调用流程，内部运转一览无余。
           </p>
         </div>
         <div className="runtime-stats">
@@ -282,7 +282,7 @@ export function AgentRuntimePage() {
         <main className="runtime-center">
           <section className="panel">
             <div className="panel-head">
-              <h3>Channel · 共享状态</h3>
+              <h3>共享状态（Channel）</h3>
               {live && display.isStreaming && <span className="dot live" />}
             </div>
             <pre className="channel-box">{JSON.stringify(channel, null, 2)}</pre>
@@ -290,7 +290,7 @@ export function AgentRuntimePage() {
 
           <section className="panel">
             <div className="panel-head">
-              <h3>Plan · 规划步骤</h3>
+              <h3>规划步骤（Plan）</h3>
             </div>
             {display.planSteps.length === 0 ? (
               <p className="muted small">无 plan（直答 / 简单意图 / 未到 planner 节点）。</p>
@@ -305,7 +305,7 @@ export function AgentRuntimePage() {
 
           <section className="panel">
             <div className="panel-head">
-              <h3>Tool Calls · {display.toolCalls.length} 次</h3>
+              <h3>工具调用（Tool Calls）· {display.toolCalls.length} 次</h3>
             </div>
             {display.toolCalls.length === 0 ? (
               <p className="muted small">本次运行未调用 ReAct 工具（agent 直接走了线性管道）。</p>
@@ -349,7 +349,7 @@ export function AgentRuntimePage() {
           <section className="panel">
             <div className="panel-head">
               <h3>
-                节点轨迹 · Node Trajectory
+                节点轨迹（Node Trajectory）
                 {selectedTrace && (
                   <span className="muted small" style={{ marginLeft: 8 }}>
                     trace {selectedTrace.trace_id.slice(0, 8)} · {selectedTrace.nodes.length} 节点 · {selectedTrace.duration_ms ?? 0}ms
@@ -363,7 +363,7 @@ export function AgentRuntimePage() {
             {traceLoading ? (
               <p className="muted small">加载中…</p>
             ) : !selectedTrace ? (
-              <p className="muted small">从下方"服务端历史"选择一次运行查看节点级 version / latency / state-delta / tool 调用。</p>
+              <p className="muted small">从下方"历史记录"选择一次运行，查看每个节点的版本号·耗时·状态变化·工具调用。</p>
             ) : (
               <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
                 {selectedTrace.nodes.map((n) => (
@@ -417,7 +417,7 @@ export function AgentRuntimePage() {
           {/* R9: Server Trace History */}
           <section className="panel">
             <div className="panel-head">
-              <h3>服务端历史 · Server Traces <span className="muted">({serverTraces.length})</span></h3>
+              <h3>历史记录（Server Traces）<span className="muted">({serverTraces.length})</span></h3>
             </div>
             {serverTraces.length === 0 ? (
               <p className="muted small">暂无服务端持久化轨迹。运行一次 agent 即可生成。</p>

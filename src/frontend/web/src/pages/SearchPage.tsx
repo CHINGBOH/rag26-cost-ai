@@ -286,8 +286,8 @@ export const SearchPage: React.FC = () => {
                     <label>
                       {key}
                       <span className="tool-field-type">
-                        {spec.type}
-                        {spec.default !== undefined && ` · default=${spec.default}`}
+                        {spec.type === 'string' ? '文本' : spec.type === 'integer' ? '整数' : spec.type === 'number' ? '数值' : spec.type === 'boolean' ? '开关' : spec.type}
+                        {spec.default !== undefined && ` · 默认值=${spec.default}`}
                       </span>
                     </label>
                     {spec.type === 'boolean' ? (
