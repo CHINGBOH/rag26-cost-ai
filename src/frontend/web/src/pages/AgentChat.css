@@ -7,9 +7,9 @@
 .agent-chat-3panel {
   display: grid;
   grid-template-columns: 280px 1fr 360px;
-  height: calc(100vh - 56px);
+  height: calc(100vh - var(--nav-height, 64px));
   /* keyboard-safe on mobile: dvh ignores virtual keyboard */
-  height: calc(100dvh - 56px);
+  height: calc(100dvh - var(--nav-height, 64px));
   overflow: hidden;
 }
 
@@ -35,10 +35,11 @@
 }
 
 .panel-title {
+  font-family: var(--font-serif, 'Noto Serif SC', Georgia, serif);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.10em;
   color: var(--text-muted);
   margin-bottom: 8px;
 }
@@ -73,11 +74,17 @@
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
+  transition: transform 0.18s var(--ease-expo, cubic-bezier(0.16,1,0.3,1)),
+              border-color 0.15s ease,
+              color 0.15s ease,
+              box-shadow 0.15s ease;
 }
 
 .new-session-btn:hover {
-  border-color: var(--color-primary);
+  border-color: rgba(var(--lux-gold-rgb, 201,169,110), 0.5);
   color: var(--color-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-xs);
 }
 
 .mode-select {
@@ -1464,7 +1471,7 @@
   .agent-chat-3panel {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr auto;
-    height: calc(100dvh - 52px);
+    height: calc(100dvh - var(--nav-height-md, 56px));
   }
 
   .left-panel  { display: none; }
@@ -1503,7 +1510,7 @@
 
 @media (max-width: 480px) {
   .agent-chat-3panel {
-    height: calc(100dvh - 48px);
+    height: calc(100dvh - var(--nav-height-sm, 52px));
   }
 }
 
