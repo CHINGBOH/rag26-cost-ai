@@ -8,6 +8,7 @@ import { getSystemConfig, getSystemKb, getSystemVersion, SystemConfig, SystemKb,
 import { PageHeader } from '../components/common/PageHeader';
 import { StatusDot } from '../components/common/StatusDot';
 import './SystemPage.css';
+import { fmtDateTime, fmtUnixDateTime } from '../utils/dateUtils';
 
 interface TestRecord {
   id: number;
@@ -143,7 +144,7 @@ export const SystemPage: React.FC = () => {
           ) : <p className="loading-text">加载中…</p>}
           {kb?.latest_chunk_ts && (
             <p className="empty-hint" style={{ marginTop: 8 }}>
-              最近入库：{new Date(kb.latest_chunk_ts).toLocaleString('zh-CN')}
+              最近入库：{fmtDateTime(kb.latest_chunk_ts)}
             </p>
           )}
         </div>
@@ -248,7 +249,7 @@ export const SystemPage: React.FC = () => {
 
       {version && (
         <div className="sys-card full-width" style={{ fontSize: 12, opacity: 0.75 }}>
-          <span>版本 <code>{version.git_sha}</code> · 分支 <code>{version.git_branch}</code> · Python {version.python_version} · 启动 {new Date(version.service_start_ts * 1000).toLocaleString('zh-CN')}</span>
+          <span>版本 <code>{version.git_sha}</code> · 分支 <code>{version.git_branch}</code> · Python {version.python_version} · 启动 {fmtUnixDateTime(version.service_start_ts)}</span>
         </div>
       )}
     </div>

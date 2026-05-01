@@ -19,6 +19,7 @@ import {
   BlindspotCluster,
 } from '../services/metricsApi';
 import './LearningPage.css';
+import { fmtDateTime } from '../utils/dateUtils';
 
 type QualityFilter = 'all' | 'good' | 'weak' | 'failure';
 
@@ -119,7 +120,7 @@ export const LearningPage: React.FC = () => {
                     {g.refused && <span className="badge refused">拒答</span>}
                     <span className="muted small">片段 {g.chunks_count}</span>
                     <span className="muted small">置信 {g.confidence.toFixed(2)}</span>
-                    <span className="muted small">{new Date(g.ts).toLocaleString()}</span>
+                    <span className="muted small">{fmtDateTime(g.ts)}</span>
                   </div>
                   {g.answer_preview && (
                     <details>
@@ -254,7 +255,7 @@ export const LearningPage: React.FC = () => {
             <tbody>
               {runs.map((r, i) => (
                 <tr key={i}>
-                  <td className="ts-cell">{new Date(r.ts).toLocaleString()}</td>
+                  <td className="ts-cell">{fmtDateTime(r.ts)}</td>
                   <td className="q-cell" title={r.query}>{r.query}</td>
                   <td><code>{r.query_type || '—'}</code></td>
                   <td><span className={`badge q-${r.quality}`}>{r.quality}</span></td>

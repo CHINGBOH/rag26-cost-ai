@@ -17,6 +17,7 @@ import {
   AgentTraceSummary, AgentTrace,
 } from '../services/metricsApi';
 import './AgentRuntimePage.css';
+import { fmtTime, fmtUnixTime } from '../utils/dateUtils';
 
 const HISTORY_KEY = 'rag.agent.runtime.history.v1';
 const HISTORY_MAX = 50;
@@ -266,7 +267,7 @@ export function AgentRuntimePage() {
                 >
                   <div className="hist-q">{h.query}</div>
                   <div className="hist-meta">
-                    <span>{new Date(h.ts).toLocaleTimeString()}</span>
+                    <span>{fmtTime(h.ts)}</span>
                     <span>{h.toolCalls.length} 工具</span>
                     <span>{h.iterations} 迭代</span>
                     <span>{h.durationMs}ms</span>
@@ -430,7 +431,7 @@ export function AgentRuntimePage() {
                   >
                     <div className="hist-q">{t.query}</div>
                     <div className="hist-meta">
-                      <span>{new Date(t.started_ts * 1000).toLocaleTimeString()}</span>
+                      <span>{fmtUnixTime(t.started_ts)}</span>
                       <span>{t.node_count} 节点</span>
                       {t.iterations != null && <span>{t.iterations} 迭代</span>}
                       {t.duration_ms != null && <span>{t.duration_ms}ms</span>}

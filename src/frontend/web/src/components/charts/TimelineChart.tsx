@@ -5,6 +5,7 @@
 
 import { useMemo } from 'react';
 import './Charts.css';
+import { fmtTime } from '../../utils/dateUtils';
 
 interface TimelineEvent {
   time: number;
@@ -68,7 +69,7 @@ export const TimelineChart: React.FC<TimelineChartProps> = ({
             <div className="timeline-content">
               <div className="timeline-label">{event.label}</div>
               <div className="timeline-time">
-                {new Date(event.time).toLocaleTimeString()}
+                {fmtTime(event.time)}
                 {event.duration && (
                   <span className="timeline-duration">
                     (+{event.duration}ms)

@@ -7,6 +7,7 @@ import { useInfrastructureStore } from '../../stores/infrastructureStore';
 import { MetricCard, StatusBadge } from '../charts';
 import { LLMProvider, VectorDB, GraphDB, DataPipeline } from '@rag/shared';
 import './Infrastructure.css';
+import { fmtDate } from '../../utils/dateUtils';
 
 export const InfrastructurePanel: React.FC = () => {
   const {
@@ -303,7 +304,7 @@ const GraphDBCard: React.FC<{ db: GraphDB }> = ({ db }) => {
       </div>
       
       <div className="db-backup">
-        上次备份: {new Date(db.lastBackup).toLocaleDateString()}
+        上次备份: {fmtDate(db.lastBackup)}
       </div>
     </div>
   );

@@ -5,6 +5,7 @@
 
 
 import { DashboardEvent } from '@rag/shared';
+import { fmtTime } from '../utils/dateUtils';
 
 interface EventLogProps {
   events: DashboardEvent[];
@@ -36,7 +37,7 @@ export const EventLog: React.FC<EventLogProps> = ({ events }) => {
         {events.slice(0, 50).map((event, index) => (
           <div key={`${event.timestamp}-${index}`} className="log-entry">
             <span className="timestamp">
-              {new Date(event.timestamp).toLocaleTimeString()}
+              {fmtTime(event.timestamp)}
             </span>
             <span className="type">
               {eventTypeLabels[event.type] || event.type}

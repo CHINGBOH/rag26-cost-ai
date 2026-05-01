@@ -14,7 +14,7 @@ import { StatusBadge } from '../charts';
 import { TaskDecompositionView } from './TaskDecompositionView';
 import { PromptAssemblyViewer } from './PromptAssemblyViewer';
 import './Chat.css';
-
+import { fmtTime } from '../../utils/dateUtils';
 interface RagProcessPanelProps {
   steps: RagProcessStep[];
   isExpanded: boolean;
@@ -400,12 +400,12 @@ const StepDetail: React.FC<{ step: RagProcessStep; originalQuery?: string }> = (
           )}
           {step.startTime && (
             <div className="timing-start">
-              开始: {new Date(step.startTime).toLocaleTimeString()}
+              开始: {fmtTime(step.startTime)}
             </div>
           )}
           {step.endTime && (
             <div className="timing-end">
-              结束: {new Date(step.endTime).toLocaleTimeString()}
+              结束: {fmtTime(step.endTime)}
             </div>
           )}
         </div>

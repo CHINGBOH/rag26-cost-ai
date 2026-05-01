@@ -8,6 +8,7 @@ import { useInfrastructureStore } from '../../stores/infrastructureStore';
 import { RadarChart, MetricCard, GaugeChart, StatusBadge } from '../charts';
 import { RecursionSession } from '@rag/shared';
 import './Dashboard.css';
+import { fmtTime } from '../../utils/dateUtils';
 
 export const OverviewDashboard: React.FC = () => {
   const sessions = useRecursionStore(state => state.sessions);
@@ -188,7 +189,7 @@ export const OverviewDashboard: React.FC = () => {
             {eventLog.slice(0, 10).map((event, idx) => (
               <div key={idx} className="event-item">
                 <span className="event-time">
-                  {new Date(event.timestamp).toLocaleTimeString()}
+                  {fmtTime(event.timestamp)}
                 </span>
                 <span className="event-type">{event.type}</span>
               </div>

@@ -15,6 +15,7 @@ import {
 import { PageHeader } from '../components/common/PageHeader';
 import { StatusDot } from '../components/common/StatusDot';
 import './OpsPage.css';
+import { fmtTime } from '../utils/dateUtils';
 
 interface ServiceDef {
   name: string;
@@ -180,7 +181,7 @@ export const OpsPage: React.FC = () => {
           <span className="ops-info-label">最后刷新</span>
           <span className="ops-info-value">
             {healthDetail?.timestamp
-              ? new Date(healthDetail.timestamp).toLocaleTimeString('zh-CN')
+              ? fmtTime(healthDetail.timestamp)
               : '—'}
           </span>
         </div>
