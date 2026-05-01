@@ -3,32 +3,32 @@
  */
 
 :root {
-  /* 深色主题 — 统一永久暗色，提升文字对比度 */
-  --bg-primary: #0c0e14;
-  --bg-surface: #13161f;
-  --bg-elevated: #1a1e2d;
-  --bg-hover: #232a38;
+  /* 暖色亮底主题 — 皮纸/亚麻底色，耐看明亮 */
+  --bg-primary:  #F5F2EB;   /* 温暖皮纸色 */
+  --bg-surface:  #FDFBF7;   /* 奶白色 */
+  --bg-elevated: #EDE9DE;   /* 温暖沙色 */
+  --bg-hover:    #E3DDD2;   /* 稍深沙色 */
 
-  --text-primary: #f0f4ff;
-  --text-secondary: #c8cdd7;
-  --text-muted: #8892a4;
-  --text-inverse: #0c0e14;
+  --text-primary:   #1C1410;   /* 墨水色，~15:1 对比度 */
+  --text-secondary: #52453A;   /* 温暖棕灰，~7:1 */
+  --text-muted:     #6B5B4C;   /* 温暖中灰，~5:1 */
+  --text-inverse:   #FDFBF7;   /* 亮色文字（用于深色按钮上） */
 
-  --border-default: #252b3a;
-  --border-highlight: #5b8def;
+  --border-default:   #D4CEBF;
+  --border-highlight: #8B5E2B;
 
-  --color-primary: #5b8def;
-  --color-primary-hover: #7ba3f5;
-  --color-primary-light: rgba(91, 141, 239, 0.14);
+  --color-primary:       #8B5E2B;   /* 琥珀棕，5.9:1 对比度 */
+  --color-primary-hover: #7A5020;   /* 深琥珀（hover 加深保证对比度） */
+  --color-primary-light: rgba(139, 94, 43, 0.12);
 
   /* Module accent (overridden per page by modules.css) */
-  --page-accent:     #5b8def;
-  --page-accent-rgb: 91, 141, 239;
-  
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #06b6d4;
+  --page-accent:     #8B5E2B;
+  --page-accent-rgb: 139, 94, 43;
+
+  --color-success: #15803D;
+  --color-warning: #B45309;
+  --color-error:   #B91C1C;
+  --color-info:    #0369A1;
   
   /* ============================================
      UI 布局变量 - 可由配置动态控制

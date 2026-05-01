@@ -1,175 +1,195 @@
-/* Per-module accent themes with background patterns */
+/* Per-module accent themes with background patterns (LV/WhatsApp watermark style) */
+/* Base: warm parchment #F5F2EB — patterns at 8-10% nav / 4-5% body for visibility */
 
-/* ─── Library (咨询馆员) — warm amber diagonal stripes ─── */
+/* ─── Library (咨询馆员) — cognac amber, LV diamond weave ─── */
 html[data-module="library"] {
-  --page-accent:         #e8b84b;
-  --page-accent-rgb:     232, 184, 75;
-  --color-primary:       #e8b84b;
-  --color-primary-hover: #f0cc6e;
-  --color-primary-light: rgba(232, 184, 75, 0.12);
-  --border-highlight:    #e8b84b;
+  --page-accent:         #8B5E2B;
+  --page-accent-rgb:     139, 94, 43;
+  --color-primary:       #8B5E2B;
+  --color-primary-hover: #7A5020;
+  --color-primary-light: rgba(139, 94, 43, 0.12);
+  --border-highlight:    #8B5E2B;
+  --bg-primary:          #F6F1E3;
+  --bg-surface:          #FDFCF5;
+  --bg-elevated:         #EDE5D0;
 }
 html[data-module="library"] .app-nav {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent, transparent 22px,
-    rgba(232, 184, 75, 0.07) 22px, rgba(232, 184, 75, 0.07) 23px
-  );
+  background-image:
+    linear-gradient( 45deg, rgba(139, 94, 43, 0.09) 1px, transparent 1px),
+    linear-gradient(-45deg, rgba(139, 94, 43, 0.09) 1px, transparent 1px);
+  background-size: 18px 18px;
 }
 html[data-module="library"] body {
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent, transparent 22px,
-    rgba(232, 184, 75, 0.025) 22px, rgba(232, 184, 75, 0.025) 23px
-  );
+  background-image:
+    linear-gradient( 45deg, rgba(139, 94, 43, 0.045) 1px, transparent 1px),
+    linear-gradient(-45deg, rgba(139, 94, 43, 0.045) 1px, transparent 1px);
+  background-size: 18px 18px;
 }
 
-/* ─── Runtime (运行时) — violet diamond crosshatch ─────── */
+/* ─── Runtime (运行时) — deep indigo, fine crosshatch ────────── */
 html[data-module="runtime"] {
-  --page-accent:         #c4b5fd;
-  --page-accent-rgb:     196, 181, 253;
-  --color-primary:       #c4b5fd;
-  --color-primary-hover: #a78bfa;
-  --color-primary-light: rgba(196, 181, 253, 0.12);
-  --border-highlight:    #a78bfa;
+  --page-accent:         #5046E4;
+  --page-accent-rgb:     80, 70, 228;
+  --color-primary:       #5046E4;
+  --color-primary-hover: #4035CC;
+  --color-primary-light: rgba(80, 70, 228, 0.12);
+  --border-highlight:    #5046E4;
+  --bg-primary:          #F3F2FC;
+  --bg-surface:          #FDFCFF;
+  --bg-elevated:         #E9E7F8;
 }
 html[data-module="runtime"] .app-nav {
   background-image:
-    linear-gradient( 45deg, rgba(196, 181, 253, 0.07) 1px, transparent 1px),
-    linear-gradient(-45deg, rgba(196, 181, 253, 0.07) 1px, transparent 1px);
-  background-size: 22px 22px, 22px 22px;
+    linear-gradient(    rgba(80, 70, 228, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(80, 70, 228, 0.09) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 html[data-module="runtime"] body {
   background-image:
-    linear-gradient( 45deg, rgba(196, 181, 253, 0.025) 1px, transparent 1px),
-    linear-gradient(-45deg, rgba(196, 181, 253, 0.025) 1px, transparent 1px);
-  background-size: 22px 22px, 22px 22px;
+    linear-gradient(    rgba(80, 70, 228, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(80, 70, 228, 0.04) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 
-/* ─── Search (检索) — sky blue dot grid ────────────────── */
+/* ─── Search (检索) — deep sky blue, dot matrix ──────────────── */
 html[data-module="search"] {
-  --page-accent:         #38bdf8;
-  --page-accent-rgb:     56, 189, 248;
-  --color-primary:       #38bdf8;
-  --color-primary-hover: #7dd3fc;
-  --color-primary-light: rgba(56, 189, 248, 0.12);
-  --border-highlight:    #38bdf8;
+  --page-accent:         #1E62C8;
+  --page-accent-rgb:     30, 98, 200;
+  --color-primary:       #1E62C8;
+  --color-primary-hover: #1550AA;
+  --color-primary-light: rgba(30, 98, 200, 0.12);
+  --border-highlight:    #1E62C8;
+  --bg-primary:          #F1F7FE;
+  --bg-surface:          #FAFCFF;
+  --bg-elevated:         #E5EFFC;
 }
 html[data-module="search"] .app-nav {
-  background-image: radial-gradient(rgba(56, 189, 248, 0.15) 1.5px, transparent 1.5px);
-  background-size: 28px 28px;
+  background-image: radial-gradient(rgba(30, 98, 200, 0.13) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
 }
 html[data-module="search"] body {
-  background-image: radial-gradient(rgba(56, 189, 248, 0.04) 1.5px, transparent 1.5px);
-  background-size: 28px 28px;
+  background-image: radial-gradient(rgba(30, 98, 200, 0.05) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
 }
 
-/* ─── Pipeline (管道) — emerald horizontal lines ────────── */
+/* ─── Pipeline (管道) — deep teal, herringbone ──────────────── */
 html[data-module="pipeline"] {
-  --page-accent:         #34d399;
-  --page-accent-rgb:     52, 211, 153;
-  --color-primary:       #34d399;
-  --color-primary-hover: #6ee7b7;
-  --color-primary-light: rgba(52, 211, 153, 0.12);
-  --border-highlight:    #34d399;
+  --page-accent:         #0B7A5C;
+  --page-accent-rgb:     11, 122, 92;
+  --color-primary:       #0B7A5C;
+  --color-primary-hover: #08644C;
+  --color-primary-light: rgba(11, 122, 92, 0.12);
+  --border-highlight:    #0B7A5C;
+  --bg-primary:          #F0FAF6;
+  --bg-surface:          #FAFEFB;
+  --bg-elevated:         #E2F5EC;
 }
 html[data-module="pipeline"] .app-nav {
-  background-image: repeating-linear-gradient(
-    0deg,
-    transparent, transparent 22px,
-    rgba(52, 211, 153, 0.07) 22px, rgba(52, 211, 153, 0.07) 23px
-  );
+  background-image:
+    repeating-linear-gradient( 60deg, rgba(11,122,92,0.09) 0px, rgba(11,122,92,0.09) 1px, transparent 1px, transparent 18px),
+    repeating-linear-gradient(-60deg, rgba(11,122,92,0.09) 0px, rgba(11,122,92,0.09) 1px, transparent 1px, transparent 18px);
 }
 html[data-module="pipeline"] body {
-  background-image: repeating-linear-gradient(
-    0deg,
-    transparent, transparent 22px,
-    rgba(52, 211, 153, 0.025) 22px, rgba(52, 211, 153, 0.025) 23px
-  );
+  background-image:
+    repeating-linear-gradient( 60deg, rgba(11,122,92,0.04) 0px, rgba(11,122,92,0.04) 1px, transparent 1px, transparent 18px),
+    repeating-linear-gradient(-60deg, rgba(11,122,92,0.04) 0px, rgba(11,122,92,0.04) 1px, transparent 1px, transparent 18px);
 }
 
-/* ─── Ops (运维) — orange blueprint grid ───────────────── */
+/* ─── Ops (运维) — brick orange, blueprint grid ─────────────── */
 html[data-module="ops"] {
-  --page-accent:         #fb923c;
-  --page-accent-rgb:     251, 146, 60;
-  --color-primary:       #fb923c;
-  --color-primary-hover: #fdba74;
-  --color-primary-light: rgba(251, 146, 60, 0.12);
-  --border-highlight:    #fb923c;
+  --page-accent:         #C03A10;
+  --page-accent-rgb:     192, 58, 16;
+  --color-primary:       #C03A10;
+  --color-primary-hover: #A83009;
+  --color-primary-light: rgba(192, 58, 16, 0.12);
+  --border-highlight:    #C03A10;
+  --bg-primary:          #FEF4EF;
+  --bg-surface:          #FFFCFA;
+  --bg-elevated:         #FBEADF;
 }
 html[data-module="ops"] .app-nav {
   background-image:
-    linear-gradient(    rgba(251, 146, 60, 0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(251, 146, 60, 0.07) 1px, transparent 1px);
-  background-size: 36px 36px, 36px 36px;
+    linear-gradient(    rgba(192, 58, 16, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(192, 58, 16, 0.09) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 html[data-module="ops"] body {
   background-image:
-    linear-gradient(    rgba(251, 146, 60, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(251, 146, 60, 0.025) 1px, transparent 1px);
-  background-size: 36px 36px, 36px 36px;
+    linear-gradient(    rgba(192, 58, 16, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(192, 58, 16, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
-/* ─── System (系统) — slate fine cross grid ─────────────── */
+/* ─── System (系统) — dark slate, fine micro-grid ───────────── */
 html[data-module="system"] {
-  --page-accent:         #94a3b8;
-  --page-accent-rgb:     148, 163, 184;
-  --color-primary:       #94a3b8;
-  --color-primary-hover: #cbd5e1;
-  --color-primary-light: rgba(148, 163, 184, 0.12);
-  --border-highlight:    #94a3b8;
+  --page-accent:         #3D5068;
+  --page-accent-rgb:     61, 80, 104;
+  --color-primary:       #3D5068;
+  --color-primary-hover: #2E3D52;
+  --color-primary-light: rgba(61, 80, 104, 0.12);
+  --border-highlight:    #3D5068;
+  --bg-primary:          #F4F6F9;
+  --bg-surface:          #FAFBFC;
+  --bg-elevated:         #E8ECF1;
 }
 html[data-module="system"] .app-nav {
   background-image:
-    linear-gradient(    rgba(148, 163, 184, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.09) 1px, transparent 1px);
-  background-size: 16px 16px, 16px 16px;
+    linear-gradient(    rgba(61, 80, 104, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 80, 104, 0.09) 1px, transparent 1px);
+  background-size: 14px 14px;
 }
 html[data-module="system"] body {
   background-image:
-    linear-gradient(    rgba(148, 163, 184, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
-  background-size: 16px 16px, 16px 16px;
+    linear-gradient(    rgba(61, 80, 104, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 80, 104, 0.04) 1px, transparent 1px);
+  background-size: 14px 14px;
 }
 
-/* ─── Learning (学习) — green staggered dots ─────────────── */
+/* ─── Learning (学习) — forest green, staggered dots ─────────── */
 html[data-module="learning"] {
-  --page-accent:         #86efac;
-  --page-accent-rgb:     134, 239, 172;
-  --color-primary:       #86efac;
-  --color-primary-hover: #bbf7d0;
-  --color-primary-light: rgba(134, 239, 172, 0.12);
-  --border-highlight:    #86efac;
+  --page-accent:         #1A7A3C;
+  --page-accent-rgb:     26, 122, 60;
+  --color-primary:       #1A7A3C;
+  --color-primary-hover: #14642E;
+  --color-primary-light: rgba(26, 122, 60, 0.12);
+  --border-highlight:    #1A7A3C;
+  --bg-primary:          #F2F9F4;
+  --bg-surface:          #FAFEFB;
+  --bg-elevated:         #E4F4EA;
 }
 html[data-module="learning"] .app-nav {
   background-image:
-    radial-gradient(rgba(134, 239, 172, 0.14) 1.5px, transparent 1.5px),
-    radial-gradient(rgba(134, 239, 172, 0.14) 1.5px, transparent 1.5px);
-  background-size:     30px 30px, 30px 30px;
-  background-position: 0 0, 15px 15px;
+    radial-gradient(rgba(26, 122, 60, 0.12) 1.5px, transparent 1.5px),
+    radial-gradient(rgba(26, 122, 60, 0.12) 1.5px, transparent 1.5px);
+  background-size:     26px 26px, 26px 26px;
+  background-position: 0 0, 13px 13px;
 }
 html[data-module="learning"] body {
   background-image:
-    radial-gradient(rgba(134, 239, 172, 0.04) 1.5px, transparent 1.5px),
-    radial-gradient(rgba(134, 239, 172, 0.04) 1.5px, transparent 1.5px);
-  background-size:     30px 30px, 30px 30px;
-  background-position: 0 0, 15px 15px;
+    radial-gradient(rgba(26, 122, 60, 0.05) 1.5px, transparent 1.5px),
+    radial-gradient(rgba(26, 122, 60, 0.05) 1.5px, transparent 1.5px);
+  background-size:     26px 26px, 26px 26px;
+  background-position: 0 0, 13px 13px;
 }
 
-/* ─── Agents — pink scattered dots ──────────────────────── */
+/* ─── Agents — deep magenta, scattered dots ──────────────────── */
 html[data-module="agents"] {
-  --page-accent:         #f9a8d4;
-  --page-accent-rgb:     249, 168, 212;
-  --color-primary:       #f9a8d4;
-  --color-primary-hover: #fbcfe8;
-  --color-primary-light: rgba(249, 168, 212, 0.12);
-  --border-highlight:    #f9a8d4;
+  --page-accent:         #9B2E73;
+  --page-accent-rgb:     155, 46, 115;
+  --color-primary:       #9B2E73;
+  --color-primary-hover: #842560;
+  --color-primary-light: rgba(155, 46, 115, 0.12);
+  --border-highlight:    #9B2E73;
+  --bg-primary:          #FDF2F8;
+  --bg-surface:          #FFFBFD;
+  --bg-elevated:         #F7E5F1;
 }
 html[data-module="agents"] .app-nav {
-  background-image: radial-gradient(rgba(249, 168, 212, 0.13) 1px, transparent 1px);
-  background-size: 18px 18px;
+  background-image: radial-gradient(rgba(155, 46, 115, 0.11) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
 html[data-module="agents"] body {
-  background-image: radial-gradient(rgba(249, 168, 212, 0.04) 1px, transparent 1px);
-  background-size: 18px 18px;
+  background-image: radial-gradient(rgba(155, 46, 115, 0.05) 1px, transparent 1px);
+  background-size: 16px 16px;
 }
+

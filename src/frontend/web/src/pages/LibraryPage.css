@@ -170,9 +170,9 @@
 }
 
 .lib-bubble--error {
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #fca5a5;
+  background: rgba(185, 28, 28, 0.08);
+  border: 1px solid rgba(185, 28, 28, 0.25);
+  color: #991b1b;
   border-radius: 10px;
 }
 
@@ -262,7 +262,7 @@
 
 .lib-fb-btn {
   padding: 3px 12px;
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   background: transparent;
   color: var(--text-muted, #6b7280);
@@ -276,9 +276,9 @@
 }
 
 .lib-fb-btn--active {
-  background: rgba(134, 239, 172, 0.1);
-  border-color: #86efac;
-  color: #86efac;
+  background: rgba(21, 128, 61, 0.12);
+  border-color: var(--color-success);
+  color: var(--color-success);
 }
 
 .lib-fb-btn:disabled {
