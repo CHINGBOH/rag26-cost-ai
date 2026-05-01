@@ -151,11 +151,11 @@ export const LearningPage: React.FC = () => {
                     <span className="muted small">{c.diagnosis}</span>
                   </div>
                   <details>
-                    <summary className="muted small">展开成员问题</summary>
+                    <summary className="muted small">展开相似问题（{c.queries?.length ?? 0}个）</summary>
                     <ul style={{ marginTop: 6, paddingLeft: 18 }}>
-                      {c.members.map((m, j) => (
+                      {(c.queries || []).map((q, j) => (
                         <li key={j} className="muted small" style={{ listStyle: 'disc' }}>
-                          [{m.quality}] {m.query} <span style={{ opacity: 0.6 }}>({m.confidence.toFixed(2)})</span>
+                          {q}
                         </li>
                       ))}
                     </ul>

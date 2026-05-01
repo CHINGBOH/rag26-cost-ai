@@ -232,7 +232,7 @@ export const AgentManagePage: React.FC = () => {
   return (
     <div className="agent-manage-page">
       <PageHeader
-        title="Agents 看板"
+        title="Agent 管理看板"
         subtitle={
           dataSource === 'live'
             ? '任务来自 ingest_jobs，agent 来自 .agent/agents/'
@@ -245,36 +245,36 @@ export const AgentManagePage: React.FC = () => {
         <div className="section-block" style={{ padding: '8px 12px', background: '#fff3cd', borderRadius: 4, marginBottom: 12 }}>
           ⚠ {error}
         </div>
-      )}      {/* Task Queue */}
+      )}      {/* 任务队列 */}
       <section className="section-block">
-        <h2 className="section-title">Task Queue</h2>
+        <h2 className="section-title">任务队列</h2>
         <div className="task-queue-grid">
           <TaskColumn
-            title="Pending" status="pending"
+            title="待处理" status="pending"
             count={countByStatus(tasks, 'pending')} tasks={tasks}
             accentClass="accent-pending"
           />
           <TaskColumn
-            title="In Progress" status="in_progress"
+            title="进行中" status="in_progress"
             count={countByStatus(tasks, 'in_progress')} tasks={tasks}
             accentClass="accent-inprogress"
           />
           <TaskColumn
-            title="Completed" status="completed"
+            title="已完成" status="completed"
             count={countByStatus(tasks, 'completed')} tasks={tasks}
             accentClass="accent-completed"
           />
           <TaskColumn
-            title="Failed" status="failed"
+            title="失败" status="failed"
             count={countByStatus(tasks, 'failed')} tasks={tasks}
             accentClass="accent-failed"
           />
         </div>
       </section>
 
-      {/* Active Agents */}
+      {/* 活跃 Agent */}
       <section className="section-block">
-        <h2 className="section-title">Active Agents</h2>
+        <h2 className="section-title">活跃 Agent</h2>
         <div className="agents-grid">
           {agents.map((a) => <AgentCard key={a.id} agent={a} />)}
         </div>

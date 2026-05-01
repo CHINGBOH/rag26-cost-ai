@@ -152,10 +152,10 @@ export const SystemPage: React.FC = () => {
           <h2>运行时配置</h2>
           {config ? (
             <div className="sys-health-list">
-              <div className="sys-health-row"><span className="sys-health-name">LLM</span><span className="sys-health-val">{config.llm.provider} / {config.llm.model}</span></div>
-              <div className="sys-health-row"><span className="sys-health-name">Embedding</span><span className="sys-health-val">{config.embedding.model} ({config.embedding.dim}d)</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">LLM 模型</span><span className="sys-health-val">{config.llm.provider} / {config.llm.model}</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">向量模型</span><span className="sys-health-val">{config.embedding.model} ({config.embedding.dim}维)</span></div>
               <div className="sys-health-row"><span className="sys-health-name">Top-K</span><span className="sys-health-val">{config.retrieval.default_top_k} · 阈值 {config.retrieval.score_threshold}</span></div>
-              <div className="sys-health-row"><span className="sys-health-name">Max Iter</span><span className="sys-health-val">{config.retrieval.max_iterations}</span></div>
+              <div className="sys-health-row"><span className="sys-health-name">最大迭代</span><span className="sys-health-val">{config.retrieval.max_iterations}</span></div>
             </div>
           ) : <p className="loading-text">加载中…</p>}
         </div>
@@ -232,7 +232,7 @@ export const SystemPage: React.FC = () => {
       <div className="sys-card full-width">
         <h2>Agent 参数</h2>
         <div className="param-row">
-          <label className="param-label">max_iterations</label>
+          <label className="param-label">最大迭代次数</label>
           <input
             type="range"
             min={1}

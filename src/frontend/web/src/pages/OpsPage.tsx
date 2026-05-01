@@ -24,13 +24,13 @@ interface ServiceDef {
 }
 
 const SERVICES: ServiceDef[] = [
-  { name: 'Go Gateway',    label: 'Go GW',    port: 8090, key: 'go_gateway' },
-  { name: 'Python Legacy', label: 'Python',   port: 8000, key: 'python_legacy' },
-  { name: 'Retrieval',     label: 'Retrieval',port: 8002, key: 'retrieval' },
-  { name: 'llama-server',  label: 'LLM',      port: 8080, key: 'llama_server' },
-  { name: 'OCR',           label: 'OCR',      port: 8001, key: 'ocr' },
-  { name: 'PostgreSQL',    label: 'PgSQL',    port: 5432, key: 'postgresql' },
-  { name: 'Qdrant',        label: 'Qdrant',   port: 6333, key: 'qdrant' },
+  { name: 'Go Gateway',    label: 'Go 网关',    port: 8080, key: 'go_gateway' },
+  { name: 'Python Legacy', label: 'Python',      port: 8000, key: 'python_legacy' },
+  { name: 'Retrieval',     label: '检索服务',    port: 8002, key: 'retrieval' },
+  { name: 'LLM 推理',      label: 'LLM',         port: 11434, key: 'llama_server' },
+  { name: 'OCR',           label: 'OCR',         port: 8001, key: 'ocr' },
+  { name: 'PostgreSQL',    label: 'PgSQL',       port: 5432, key: 'postgresql' },
+  { name: 'Qdrant',        label: 'Qdrant',      port: 6333, key: 'qdrant' },
 ];
 
 export const OpsPage: React.FC = () => {

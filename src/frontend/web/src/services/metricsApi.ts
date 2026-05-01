@@ -210,7 +210,10 @@ export async function getSystemKb(): Promise<SystemKb | null> {
 export interface BlindspotCluster {
   representative: string;
   size: number;
-  members: Array<{ query: string; ts: string; quality: string; confidence: number }>;
+  queries: string[];
+  refused_count?: number;
+  avg_chunks?: number;
+  avg_confidence?: number;
   diagnosis: string;
 }
 

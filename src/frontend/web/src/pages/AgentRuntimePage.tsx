@@ -204,7 +204,7 @@ export function AgentRuntimePage() {
     <div className="runtime-page">
       <header className="runtime-header">
         <div>
-          <h1>Agent Runtime</h1>
+          <h1>Agent 运行时</h1>
           <p className="muted">
             实时观察 agent 的 channel / state / tool call 流。LangGraph ReAct 内部一切透明。
           </p>
@@ -335,7 +335,7 @@ export function AgentRuntimePage() {
 
           <section className="panel">
             <div className="panel-head">
-              <h3>Final Answer</h3>
+              <h3>最终答案</h3>
             </div>
             {display.answer ? (
               <pre className="answer-box">{display.answer}</pre>

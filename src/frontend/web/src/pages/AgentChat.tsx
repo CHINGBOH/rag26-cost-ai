@@ -974,7 +974,7 @@ export const AgentChat: React.FC = () => {
                   }))
                 }
               >
-                {route}
+                {route === 'auto' ? '自动' : route === 'local' ? '本地' : route === 'deepseek' ? 'DeepSeek' : route}
               </button>
             ))}
           </div>
@@ -998,7 +998,7 @@ export const AgentChat: React.FC = () => {
                 className={`mode-btn ${config.llmEngine === engine ? 'active' : ''}`}
                 onClick={() => setConfig((c) => ({ ...c, llmEngine: engine }))}
               >
-                {engine}
+                {engine === 'api' ? '云端API' : '本地推理'}
               </button>
             ))}
           </div>
@@ -1013,7 +1013,7 @@ export const AgentChat: React.FC = () => {
                 className={`mode-btn ${config.searchMode === m ? 'active' : ''}`}
                 onClick={() => setConfig((c) => ({ ...c, searchMode: m }))}
               >
-                {m}
+                {m === 'hybrid' ? '混合' : m === 'vector' ? '向量' : m === 'text' ? '文本' : '价格'}
               </button>
             ))}
           </div>
