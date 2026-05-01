@@ -6,52 +6,19 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sendLLMStream, LLMMessage } from '../services/llmApi';
+import { retrieveDocs } from '../utils/docRetrieval';
 import './SystemAssistant.css';
 
-// ── System prompt: accurate architecture description ────────────────────────
-const SYSTEM_PROMPT = `你是 RAG 智库系统的专属导览助手，只解答关于本系统内部机制、工作原理和使用方法的问题。用简洁、通俗的中文回答，不用技术术语炫技，让不懂计算机的业务用户也能看懂。
+// ── Lean system prompt + doc context injected per-query ─────────────────────
+const BASE_SYSTEM_PROMPT = `你是 RAG 智库系统的专属导览助手。
+职责：解答关于本系统的工作原理、使用方法、内部机制的所有问题。
+风格：简洁通俗，不用技术术语炫技，让不懂计算机的业务用户也能看懂。
+约束：不回答与本系统无关的问题；不掌握实时运行数据（需要实时数据请去"系统运维"页面）。
 
-## 系统采用"四库"架构
-每种数据库负责一种检索方式，系统会自动选最合适的：
-- Qdrant（向量库）：把文档转成数字向量，查"意思相近"的内容
-- PostgreSQL（关系库）：存放价格、定额等结构化数字数据，精确查询
-- Neo4j（图数据库）：记录概念之间的关系，支持关联推理
-- Elasticsearch（全文库）：中文分词关键词匹配，精确找术语
+如果用户问题在"参考文档"里有对应内容，优先使用文档内容作答。
+如果文档里没有，可结合本系统架构常识回答，但要说明"这是一般原则"。`;
 
-## Agent 可调用的工具（自动选择，无需手动操作）
-- hybrid_search：主力检索，向量＋全文组合
-- vector_search：纯语义，适合模糊表达
-- keyword_search：关键词精确匹配
-- concept_search：知识图谱概念关联
-- graph_search / topology_search：图数据库关系路径
-- price_query：按材料名+规格+月份查价格
-- price_trend：价格历史趋势
-- rule_clause_search：条文条款专项检索
-- pdf_page_search：PDF 原始页面检索
-- calculator：数学表达式安全计算（沙盒）
-- python_eval：带数据的 Python 计算（沙盒）
-- sql_query / aggregate_query：结构化数据统计
-
-## 每次提问的内部流程
-1. 分析问题类型（价格/条文/计算/综合）
-2. 改写查询语句，提升召回率
-3. 多路并行检索，召回 8 个候选段落
-4. 重排序模型精排，置信度阈值 0.60
-5. LLM 基于检索结果生成答案，标注来源
-6. 评估置信度，低于 0.60 明确告知"信息不足"
-
-## 为什么有时候说"信息不足"？
-- 真实原因：检索到的内容相关度不足，系统拒绝猜测
-- 解决方法：换个角度提问，或查看"系统运维"页确认文档是否已正确索引
-
-## 如何提问更有效？
-- 价格查询：材料名 ＋ 规格型号 ＋ 年月，例如"2026年1月 P.O42.5 水泥含税价"
-- 费率查询：工程类别 ＋ 计税方式，例如"建筑工程简易计税企业管理费率"
-- 计算问题：直接给数字，例如"人工费500万，按8%计算企业管理费"
-- 条文查询：说明具体条款名，例如"总承包服务费的适用条件"
-
-## 实时系统状态
-本助手不掌握系统实时运行数据。若需了解当前文档数量、索引状态、服务健康情况，请前往"系统运维"页面查看。`;
+const ASSISTANT_MODEL = 'deepseek-v4-flash';
 
 // Keep last N turns to avoid token bloat
 const MAX_HISTORY_TURNS = 8;
@@ -127,9 +94,14 @@ export const SystemAssistant: React.FC = () => {
     });
     setIsStreaming(true);
 
-    // Build history from current snapshot (before new messages were appended)
+    // Build history — inject retrieved docs as context in system message
+    const relevantDocs = retrieveDocs(text);
+    const systemContent = relevantDocs
+      ? `${BASE_SYSTEM_PROMPT}\n\n---\n\n# 参考文档（与本次问题相关）\n\n${relevantDocs}`
+      : BASE_SYSTEM_PROMPT;
+
     const history: LLMMessage[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemContent },
       ...messages
         .slice(-MAX_HISTORY_TURNS * 2)
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -141,7 +113,11 @@ export const SystemAssistant: React.FC = () => {
     let accumulated = '';
 
     try {
-      for await (const chunk of sendLLMStream(history, { temperature: 0.5, maxTokens: 1200 })) {
+      for await (const chunk of sendLLMStream(history, {
+        temperature: 0.5,
+        maxTokens: 1400,
+        model: ASSISTANT_MODEL,
+      })) {
         if (abort.signal.aborted || !mountedRef.current) break;
         const delta = chunk.choices[0]?.delta?.content ?? '';
         if (delta) {

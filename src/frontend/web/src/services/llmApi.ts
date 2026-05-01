@@ -115,6 +115,7 @@ export async function* sendLLMStream(
     temperature?: number;
     maxTokens?: number;
     topP?: number;
+    model?: string;
   }
 ): AsyncGenerator<LLMStreamChunk, void, unknown> {
   try {
@@ -124,7 +125,7 @@ export async function* sendLLMStream(
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
+        model: options?.model ?? 'deepseek-chat',
         messages,
         temperature: options?.temperature ?? 0.7,
         max_tokens: options?.maxTokens ?? 2000,
