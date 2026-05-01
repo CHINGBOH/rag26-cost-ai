@@ -119,7 +119,7 @@ export const SystemAssistant: React.FC = () => {
     // Build history — inject retrieved docs as context in system message
     const relevantDocs = retrieveDocs(text);
     const systemContent = relevantDocs
-      ? `${BASE_SYSTEM_PROMPT}\n\n---\n\n# 参考文档（与本次问题相关）\n\n${relevantDocs}`
+      ? `${BASE_SYSTEM_PROMPT}\n\n以下是与本次问题相关的系统内部资料，请优先参考：\n\n${relevantDocs}`
       : BASE_SYSTEM_PROMPT;
 
     const history: LLMMessage[] = [

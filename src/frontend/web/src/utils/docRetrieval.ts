@@ -63,6 +63,18 @@ export function retrieveDocs(query: string, topN = 3, minScore = 2): string {
   if (scored.length === 0) return '';
 
   return scored
-    .map(({ section }) => `## ${section.title}\n${section.content}`)
-    .join('\n\n---\n\n');
+    .map(({ section }) => {
+      // Strip markdown from doc content before injecting so the LLM
+      // doesn't mirror markdown formatting in its reply.
+      const cleanContent = section.content
+        .replace(/^#{1,6}\s*/gm, '')          // remove heading markers
+        .replace(/\*\*(.+?)\*\*/g, '$1')       // unwrap bold
+        .replace(/\|.+\|/g, '')                // strip table rows
+        .replace(/^[-|:]+$/gm, '')             // strip table separators
+        .replace(/^[-•*]\s+/gm, '')            // strip bullet prefixes
+        .replace(/\n{3,}/g, '\n\n')            // collapse blank lines
+        .trim();
+      return `【${section.title}】\n${cleanContent}`;
+    })
+    .join('\n\n');
 }
