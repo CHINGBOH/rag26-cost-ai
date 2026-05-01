@@ -2028,3 +2028,66 @@ async def agents_tasks(limit: int = 50):
             except Exception:
                 pass
     return {"tasks": tasks, "source": "ingest_jobs", "count": len(tasks)}
+
+
+# ── LLM Chat Proxy ────────────────────────────────────────────────────────────
+# Thin streaming proxy so the frontend SystemAssistant can reach DeepSeek
+# through the already-running retrieval-service, without needing Node.js.
+class LLMChatRequest(BaseModel):
+    model: str = "deepseek-chat"
+    messages: list[dict]
+    temperature: float = 0.7
+    max_tokens: int = 2000
+    top_p: float = 0.9
+    stream: bool = True
+
+
+@router.post("/api/v1/llm/chat")
+async def llm_chat_proxy(request: LLMChatRequest):
+    """Streaming LLM proxy — forwards chat completion requests to DeepSeek."""
+    import httpx
+    from fastapi.responses import StreamingResponse as _SR
+
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or ""
+    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    # Avoid double /v1 if base_url already ends with /v1
+    if base_url.endswith("/v1"):
+        endpoint = f"{base_url}/chat/completions"
+    else:
+        endpoint = f"{base_url}/v1/chat/completions"
+
+    payload = {
+        "model": request.model,
+        "messages": request.messages,
+        "temperature": request.temperature,
+        "max_tokens": request.max_tokens,
+        "top_p": request.top_p,
+        "stream": request.stream,
+    }
+
+    async def _stream():
+        async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                endpoint,
+                json=payload,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            ) as resp:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+
+    if request.stream:
+        return _SR(_stream(), media_type="text/event-stream")
+
+    # Non-streaming fallback
+    async with httpx.AsyncClient(timeout=120, trust_env=False) as client:
+        resp = await client.post(
+            endpoint,
+            json={**payload, "stream": False},
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        logger.info("LLM proxy non-stream: status=%s len=%s", resp.status_code, len(resp.content))
+        if not resp.content:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail=f"Empty response from LLM (HTTP {resp.status_code})")
+        return resp.json()

@@ -1,7 +1,7 @@
 /**
  * SystemAssistant — floating chat widget explaining the RAG system internals.
- * Placed on knowledge-base interaction pages (LibraryPage, etc.).
- * Uses /api/llm/chat via sendLLMStream with a pre-loaded system prompt.
+ * Routes LLM calls through /api/v1/llm/chat (retrieval-service proxy)
+ * so it works even when the Node.js server is not running.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -117,6 +117,7 @@ export const SystemAssistant: React.FC = () => {
         temperature: 0.5,
         maxTokens: 1400,
         model: ASSISTANT_MODEL,
+        endpoint: '/api/v1/llm/chat',
       })) {
         if (abort.signal.aborted || !mountedRef.current) break;
         const delta = chunk.choices[0]?.delta?.content ?? '';

@@ -116,10 +116,13 @@ export async function* sendLLMStream(
     maxTokens?: number;
     topP?: number;
     model?: string;
+    /** Override the chat endpoint path (default: /api/llm/chat) */
+    endpoint?: string;
   }
 ): AsyncGenerator<LLMStreamChunk, void, unknown> {
   try {
-    const response = await authFetch(`${API_BASE}/api/llm/chat`, {
+    const chatEndpoint = options?.endpoint ?? '/api/llm/chat';
+    const response = await authFetch(`${API_BASE}${chatEndpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
