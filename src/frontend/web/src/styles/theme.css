@@ -3,23 +3,27 @@
  */
 
 :root {
-  /* 默认深色主题 — 降饱和、和谐过渡 */
-  --bg-primary: #0b0d12;
-  --bg-surface: #14171f;
-  --bg-elevated: #1c2029;
-  --bg-hover: #232831;
-  
-  --text-primary: #e8eaed;
-  --text-secondary: #b3b7be;
-  --text-muted: #7c818b;
-  --text-inverse: #0b0d12;
-  
-  --border-default: #232831;
-  --border-highlight: #3b82f6;
-  
+  /* 深色主题 — 统一永久暗色，提升文字对比度 */
+  --bg-primary: #0c0e14;
+  --bg-surface: #13161f;
+  --bg-elevated: #1a1e2d;
+  --bg-hover: #232a38;
+
+  --text-primary: #f0f4ff;
+  --text-secondary: #c8cdd7;
+  --text-muted: #8892a4;
+  --text-inverse: #0c0e14;
+
+  --border-default: #252b3a;
+  --border-highlight: #5b8def;
+
   --color-primary: #5b8def;
   --color-primary-hover: #7ba3f5;
   --color-primary-light: rgba(91, 141, 239, 0.14);
+
+  /* Module accent (overridden per page by modules.css) */
+  --page-accent:     #5b8def;
+  --page-accent-rgb: 91, 141, 239;
   
   --color-success: #22c55e;
   --color-warning: #f59e0b;
@@ -132,35 +136,6 @@
   --model-info-row-gap: 12px;
 }
 
-/* 浅色主题 */
-[data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-surface: #f8fafc;
-  --bg-elevated: #ffffff;
-  --bg-hover: #f1f5f9;
-  
-  --text-primary: #000000;
-  --text-secondary: #1e293b;
-  --text-muted: #475569;
-  --text-inverse: #ffffff;
-  
-  --border-default: #e2e8f0;
-  --border-highlight: #3b82f6;
-  
-  --color-primary: #3b82f6;
-  --color-primary-hover: #2563eb;
-  --color-primary-light: #dbeafe;
-  
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #06b6d4;
-  
-  /* UI 布局变量 - 浅色主题覆盖 */
-  --sidebar-width: 220px;
-  --sidebar-collapsed-width: 60px;
-}
-
 /* ============================================
    基础样式重置
    ============================================ */
@@ -175,16 +150,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--bg-primary);
   color: var(--text-primary);
-  transition: background 0.3s ease, color 0.3s ease;
-}
-
-/* 浅色模式下增加文字清晰度和粗细 */
-[data-theme="light"] {
-  text-shadow: 0 0 0.3px rgba(0, 0, 0, 0.4);
-}
-
-[data-theme="light"] * {
-  font-weight: 500 !important;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* 确保所有表单元素继承主题颜色 */

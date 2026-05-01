@@ -1,0 +1,175 @@
+/* Per-module accent themes with background patterns */
+
+/* ─── Library (咨询馆员) — warm amber diagonal stripes ─── */
+html[data-module="library"] {
+  --page-accent:         #e8b84b;
+  --page-accent-rgb:     232, 184, 75;
+  --color-primary:       #e8b84b;
+  --color-primary-hover: #f0cc6e;
+  --color-primary-light: rgba(232, 184, 75, 0.12);
+  --border-highlight:    #e8b84b;
+}
+html[data-module="library"] .app-nav {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent, transparent 22px,
+    rgba(232, 184, 75, 0.07) 22px, rgba(232, 184, 75, 0.07) 23px
+  );
+}
+html[data-module="library"] body {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent, transparent 22px,
+    rgba(232, 184, 75, 0.025) 22px, rgba(232, 184, 75, 0.025) 23px
+  );
+}
+
+/* ─── Runtime (运行时) — violet diamond crosshatch ─────── */
+html[data-module="runtime"] {
+  --page-accent:         #c4b5fd;
+  --page-accent-rgb:     196, 181, 253;
+  --color-primary:       #c4b5fd;
+  --color-primary-hover: #a78bfa;
+  --color-primary-light: rgba(196, 181, 253, 0.12);
+  --border-highlight:    #a78bfa;
+}
+html[data-module="runtime"] .app-nav {
+  background-image:
+    linear-gradient( 45deg, rgba(196, 181, 253, 0.07) 1px, transparent 1px),
+    linear-gradient(-45deg, rgba(196, 181, 253, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px, 22px 22px;
+}
+html[data-module="runtime"] body {
+  background-image:
+    linear-gradient( 45deg, rgba(196, 181, 253, 0.025) 1px, transparent 1px),
+    linear-gradient(-45deg, rgba(196, 181, 253, 0.025) 1px, transparent 1px);
+  background-size: 22px 22px, 22px 22px;
+}
+
+/* ─── Search (检索) — sky blue dot grid ────────────────── */
+html[data-module="search"] {
+  --page-accent:         #38bdf8;
+  --page-accent-rgb:     56, 189, 248;
+  --color-primary:       #38bdf8;
+  --color-primary-hover: #7dd3fc;
+  --color-primary-light: rgba(56, 189, 248, 0.12);
+  --border-highlight:    #38bdf8;
+}
+html[data-module="search"] .app-nav {
+  background-image: radial-gradient(rgba(56, 189, 248, 0.15) 1.5px, transparent 1.5px);
+  background-size: 28px 28px;
+}
+html[data-module="search"] body {
+  background-image: radial-gradient(rgba(56, 189, 248, 0.04) 1.5px, transparent 1.5px);
+  background-size: 28px 28px;
+}
+
+/* ─── Pipeline (管道) — emerald horizontal lines ────────── */
+html[data-module="pipeline"] {
+  --page-accent:         #34d399;
+  --page-accent-rgb:     52, 211, 153;
+  --color-primary:       #34d399;
+  --color-primary-hover: #6ee7b7;
+  --color-primary-light: rgba(52, 211, 153, 0.12);
+  --border-highlight:    #34d399;
+}
+html[data-module="pipeline"] .app-nav {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent, transparent 22px,
+    rgba(52, 211, 153, 0.07) 22px, rgba(52, 211, 153, 0.07) 23px
+  );
+}
+html[data-module="pipeline"] body {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent, transparent 22px,
+    rgba(52, 211, 153, 0.025) 22px, rgba(52, 211, 153, 0.025) 23px
+  );
+}
+
+/* ─── Ops (运维) — orange blueprint grid ───────────────── */
+html[data-module="ops"] {
+  --page-accent:         #fb923c;
+  --page-accent-rgb:     251, 146, 60;
+  --color-primary:       #fb923c;
+  --color-primary-hover: #fdba74;
+  --color-primary-light: rgba(251, 146, 60, 0.12);
+  --border-highlight:    #fb923c;
+}
+html[data-module="ops"] .app-nav {
+  background-image:
+    linear-gradient(    rgba(251, 146, 60, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 146, 60, 0.07) 1px, transparent 1px);
+  background-size: 36px 36px, 36px 36px;
+}
+html[data-module="ops"] body {
+  background-image:
+    linear-gradient(    rgba(251, 146, 60, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 146, 60, 0.025) 1px, transparent 1px);
+  background-size: 36px 36px, 36px 36px;
+}
+
+/* ─── System (系统) — slate fine cross grid ─────────────── */
+html[data-module="system"] {
+  --page-accent:         #94a3b8;
+  --page-accent-rgb:     148, 163, 184;
+  --color-primary:       #94a3b8;
+  --color-primary-hover: #cbd5e1;
+  --color-primary-light: rgba(148, 163, 184, 0.12);
+  --border-highlight:    #94a3b8;
+}
+html[data-module="system"] .app-nav {
+  background-image:
+    linear-gradient(    rgba(148, 163, 184, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.09) 1px, transparent 1px);
+  background-size: 16px 16px, 16px 16px;
+}
+html[data-module="system"] body {
+  background-image:
+    linear-gradient(    rgba(148, 163, 184, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
+  background-size: 16px 16px, 16px 16px;
+}
+
+/* ─── Learning (学习) — green staggered dots ─────────────── */
+html[data-module="learning"] {
+  --page-accent:         #86efac;
+  --page-accent-rgb:     134, 239, 172;
+  --color-primary:       #86efac;
+  --color-primary-hover: #bbf7d0;
+  --color-primary-light: rgba(134, 239, 172, 0.12);
+  --border-highlight:    #86efac;
+}
+html[data-module="learning"] .app-nav {
+  background-image:
+    radial-gradient(rgba(134, 239, 172, 0.14) 1.5px, transparent 1.5px),
+    radial-gradient(rgba(134, 239, 172, 0.14) 1.5px, transparent 1.5px);
+  background-size:     30px 30px, 30px 30px;
+  background-position: 0 0, 15px 15px;
+}
+html[data-module="learning"] body {
+  background-image:
+    radial-gradient(rgba(134, 239, 172, 0.04) 1.5px, transparent 1.5px),
+    radial-gradient(rgba(134, 239, 172, 0.04) 1.5px, transparent 1.5px);
+  background-size:     30px 30px, 30px 30px;
+  background-position: 0 0, 15px 15px;
+}
+
+/* ─── Agents — pink scattered dots ──────────────────────── */
+html[data-module="agents"] {
+  --page-accent:         #f9a8d4;
+  --page-accent-rgb:     249, 168, 212;
+  --color-primary:       #f9a8d4;
+  --color-primary-hover: #fbcfe8;
+  --color-primary-light: rgba(249, 168, 212, 0.12);
+  --border-highlight:    #f9a8d4;
+}
+html[data-module="agents"] .app-nav {
+  background-image: radial-gradient(rgba(249, 168, 212, 0.13) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+html[data-module="agents"] body {
+  background-image: radial-gradient(rgba(249, 168, 212, 0.04) 1px, transparent 1px);
+  background-size: 18px 18px;
+}

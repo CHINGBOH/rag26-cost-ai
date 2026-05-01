@@ -5,8 +5,6 @@
 
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { ThemeToggle } from './components/common/ThemeToggle';
-import { initTheme } from './config/theme';
 
 // Core pages
 import { LibraryPage } from './pages/LibraryPage';
@@ -38,8 +36,33 @@ const NAV_ITEMS = [
   { path: '/agents', label: 'Agent管理' },
 ] as const;
 
+const ROUTE_MODULE: [string, string][] = [
+  ['/runtime', 'runtime'],
+  ['/search',   'search'],
+  ['/pipeline', 'pipeline'],
+  ['/ops',      'ops'],
+  ['/system',   'system'],
+  ['/learning', 'learning'],
+  ['/agents',   'agents'],
+  ['/pro',      'library'],
+  ['/',         'library'],
+];
+
+function getModule(pathname: string): string {
+  for (const [prefix, mod] of ROUTE_MODULE) {
+    if (pathname === prefix || (prefix !== '/' && pathname.startsWith(prefix + '/'))) {
+      return mod;
+    }
+  }
+  return 'library';
+}
+
 function Navigation() {
   const location = useLocation();
+
+  useEffect(() => {
+    document.documentElement.dataset.module = getModule(location.pathname);
+  }, [location.pathname]);
 
   return (
     <header className="app-nav">
@@ -59,17 +82,11 @@ function Navigation() {
           </Link>
         ))}
       </nav>
-
-      <div className="nav-actions">
-        <ThemeToggle />
-      </div>
     </header>
   );
 }
 
 export default function App() {
-  useEffect(() => { initTheme(); }, []);
-
   return (
     <BrowserRouter>
       <div className="app-shell">
