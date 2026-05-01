@@ -13,6 +13,7 @@ import { AgentChunk } from '../services/agentApi';
 import type { ChatMessage } from '../hooks/useAgent';
 import './LibraryPage.css';
 import { QUICK_QUESTIONS } from '../config/kb-config';
+import { SystemAssistant } from '../components/SystemAssistant';
 
 /* ── Fixed config — never exposed to user ────────────── */
 const LIBRARY_CONFIG: AgentConfig = {
@@ -122,6 +123,9 @@ export const LibraryPage: React.FC = () => {
           发送
         </button>
       </div>
+
+      {/* ── System assistant (bottom-right floating) ── */}
+      <SystemAssistant />
     </div>
   );
 };
