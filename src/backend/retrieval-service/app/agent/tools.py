@@ -5278,42 +5278,70 @@ def expand_question(question: str, n: int = 5) -> str:
 
 @tool
 def suggest_followup(question: str, answer: str, n: int = 3) -> str:
-    """追问建议：基于问答内容，推荐 N 个更深入的追问。
+    """追问建议：用 LLM 基于问答原文生成 N 个上下文相关的追问。
     Args: question 原问题；answer 回答文本；n 追问数量
-    Returns: JSON {followups:[...]}
+    Returns: JSON {followups:[{question, reason}]}
     """
     if not question or not answer:
         return json.dumps({"error": "question and answer required"})
     n = max(1, min(int(n or 3), 8))
 
-    q_terms = set(_extract_terms(question))
-    a_terms = _extract_terms(answer)
-    new_entities = [t for t in a_terms if t not in q_terms][:6]
+    try:
+        from app.agent.prompts import invoke_llm
+        from langchain_core.messages import SystemMessage, HumanMessage
 
+        system = (
+            "你是一个工程造价知识库的智能助手。"
+            "根据用户的问题和系统给出的回答，生成若干个自然、深入的追问建议。"
+            "要求：\n"
+            "1. 追问必须基于回答中实际出现的概念或数据，不能凭空造词\n"
+            "2. 追问应是用户看到这个回答后最可能想继续了解的问题\n"
+            "3. 避免模板化措辞，每个追问都应具体且有意义\n"
+            "4. 只输出 JSON，格式：{\"followups\": [{\"question\": \"...\", \"reason\": \"...\"}]}\n"
+            "5. reason 字段说明该追问基于回答中的哪个具体信息点"
+        )
+        user = (
+            f"原问题：{question}\n\n"
+            f"回答（前1200字）：{answer[:1200]}\n\n"
+            f"请生成 {n} 个追问建议。"
+        )
+        response, _ = invoke_llm([SystemMessage(content=system), HumanMessage(content=user)])
+        raw = response.content if hasattr(response, "content") else str(response)
+        # 从 LLM 输出中提取 JSON
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if m:
+            parsed = json.loads(m.group())
+            followups = parsed.get("followups", [])
+            if followups:
+                return json.dumps({"original": question, "followups": followups[:n]}, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"[suggest_followup] LLM call failed: {e}, falling back to entity templates")
+
+    # 降级：实体模板（LLM 不可用时兜底）
+    q_terms = set(_extract_terms(question))
+    a_terms = _extract_terms(answer, max_len=20)  # 放宽长度限制，保留完整实体名
+    new_entities = [t for t in a_terms if t not in q_terms][:4]
     if not new_entities:
         return json.dumps({"followups": [], "note": "no new entity in answer"}, ensure_ascii=False)
-
-    main_q_entity = next(iter(q_terms), "本主题") if q_terms else "本主题"
-    followup_tpls = [
-        "{ne} 的具体计算规则是什么？",
-        "{ne} 与 {qe} 的关系/差异是什么？",
-        "{ne} 在实际应用中需要注意哪些问题？",
-        "{ne} 有哪些子类或细分？",
-        "如何获取/确定 {ne} 的标准值？",
+    fallback_tpls = [
+        "{ne}的计算规则是什么？",
+        "{ne}的适用范围有哪些限制？",
+        "{ne}与{qe}有什么区别？",
+        "{ne}在哪些场景下需要调整系数？",
     ]
+    main_q_entity = next(iter(q_terms), "本主题") if q_terms else "本主题"
     followups = []
-    seen = set()
+    seen: set = set()
     for ne in new_entities:
-        for tpl in followup_tpls:
+        for tpl in fallback_tpls:
             q = tpl.format(ne=ne, qe=main_q_entity)
             if q not in seen:
                 seen.add(q)
-                followups.append({"question": q, "based_on_entity": ne})
+                followups.append({"question": q, "reason": f"基于回答中出现的「{ne}」"})
             if len(followups) >= n:
                 break
         if len(followups) >= n:
             break
-
     return json.dumps({"original": question, "followups": followups[:n]}, ensure_ascii=False)
 
 

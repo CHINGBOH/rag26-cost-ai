@@ -54,6 +54,7 @@ async def health_check():
     return {"status": "error", "message": "Store not initialized"}
 
 
+@router.post("/api/search", response_model=APIResponse[Dict[str, Any]])
 @router.post("/api/v1/search", response_model=APIResponse[Dict[str, Any]])
 async def search(request: SearchRequest):
     """混合检索（向量+关键词+图）"""

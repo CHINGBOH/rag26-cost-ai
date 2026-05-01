@@ -35,6 +35,10 @@ try:
     PADDLE_AVAILABLE = True
 except ImportError as e:
     PADDLE_AVAILABLE = False
+    PaddleOCR = None  # type: ignore[assignment,misc]
+    PPStructure = None  # type: ignore[assignment]
+    Image = None  # type: ignore[assignment]
+    np = None  # type: ignore[assignment]
     print(f"WARNING: PaddleOCR not available: {e}")
 
 # Configuration constants
