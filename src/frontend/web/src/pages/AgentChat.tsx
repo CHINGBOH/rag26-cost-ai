@@ -31,6 +31,7 @@ import {
   Line,
 } from 'recharts';
 import './AgentChat.css';
+import { QUICK_QUESTIONS, DOC_TYPE_OPTIONS } from '../config/kb-config';
 
 /* ── Simple Markdown Renderer ───────────────────────── */
 const HTML_ESCAPE: Record<string, string> = {
@@ -888,7 +889,6 @@ const DEFAULT_CONFIG: ConfigState = {
   llmEngine: 'api',
 };
 
-const DOC_TYPE_OPTIONS = ['信息价', '定额', '费率', '指南', '划分'];
 const LLM_ROUTE_OPTIONS: Array<ConfigState['llmRoute']> = ['auto', 'local', 'deepseek'];
 
 function getDefaultModel(route: ConfigState['llmRoute']): string {
@@ -1152,13 +1152,6 @@ export const AgentChat: React.FC = () => {
 };
 
 /* ── Welcome Screen ──────────────────────────────────── */
-
-const QUICK_QUESTIONS = [
-  '2025版费率标准中，企业管理费的计算方法是什么？',
-  '某工程人工费500万，按2025版费率计算企业管理费是多少？',
-  '2026年1月普通硅酸盐水泥P.O 42.5的含税价格是多少？',
-  '一般计税与简易计税的适用条件分别是什么？',
-];
 
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">

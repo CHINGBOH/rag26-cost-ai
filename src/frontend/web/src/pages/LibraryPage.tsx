@@ -12,6 +12,7 @@ import { submitFeedback } from '../services/metricsApi';
 import { AgentChunk } from '../services/agentApi';
 import type { ChatMessage } from '../hooks/useAgent';
 import './LibraryPage.css';
+import { QUICK_QUESTIONS } from '../config/kb-config';
 
 /* ── Fixed config — never exposed to user ────────────── */
 const LIBRARY_CONFIG: AgentConfig = {
@@ -24,13 +25,6 @@ const LIBRARY_CONFIG: AgentConfig = {
   llmModel: 'deepseek-chat',
   llmEngine: 'api',
 };
-
-const QUICK_QUESTIONS = [
-  '2025版费率标准中，企业管理费的计算方法是什么？',
-  '某工程人工费500万，按2025版费率计算企业管理费是多少？',
-  '2026年1月普通硅酸盐水泥P.O 42.5的含税价格是多少？',
-  '一般计税与简易计税的适用条件分别是什么？',
-];
 
 /* ── Markdown renderer (XSS-safe) ────────────────────── */
 const HTML_ESCAPE: Record<string, string> = {
