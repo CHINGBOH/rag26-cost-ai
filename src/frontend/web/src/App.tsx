@@ -26,15 +26,15 @@ import './App.css';
 import './styles/theme.css';
 
 const NAV_ITEMS = [
-  { path: '/', label: '咨询馆员' },
-  { path: '/runtime', label: '运行时' },
-  { path: '/search', label: '检索' },
-  { path: '/pipeline', label: '管道' },
-  { path: '/ops', label: '运维' },
-  { path: '/system', label: '系统' },
-  { path: '/learning', label: '学习' },
-  { path: '/agents', label: 'Agent管理' },
-] as const;
+  { path: '/', label: '咨询馆员', icon: '📚' },
+  { path: '/runtime', label: '运行时', icon: '⚡' },
+  { path: '/search', label: '检索', icon: '🔍' },
+  { path: '/pipeline', label: '管道', icon: '⛓' },
+  { path: '/ops', label: '运维', icon: '🛡' },
+  { path: '/system', label: '系统', icon: '⚙' },
+  { path: '/learning', label: '学习', icon: '🧠' },
+  { path: '/agents', label: 'Agent', icon: '🤖' },
+];
 
 const ROUTE_MODULE: [string, string][] = [
   ['/runtime', 'runtime'],
@@ -67,17 +67,18 @@ function Navigation() {
   return (
     <header className="app-nav">
       <div className="nav-brand">
-        <span className="nav-mark">R</span>
-        <span className="nav-title">RAG 知识库</span>
+        <span className="nav-mark">四</span>
+        <span className="nav-title">造价知识库</span>
       </div>
 
       <nav className="nav-links">
-        {NAV_ITEMS.map(({ path, label }) => (
+        {NAV_ITEMS.map(({ path, label, icon }) => (
           <Link
             key={path}
             to={path}
             className={`nav-link ${location.pathname === path ? 'active' : ''}`}
           >
+            <span aria-hidden="true" className="nav-icon">{icon}</span>
             {label}
           </Link>
         ))}

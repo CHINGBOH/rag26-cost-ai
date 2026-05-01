@@ -291,8 +291,8 @@ export interface PipelineJob {
   file_name: string;
   file_size?: number;
   status: 'queued' | 'ocr' | 'chunk' | 'embed' | 'ingest' | 'done' | 'failed';
-  created_ts: number;
-  updated_ts?: number;
+  created_at?: string;
+  updated_at?: string;
   duration_ms?: number;
   ocr_pages?: number;
   text_chars?: number;

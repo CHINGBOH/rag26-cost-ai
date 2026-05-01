@@ -11,7 +11,7 @@ import {
 } from '../services/metricsApi';
 import { PageHeader } from '../components/common/PageHeader';
 import { StatusDot } from '../components/common/StatusDot';
-import { fmtTime, fmtUnixTime } from '../utils/dateUtils';
+import { fmtTime, fmtDateTime } from '../utils/dateUtils';
 import './PipelinePage.css';
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -206,7 +206,7 @@ export const PipelinePage: React.FC = () => {
                     <td style={{ padding: '6px' }}>{j.text_chars ?? '-'}</td>
                     <td style={{ padding: '6px' }}>{j.chunks_inserted != null ? `${j.chunks_inserted}/${j.chunks_total ?? '?'}` : '-'}</td>
                     <td style={{ padding: '6px' }}>{j.duration_ms != null ? `${j.duration_ms}ms` : '-'}</td>
-                    <td style={{ padding: '6px', color: '#64748b' }}>{fmtUnixTime(j.created_ts)}</td>
+                    <td style={{ padding: '6px', color: '#64748b' }}>{fmtDateTime(j.created_at)}</td>
                   </tr>
                 ))}
               </tbody>

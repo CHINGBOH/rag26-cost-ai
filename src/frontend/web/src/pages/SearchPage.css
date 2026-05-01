@@ -185,12 +185,18 @@
   padding: 10px 22px;
   border: none;
   border-radius: 8px;
-  background: var(--text-primary);
-  color: var(--bg-primary);
+  background: var(--color-primary);
+  color: var(--text-inverse, #fff);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   align-self: flex-start;
+  transition: filter 0.18s ease, transform 0.18s ease;
+}
+
+.tool-run-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
 }
 
 .tool-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
