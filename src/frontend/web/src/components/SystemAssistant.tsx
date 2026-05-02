@@ -140,11 +140,15 @@ export const SystemAssistant: React.FC = () => {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [iconLarge, setIconLarge] = useState(false);
+  const [panelSize, setPanelSize] = useState<{ w: number; h: number } | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const resizeStartRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -164,6 +168,30 @@ export const SystemAssistant: React.FC = () => {
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
+
+  // Resize handle — panel is anchored bottom-right, so drag top-left corner to resize
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    resizeStartRef.current = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height };
+
+    const onMove = (ev: MouseEvent) => {
+      const s = resizeStartRef.current;
+      if (!s) return;
+      const newW = Math.max(300, Math.min(760, s.w + (s.x - ev.clientX)));
+      const newH = Math.max(280, Math.min(window.innerHeight - 120, s.h + (s.y - ev.clientY)));
+      setPanelSize({ w: newW, h: newH });
+    };
+    const onUp = () => {
+      resizeStartRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
 
   const stopStream = useCallback(() => {
     abortRef.current?.abort();
@@ -251,24 +279,48 @@ export const SystemAssistant: React.FC = () => {
     }
   };
 
+  const triggerClass = [
+    'sa-trigger',
+    open ? 'sa-trigger--open' : '',
+    !open && iconLarge ? 'sa-trigger--large' : '',
+  ].filter(Boolean).join(' ');
+
+  const panelStyle = panelSize
+    ? { width: panelSize.w, height: panelSize.h, maxHeight: 'none' as const }
+    : undefined;
+
   return (
     <>
       {/* Floating trigger */}
       <button
-        className={`sa-trigger${open ? ' sa-trigger--open' : ''}`}
+        className={triggerClass}
         onClick={() => (open ? handleClose() : setOpen(true))}
         title="RAG 系统导览助手"
         aria-label={open ? '关闭系统助手' : '打开系统助手'}
       >
-        <span className="sa-trigger-icon" aria-hidden="true">
+        <span
+          className="sa-trigger-icon"
+          aria-hidden="true"
+          onClick={!open ? (e => { e.stopPropagation(); setIconLarge(v => !v); }) : undefined}
+          title={!open ? (iconLarge ? '缩小图标' : '放大图标') : undefined}
+        >
           {open ? '✕' : '💡'}
         </span>
-        {!open && <span className="sa-trigger-label">系统助手</span>}
+        {!open && !iconLarge && <span className="sa-trigger-label">系统助手</span>}
       </button>
 
       {/* Chat panel */}
       {open && (
-        <div className="sa-panel" role="dialog" aria-label="RAG 系统导览助手">
+        <div
+          className="sa-panel"
+          ref={panelRef}
+          role="dialog"
+          aria-label="RAG 系统导览助手"
+          style={panelStyle}
+        >
+          {/* Resize grip — drag top-left corner to resize panel */}
+          <div className="sa-resize-handle" onMouseDown={onResizeStart} title="拖拽调整大小" />
+
           <div className="sa-header">
             <span className="sa-header-icon" aria-hidden="true">💡</span>
             <span className="sa-header-title">系统导览助手</span>

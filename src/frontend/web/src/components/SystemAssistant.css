@@ -42,9 +42,28 @@
   border: 1.5px solid rgba(201, 169, 110, 0.5);
 }
 
+/* Large icon mode — click the 💡 emoji to toggle */
+.sa-trigger--large {
+  padding: 18px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  justify-content: center;
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.38),
+    0 0 0 2px rgba(201, 169, 110, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.sa-trigger--large .sa-trigger-icon {
+  font-size: 36px;
+  cursor: zoom-out;
+}
+
 .sa-trigger-icon {
   font-size: 16px;
   line-height: 1;
+  cursor: zoom-in;
 }
 
 .sa-trigger-label {
@@ -64,9 +83,11 @@
   width: 360px;
   max-height: calc(100dvh - var(--nav-height, 64px) - 100px);
   min-height: 260px;
+  min-width: 300px;
   display: flex;
   flex-direction: column;
-  background: rgba(20, 12, 4, 0.96);
+  /* Fully opaque dark background — no page bleed-through at any edge */
+  background: rgb(16, 8, 2);
   border: 1px solid rgba(201, 169, 110, 0.28);
   border-radius: 16px;
   box-shadow:
@@ -75,8 +96,7 @@
     inset 0 1px 0 rgba(201, 169, 110, 0.12);
   overflow: hidden;
   animation: sa-slide-in 0.22s cubic-bezier(0.34, 1.26, 0.64, 1);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* position: fixed already establishes containing block for absolute children */
 }
 
 @keyframes sa-slide-in {
@@ -88,6 +108,33 @@
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+/* ── Resize grip — top-left corner, drag to resize panel ─────────────────── */
+.sa-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  cursor: nwse-resize;
+  z-index: 10;
+  border-radius: 16px 0 8px 0;
+}
+
+.sa-resize-handle::before {
+  content: '⠿';
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  font-size: 11px;
+  color: rgba(201, 169, 110, 0.3);
+  pointer-events: none;
+  line-height: 1;
+}
+
+.sa-resize-handle:hover::before {
+  color: rgba(201, 169, 110, 0.65);
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -280,7 +327,8 @@
   padding: 10px 12px;
   border-top: 1px solid rgba(201, 169, 110, 0.15);
   flex-shrink: 0;
-  background: rgba(201, 169, 110, 0.04);
+  /* Explicitly opaque — prevents page background showing through at panel bottom */
+  background: rgb(14, 7, 2);
 }
 
 .sa-input {
