@@ -1,13 +1,17 @@
 /**
  * SystemAssistant — floating chat widget explaining the RAG system internals.
  * Uses /api/v1/guide-agent/stream: true LangChain tool-calling agent backed by rag_system_kb.
+ * Renders Mermaid diagrams when LLM outputs ```mermaid blocks.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import mermaid from 'mermaid';
 import './SystemAssistant.css';
 
-// Strip all markdown formatting — render as plain conversational text
-function renderAssistantText(text: string): string {
+mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+
+// Strip residual markdown — used on plain-text segments only
+function renderTextPart(text: string): string {
   if (!text) return '';
   return text
     .replace(/&/g, '&amp;')
@@ -22,6 +26,57 @@ function renderAssistantText(text: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/\n/g, '<br />');
 }
+
+// Renders a single Mermaid diagram; falls back to <pre> on parse error
+const MermaidBlock: React.FC<{ code: string }> = ({ code }) => {
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState(false);
+  const uid = useRef(`sa-mmd-${Math.random().toString(36).slice(2)}`);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg('');
+    setError(false);
+    mermaid.render(uid.current, code.trim())
+      .then(({ svg: s }) => { if (!cancelled) setSvg(s); })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [code]);
+
+  if (error) return <pre className="sa-mermaid-fallback">{code}</pre>;
+  if (!svg) return <div className="sa-mermaid-loading">⏳ 绘图中…</div>;
+  return <div className="sa-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />;
+};
+
+// Splits assistant message content into text and mermaid segments
+const MERMAID_RE = /```mermaid\n([\s\S]*?)\n```/g;
+
+const AssistantMessage: React.FC<{ content: string; streaming?: boolean }> = ({ content, streaming }) => {
+  if (!content) return null;
+
+  const segments: Array<{ type: 'text' | 'mermaid'; value: string }> = [];
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  MERMAID_RE.lastIndex = 0;
+  while ((m = MERMAID_RE.exec(content)) !== null) {
+    if (m.index > lastIndex) segments.push({ type: 'text', value: content.slice(lastIndex, m.index) });
+    segments.push({ type: 'mermaid', value: m[1] });
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < content.length) segments.push({ type: 'text', value: content.slice(lastIndex) });
+
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.type === 'mermaid' && !streaming) {
+          return <MermaidBlock key={i} code={seg.value} />;
+        }
+        const raw = seg.type === 'mermaid' ? `\`\`\`mermaid\n${seg.value}\n\`\`\`` : seg.value;
+        return <span key={i} dangerouslySetInnerHTML={{ __html: renderTextPart(raw) }} />;
+      })}
+    </>
+  );
+};
 
 // SSE async generator for the guide agent stream endpoint
 async function* sendGuideStream(
@@ -232,9 +287,9 @@ export const SystemAssistant: React.FC = () => {
               <div className="sa-empty">
                 <p className="sa-empty-intro">您好！我是本系统的导览助手，可以解答：</p>
                 <ul className="sa-empty-hints">
-                  <li>系统内部是怎么工作的？</li>
+                  <li>系统整体架构是什么样的？（可画图）</li>
+                  <li>检索请求的完整流程？（可画图）</li>
                   <li>为什么有时候回答说"信息不足"？</li>
-                  <li>如何提问才能得到最准确的答案？</li>
                   <li>沙盒计算是怎么执行的？</li>
                   <li>知识库用了哪些数据库？</li>
                 </ul>
@@ -243,19 +298,12 @@ export const SystemAssistant: React.FC = () => {
 
             {messages.map((m, i) => (
               <div key={i} className={`sa-msg sa-msg--${m.role}`}>
-                <div
-                  className="sa-msg-content"
-                  dangerouslySetInnerHTML={
-                    m.role === 'assistant' && m.content
-                      ? { __html: renderAssistantText(m.content) }
-                      : undefined
-                  }
-                >
+                <div className="sa-msg-content">
                   {m.role === 'user'
                     ? m.content
                     : !m.content && m.streaming
                       ? <span className="sa-cursor">▍</span>
-                      : null}
+                      : <AssistantMessage content={m.content} streaming={m.streaming} />}
                 </div>
               </div>
             ))}
