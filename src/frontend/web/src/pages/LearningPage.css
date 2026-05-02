@@ -117,3 +117,8 @@
   cursor: pointer;
 }
 .feedback-btn.detail-review:hover { background: rgba(212,168,39,0.18); }
+
+.learn-engine-card { padding: 16px 20px; }
+.learn-engine-stats { margin: 4px 0 12px; padding-left: 18px; line-height: 1.7; }
+.learn-engine-stats li { font-size: 13px; }
+.learn-engine-stats code { background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 3px; }

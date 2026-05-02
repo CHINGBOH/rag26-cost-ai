@@ -424,3 +424,30 @@ export async function getFeedbackStats(limit = 100): Promise<FeedbackStats | nul
     return r.json();
   } catch { return null; }
 }
+
+export interface LearningEngineStatus {
+  trigger_mode: string;
+  trigger_description: string;
+  trigger_conditions: Array<{ name: string; active: boolean; command?: string; note?: string }>;
+  last_run: {
+    ts?: string;
+    file?: string;
+    file_mtime?: string;
+    summary?: { total?: number; passed?: number; ok?: number; avg_confidence?: number };
+    result_count?: number;
+    error?: string;
+  };
+  signals_24h: {
+    weak_or_failed_runs: number;
+    pending_negative_feedback_with_text: number;
+  };
+  next_actions: string[];
+}
+
+export async function getLearningEngine(): Promise<LearningEngineStatus | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/engine`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}

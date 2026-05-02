@@ -1355,6 +1355,105 @@ from collections import deque
 import time as _time_ops
 import threading as _threading_ops
 
+
+# ── Learning Engine status (transparent triggers) ─────────────────────────────
+
+_LEARNING_LAST_RUN_FILE = _os_learn.environ.get(
+    "LEARNING_LAST_RUN_FILE",
+    "/home/l/rag-dashboard/logs/agent_test_16_results.json",
+)
+
+from datetime import datetime as _datetime, timezone as _timezone
+
+
+@router.get("/api/v1/learning/engine")
+async def learning_engine_status():
+    """Honest disclosure of how the learning loop works.
+
+    Triggers: currently **manual** via `python tests/test_agent_16.py` (no scheduler,
+    no threshold-based auto-run). Returns last-run results from the canary harness
+    plus open feedback waiting for analyst attention.
+    """
+    last_run: dict = {}
+    last_path = _os_learn.path.abspath(_LEARNING_LAST_RUN_FILE)
+    try:
+        if _os_learn.path.exists(last_path):
+            with open(last_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            stat = _os_learn.stat(last_path)
+            last_run = {
+                "ts": payload.get("timestamp"),
+                "file": last_path,
+                "file_mtime": _datetime.fromtimestamp(stat.st_mtime, tz=_timezone.utc).isoformat(),
+                "summary": payload.get("summary") or {},
+                "result_count": len(payload.get("results") or []),
+            }
+    except Exception as exc:
+        last_run = {"error": str(exc)}
+
+    pending_feedback_count = 0
+    weak_runs_24h = 0
+    try:
+        import asyncpg as _apg_le
+        db_url = _os_learn.environ.get(
+            "DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db"
+        )
+        conn = await _apg_le.connect(db_url)
+        try:
+            r1 = await conn.fetchval(
+                """SELECT COUNT(*) FROM rag_feedback
+                   WHERE rating < 0 AND (suggestion IS NOT NULL OR criticism IS NOT NULL)
+                     AND created_at >= NOW() - INTERVAL '7 days'"""
+            )
+            pending_feedback_count = int(r1 or 0)
+        except Exception:
+            pass
+        finally:
+            await conn.close()
+    except Exception:
+        pass
+
+    try:
+        runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
+        from datetime import datetime as _dt2
+        cutoff = _time_ops.time() - 86400
+        for r in runs:
+            ts = r.get("ts")
+            try:
+                t_epoch = _dt2.fromisoformat(ts.replace("Z", "+00:00")).timestamp() if ts else 0
+            except Exception:
+                t_epoch = 0
+            if t_epoch >= cutoff and r.get("quality") in ("weak", "failure"):
+                weak_runs_24h += 1
+    except Exception:
+        pass
+
+    return {
+        "trigger_mode": "manual",
+        "trigger_description": (
+            "学习回路目前为手动触发。运行 `python tests/test_agent_16.py` 跑 16 道金标问题，"
+            "结果写入 logs/agent_test_16_results.json，本端点读取后展示。"
+            "暂无定时任务、阈值自动触发或后台 worker。"
+        ),
+        "trigger_conditions": [
+            {"name": "手动金标回归", "active": True, "command": "python tests/test_agent_16.py"},
+            {"name": "定时回归 (cron)", "active": False, "note": "未启用，需要后续配置"},
+            {"name": "失败率阈值自动触发", "active": False, "note": "未实现"},
+            {"name": "用户反馈聚合分析", "active": False, "note": "数据已收集，分析任务待开发"},
+        ],
+        "last_run": last_run,
+        "signals_24h": {
+            "weak_or_failed_runs": weak_runs_24h,
+            "pending_negative_feedback_with_text": pending_feedback_count,
+        },
+        "next_actions": [
+            "查看『反馈点评』Tab 中带评论的负面反馈，作为下一轮迭代的素材",
+            "在『Agent 运行轨迹』中过滤 quality=weak/failure，排查共性",
+            "运行 `python tests/test_agent_16.py` 验证当前回归状态",
+        ],
+    }
+
+
 _OPS_LOCK = _threading_ops.Lock()
 _OPS_REQUESTS: deque = deque(maxlen=2000)  # (ts, latency_ms, status_code, path)
 

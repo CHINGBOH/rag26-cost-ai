@@ -15,12 +15,14 @@ import {
   getLearningBlindspots,
   getConversations,
   getFeedbackStats,
+  getLearningEngine,
   LearningSummary,
   LearningRun,
   LearningGap,
   BlindspotCluster,
   ConversationTurn,
   FeedbackStats,
+  LearningEngineStatus,
 } from '../services/metricsApi';
 import './LearningPage.css';
 import { fmtDateTime } from '../utils/dateUtils';
@@ -52,19 +54,21 @@ export const LearningPage: React.FC = () => {
   const [blindspots, setBlindspots] = useState<BlindspotCluster[]>([]);
   const [conversations, setConversations] = useState<ConversationTurn[]>([]);
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
+  const [engine, setEngine] = useState<LearningEngineStatus | null>(null);
   const [filter, setFilter] = useState<QualityFilter>('all');
   const [mainTab, setMainTab] = useState<MainTab>('runs');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
-    const [s, r, g, b, convs, fb] = await Promise.all([
+    const [s, r, g, b, convs, fb, eng] = await Promise.all([
       getLearningSummary(),
       getLearningRuns(50, filter === 'all' ? undefined : filter),
       getLearningGaps(20),
       getLearningBlindspots(2),
       getConversations(50),
       getFeedbackStats(100),
+      getLearningEngine(),
     ]);
     setSummary(s);
     setRuns(r);
@@ -72,6 +76,7 @@ export const LearningPage: React.FC = () => {
     setBlindspots(b?.clusters || []);
     setConversations(convs);
     setFeedbackStats(fb);
+    setEngine(eng);
     setLoading(false);
   };
 
@@ -249,14 +254,78 @@ export const LearningPage: React.FC = () => {
         </section>
       </div>
 
+      {/* 学习引擎 — 触发条件透明化 */}
+      <section className="learn-card learn-engine-card" style={{ marginTop: 16 }}>
+        <div className="learn-card-head">
+          <h3>🧠 学习引擎</h3>
+          <span className="muted small">
+            {engine ? `触发模式：${engine.trigger_mode === 'manual' ? '手动' : engine.trigger_mode}` : '加载中…'}
+          </span>
+        </div>
+        {engine ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+            <div>
+              <p className="muted small" style={{ marginTop: 0 }}>{engine.trigger_description}</p>
+              <table className="learn-runs-table" style={{ marginTop: 8 }}>
+                <thead><tr><th>触发条件</th><th>状态</th><th>说明</th></tr></thead>
+                <tbody>
+                  {engine.trigger_conditions.map((c, i) => (
+                    <tr key={i}>
+                      <td>{c.name}</td>
+                      <td><span className={`badge q-${c.active ? 'good' : 'weak'}`}>{c.active ? '已启用' : '未启用'}</span></td>
+                      <td className="muted small">{c.command ? <code>{c.command}</code> : (c.note || '—')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h4 style={{ marginTop: 0 }}>上次回归</h4>
+              {engine.last_run.summary ? (
+                <ul className="learn-engine-stats">
+                  <li>时间：<code>{engine.last_run.ts ? fmtDateTime(engine.last_run.ts) : '—'}</code></li>
+                  <li>金标题数：<b>{engine.last_run.summary.total ?? '—'}</b></li>
+                  <li>通过：<b>{engine.last_run.summary.passed ?? '—'}</b></li>
+                  <li>平均置信：<b>{engine.last_run.summary.avg_confidence?.toFixed(2) ?? '—'}</b></li>
+                </ul>
+              ) : (
+                <p className="muted small">无历史回归记录。运行 <code>python tests/test_agent_16.py</code> 生成。</p>
+              )}
+              <h4>近 24h 信号</h4>
+              <ul className="learn-engine-stats">
+                <li>弱/失败运行：<b>{engine.signals_24h.weak_or_failed_runs}</b></li>
+                <li>带评论的负面反馈：<b>{engine.signals_24h.pending_negative_feedback_with_text}</b></li>
+              </ul>
+              {engine.next_actions.length > 0 && (
+                <>
+                  <h4>建议下一步</h4>
+                  <ul className="learn-engine-stats">
+                    {engine.next_actions.map((a, i) => <li key={i}>{a}</li>)}
+                  </ul>
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="muted">加载中…</p>
+        )}
+      </section>
+
       {/* 主 Tab 导航 */}
       <div className="learn-main-tabs">
-        {([['runs', '运行记录'], ['conversations', '对话记录'], ['feedback', '反馈点评']] as [MainTab, string][]).map(([t, label]) => (
+        {([['runs', 'Agent 运行轨迹'], ['conversations', '问答记录'], ['feedback', '反馈与趋势']] as [MainTab, string][]).map(([t, label]) => (
           <button key={t} className={mainTab === t ? 'active' : ''} onClick={() => setMainTab(t)}>
             {label}
           </button>
         ))}
       </div>
+
+      {/* Tab 简介 */}
+      <p className="muted small" style={{ marginTop: -4, marginBottom: 12 }}>
+        {mainTab === 'runs' && '🔍 Agent 内部节点级执行轨迹（query_analysis → retrieval → synthesize → verify），用于排查质量问题。'}
+        {mainTab === 'conversations' && '💬 用户每一轮 Q&A 原始记录（conversation_turns 表），是迭代的第一手素材。'}
+        {mainTab === 'feedback' && '⭐ 用户的 👍👎 + 1-5 星评分 + 文字点评（rag_feedback 表），驱动模型/检索改进。'}
+      </p>
 
       {/* 运行明细 */}
       {mainTab === 'runs' && (
