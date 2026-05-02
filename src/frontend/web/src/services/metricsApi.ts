@@ -278,6 +278,35 @@ export async function getSystemKb(): Promise<SystemKb | null> {
   } catch { return null; }
 }
 
+export interface ArchitectureStore {
+  role?: string;
+  available: boolean;
+  version?: string;
+  chunk_count?: number;
+  collections?: string[];
+  collection_count?: number;
+  cluster_status?: string;
+  nodes?: number;
+  index?: string;
+  index_exists?: boolean;
+  extensions?: Record<string, boolean>;
+  error?: string;
+  [k: string]: unknown;
+}
+
+export interface ArchitectureLive {
+  generated_at: string;
+  stores: Record<string, ArchitectureStore>;
+  summary?: { available?: number; total?: number };
+}
+
+export async function getArchitectureLive(): Promise<ArchitectureLive | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/architecture/live`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
 // ── Blind-spot clusters ──────────────────────────────────────────────────────
 
 export interface BlindspotCluster {

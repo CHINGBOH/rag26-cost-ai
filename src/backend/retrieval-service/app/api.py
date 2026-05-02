@@ -2523,6 +2523,44 @@ async def agents_registry():
     return {"agents": agents, "source": str(candidate), "count": len(agents)}
 
 
+@router.get("/api/v1/agents/registry/{agent_id}")
+async def agents_registry_detail(agent_id: str):
+    """Single agent detail — raw markdown + parsed frontmatter + file mtime."""
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    candidate = None
+    for p in here.parents:
+        c = p / ".agent" / "agents"
+        if c.is_dir():
+            candidate = c
+            break
+    if candidate is None:
+        raise HTTPException(status_code=404, detail=".agent/agents directory not found")
+    safe_id = agent_id.replace("/", "").replace("\\", "").replace("..", "")
+    f = candidate / f"{safe_id}.md"
+    if not f.is_file():
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
+    content = f.read_text(encoding="utf-8", errors="ignore")
+    fm = _parse_agent_frontmatter(content)
+    body = content
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end > 0:
+            body = content[end + 4:].lstrip("\n")
+    stat = f.stat()
+    return {
+        "id": fm.get("id") or f.stem,
+        "name": fm.get("name") or f.stem,
+        "frontmatter": fm,
+        "body_markdown": body,
+        "raw_markdown": content,
+        "file": f.name,
+        "path": str(f.relative_to(candidate.parent.parent)) if candidate.parent.parent in f.parents else str(f),
+        "size_bytes": stat.st_size,
+        "modified_ts": stat.st_mtime,
+    }
+
+
 @router.get("/api/v1/agents/tasks")
 async def agents_tasks(limit: int = 50):
     """Real task queue — derived from ingest_jobs (the only real task pipeline)."""
