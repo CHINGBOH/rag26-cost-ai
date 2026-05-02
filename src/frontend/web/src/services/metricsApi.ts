@@ -5,12 +5,34 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 export interface ServiceHealth {
-  status: 'healthy' | 'degraded' | 'unhealthy';
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'not_running';
   latency_ms: number;
+  critical?: boolean;
+  role?: string;
+  status_code?: number;
+  error?: string;
+}
+
+export interface HealthSummary {
+  overall: 'ok' | 'degraded' | 'down';
+  critical_total: number;
+  critical_healthy: number;
+}
+
+export interface SystemMetrics {
+  load_1m?: number;
+  load_5m?: number;
+  load_15m?: number;
+  mem_total_mb?: number;
+  mem_available_mb?: number;
+  mem_used_pct?: number;
+  cpu_count?: number;
 }
 
 export interface HealthDetailResponse {
   services: Record<string, ServiceHealth>;
+  summary?: HealthSummary;
+  system?: SystemMetrics;
   timestamp: string;
 }
 

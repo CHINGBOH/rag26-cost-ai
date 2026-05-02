@@ -931,32 +931,73 @@ async def submit_feedback(request: FeedbackRequest):
 
 @router.get("/api/v1/health/detail")
 async def health_detail():
-    """Per-service health with latency."""
+    """Per-service health with latency, criticality, and graceful degradation.
+
+    Reports each backend with:
+    - ``status``: healthy / degraded / unhealthy / not_running
+    - ``latency_ms``: -1 when unreachable
+    - ``critical``: true if the system cannot function without it; false for
+      optional services like python_legacy (which retrieval-service replaces)
+    - ``role``: short human-readable description so the UI doesn't need
+      to hardcode service knowledge
+    """
     import httpx
     import time
     import asyncio
-    http_services = {
-        "python_legacy": "http://localhost:8000/health",
-        "retrieval": "http://localhost:8002/health",
-        "ocr": "http://localhost:8001/health",
-        "qdrant": "http://localhost:6333/healthz",
-        "go_gateway": "http://localhost:8080/health",
-        "nodejs": "http://localhost:3001/health",
-    }
-    results = {}
+    # Definition: each entry = (name, url, critical, role)
+    http_services = [
+        ("retrieval",     "http://localhost:8002/health",  True,
+         "核心检索服务 (FastAPI)"),
+        ("go_gateway",    "http://localhost:8080/health",  True,
+         "API 路由网关"),
+        ("nodejs",        "http://localhost:3001/health",  False,
+         "Node 编排（可选）"),
+        ("python_legacy", "http://localhost:8000/health",  False,
+         "旧 Python API（已被 retrieval 替代）"),
+        ("ocr",           "http://localhost:8001/health",  False,
+         "OCR 服务（按需）"),
+        ("qdrant",        "http://localhost:6333/healthz", True,
+         "向量库"),
+        ("elasticsearch", "http://localhost:9200/_cluster/health", True,
+         "全文检索（IK 分词）"),
+        ("neo4j",         "http://localhost:7474/",         False,
+         "图谱库（可选）"),
+    ]
+    results: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
-        for name, url in http_services.items():
+        async def probe(name, url, critical, role):
             t0 = time.monotonic()
             try:
                 r = await client.get(url)
                 latency_ms = int((time.monotonic() - t0) * 1000)
-                results[name] = {
-                    "status": "healthy" if r.status_code == 200 else "degraded",
+                if r.status_code == 200:
+                    status = "healthy"
+                else:
+                    status = "degraded"
+                return name, {
+                    "status": status,
                     "latency_ms": latency_ms,
+                    "critical": critical,
+                    "role": role,
+                    "status_code": r.status_code,
                 }
-            except Exception:
-                results[name] = {"status": "unhealthy", "latency_ms": -1}
-    # PostgreSQL: TCP probe (no HTTP endpoint)
+            except Exception as e:
+                # Optional services that aren't running: show as not_running,
+                # not as alarming "unhealthy" — they intentionally aren't up.
+                return name, {
+                    "status": "unhealthy" if critical else "not_running",
+                    "latency_ms": -1,
+                    "critical": critical,
+                    "role": role,
+                    "error": str(e)[:120],
+                }
+        probes = await asyncio.gather(
+            *(probe(n, u, c, r) for n, u, c, r in http_services)
+        )
+        for name, info in probes:
+            results[name] = info
+
+    # PostgreSQL: TCP probe
     t0 = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(
@@ -967,10 +1008,100 @@ async def health_detail():
         results["postgresql"] = {
             "status": "healthy",
             "latency_ms": int((time.monotonic() - t0) * 1000),
+            "critical": True,
+            "role": "结构化存储 + 全文兜底",
         }
+    except Exception as e:
+        results["postgresql"] = {
+            "status": "unhealthy",
+            "latency_ms": -1,
+            "critical": True,
+            "role": "结构化存储 + 全文兜底",
+            "error": str(e)[:120],
+        }
+
+    # Redis: TCP probe (cheap)
+    t0 = time.monotonic()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("localhost", 6379), timeout=2.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        results["redis"] = {
+            "status": "healthy",
+            "latency_ms": int((time.monotonic() - t0) * 1000),
+            "critical": False,
+            "role": "缓存（可选）",
+        }
+    except Exception as e:
+        results["redis"] = {
+            "status": "not_running",
+            "latency_ms": -1,
+            "critical": False,
+            "role": "缓存（可选）",
+            "error": str(e)[:120],
+        }
+
+    # Process-level metrics from /proc (Linux only, cheap, no extra deps)
+    sysmetrics = _read_proc_metrics()
+
+    # Overall: only critical services count toward summary
+    critical_services = {k: v for k, v in results.items() if v.get("critical")}
+    crit_healthy = sum(1 for v in critical_services.values() if v["status"] == "healthy")
+    crit_total = len(critical_services)
+    overall = "ok" if crit_healthy == crit_total else (
+        "degraded" if crit_healthy >= crit_total - 1 else "down"
+    )
+
+    return {
+        "services": results,
+        "summary": {
+            "overall": overall,
+            "critical_total": crit_total,
+            "critical_healthy": crit_healthy,
+        },
+        "system": sysmetrics,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+def _read_proc_metrics() -> dict:
+    """Cheap /proc reader: load average + memory. Linux-only; safe fallback."""
+    out: dict = {}
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().strip().split()
+            out["load_1m"] = float(parts[0])
+            out["load_5m"] = float(parts[1])
+            out["load_15m"] = float(parts[2])
     except Exception:
-        results["postgresql"] = {"status": "unhealthy", "latency_ms": -1}
-    return {"services": results, "timestamp": datetime.now().isoformat()}
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            mem = {}
+            for line in f:
+                k, _, rest = line.partition(":")
+                v = rest.strip().split()
+                if v:
+                    try:
+                        mem[k.strip()] = int(v[0])  # kB
+                    except ValueError:
+                        pass
+        total = mem.get("MemTotal", 0)
+        avail = mem.get("MemAvailable", 0)
+        if total:
+            out["mem_total_mb"] = total // 1024
+            out["mem_available_mb"] = avail // 1024
+            out["mem_used_pct"] = round((total - avail) * 100.0 / total, 1)
+    except Exception:
+        pass
+    try:
+        import os as _os
+        out["cpu_count"] = _os.cpu_count() or 0
+    except Exception:
+        pass
+    return out
 
 
 # ── Sandbox Code Execution ────────────────────────────────────────────────────

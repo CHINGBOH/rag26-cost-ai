@@ -219,3 +219,23 @@
 .paths-list li:last-child { border-bottom: none; }
 .path-name { font-family: 'JetBrains Mono', Menlo, Consolas, monospace; }
 .path-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Optional / not-running services */
+.svc-card.not-running { opacity: 0.65; border-style: dashed; }
+.svc-card.unknown { opacity: 0.7; }
+.svc-status-label.not-running { color: var(--text-muted); }
+.svc-optional-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
+  margin-left: auto;
+}
+.svc-role {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 2px 0 6px 0;
+  line-height: 1.3;
+}

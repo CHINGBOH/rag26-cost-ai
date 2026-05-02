@@ -17,22 +17,19 @@ import { StatusDot } from '../components/common/StatusDot';
 import './OpsPage.css';
 import { fmtTime } from '../utils/dateUtils';
 
-interface ServiceDef {
-  name: string;
-  label: string;
-  port: number;
-  key: string;
-}
-
-const SERVICES: ServiceDef[] = [
-  { name: 'Go Gateway',    label: 'Go 网关',    port: 8080, key: 'go_gateway' },
-  { name: 'Python Legacy', label: 'Python',      port: 8000, key: 'python_legacy' },
-  { name: 'Retrieval',     label: '检索服务',    port: 8002, key: 'retrieval' },
-  { name: 'LLM 推理',      label: 'LLM',         port: 11434, key: 'llama_server' },
-  { name: 'OCR',           label: 'OCR',         port: 8001, key: 'ocr' },
-  { name: 'PostgreSQL',    label: 'PgSQL',       port: 5432, key: 'postgresql' },
-  { name: 'Qdrant',        label: 'Qdrant',      port: 6333, key: 'qdrant' },
-];
+const SERVICE_LABELS: Record<string, { label: string; port: number }> = {
+  go_gateway:    { label: 'Go 网关',    port: 8080 },
+  retrieval:     { label: '检索服务',    port: 8002 },
+  python_legacy: { label: 'Python (旧)', port: 8000 },
+  nodejs:        { label: 'Node 编排',   port: 3001 },
+  ocr:           { label: 'OCR',         port: 8001 },
+  llama_server:  { label: 'LLM',         port: 11434 },
+  postgresql:    { label: 'PgSQL',       port: 5432 },
+  qdrant:        { label: 'Qdrant',      port: 6333 },
+  elasticsearch: { label: 'Elasticsearch', port: 9200 },
+  neo4j:         { label: 'Neo4j',       port: 7474 },
+  redis:         { label: 'Redis',       port: 6379 },
+};
 
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
@@ -56,16 +53,33 @@ export const OpsPage: React.FC = () => {
   }, []);
 
   const getStatus = (key: string) =>
-    healthDetail?.services[key] ?? { status: 'unknown', latency_ms: -1 };
+    healthDetail?.services[key] ?? { status: 'unknown' as const, latency_ms: -1 };
 
-  const latencyBarData = SERVICES.map((s) => {
-    const svc = getStatus(s.key);
-    return {
-      name: s.label,
-      latency: svc.latency_ms > 0 ? svc.latency_ms : 0,
-      status: svc.status,
-    };
-  });
+  // Build service list from server response (no hardcoded list).
+  // Critical services first, then optional ones; falls back to defaults if no data.
+  const serviceEntries = (() => {
+    const services = healthDetail?.services || {};
+    const keys = Object.keys(services);
+    if (keys.length === 0) return Object.keys(SERVICE_LABELS).map(k => ({ key: k }));
+    return keys.sort((a, b) => {
+      const ca = services[a].critical ? 0 : 1;
+      const cb = services[b].critical ? 0 : 1;
+      if (ca !== cb) return ca - cb;
+      return a.localeCompare(b);
+    }).map(k => ({ key: k }));
+  })();
+
+  const latencyBarData = serviceEntries
+    .map(({ key }) => {
+      const svc = getStatus(key);
+      const meta = SERVICE_LABELS[key] || { label: key, port: 0 };
+      return {
+        name: meta.label,
+        latency: svc.latency_ms > 0 ? svc.latency_ms : 0,
+        status: svc.status,
+      };
+    })
+    .filter(d => d.latency > 0);
 
   // QPS sparkline data (1-second buckets, last 60s)
   const qpsData = (ops?.qps_buckets || []).map((v, i) => ({
@@ -87,19 +101,61 @@ export const OpsPage: React.FC = () => {
       />
 
       <div className="service-grid">
-        {SERVICES.map((s) => {
-          const svc = getStatus(s.key);
+        {serviceEntries.map(({ key }) => {
+          const svc = getStatus(key);
+          const meta = SERVICE_LABELS[key] || { label: key, port: 0 };
           return (
             <ServiceCard
-              key={s.key}
-              label={s.label}
-              port={s.port}
+              key={key}
+              label={meta.label}
+              port={meta.port}
               status={svc.status}
               latency={svc.latency_ms}
+              critical={(svc as any).critical}
+              role={(svc as any).role}
             />
           );
         })}
       </div>
+
+      {/* 系统资源 */}
+      {healthDetail?.system && (
+        <div className="ops-metrics-row">
+          {healthDetail.summary && (
+            <MetricCard
+              label="核心服务"
+              value={`${healthDetail.summary.critical_healthy}/${healthDetail.summary.critical_total}`}
+              hint={
+                healthDetail.summary.overall === 'ok' ? '全部就绪' :
+                healthDetail.summary.overall === 'degraded' ? '部分降级' : '严重异常'
+              }
+              tone={
+                healthDetail.summary.overall === 'ok' ? 'good' :
+                healthDetail.summary.overall === 'degraded' ? 'warn' : 'bad'
+              }
+            />
+          )}
+          {healthDetail.system.load_1m !== undefined && (
+            <MetricCard
+              label="Load (1m)"
+              value={healthDetail.system.load_1m.toFixed(2)}
+              hint={`CPU x${healthDetail.system.cpu_count ?? '?'}`}
+              tone={
+                healthDetail.system.cpu_count && healthDetail.system.load_1m > healthDetail.system.cpu_count
+                  ? 'warn' : undefined
+              }
+            />
+          )}
+          {healthDetail.system.mem_used_pct !== undefined && (
+            <MetricCard
+              label="内存使用"
+              value={`${healthDetail.system.mem_used_pct}%`}
+              hint={`${Math.round((healthDetail.system.mem_total_mb! - healthDetail.system.mem_available_mb!) / 1024)}G / ${Math.round(healthDetail.system.mem_total_mb! / 1024)}G`}
+              tone={healthDetail.system.mem_used_pct > 85 ? 'bad' : healthDetail.system.mem_used_pct > 70 ? 'warn' : undefined}
+            />
+          )}
+        </div>
+      )}
 
       {/* 实时请求指标 */}
       {ops && (
@@ -204,20 +260,30 @@ interface ServiceCardProps {
   port: number;
   status: string;
   latency: number;
+  critical?: boolean;
+  role?: string;
 }
 
-const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency }) => {
+const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency, critical, role }) => {
   const klass =
-    status === 'healthy' ? 'healthy' : status === 'degraded' ? 'degraded' : 'unhealthy';
+    status === 'healthy' ? 'healthy' :
+    status === 'degraded' ? 'degraded' :
+    status === 'not_running' ? 'not-running' :
+    status === 'unknown' ? 'unknown' : 'unhealthy';
   const statusLabel =
-    status === 'healthy' ? '正常' : status === 'degraded' ? '降级' : status === 'unknown' ? '未知' : '异常';
+    status === 'healthy' ? '正常' :
+    status === 'degraded' ? '降级' :
+    status === 'not_running' ? '未启用' :
+    status === 'unknown' ? '未知' : '异常';
   return (
-    <div className={`svc-card ${klass}`}>
+    <div className={`svc-card ${klass}`} title={role || ''}>
       <div className="svc-card-top">
         <StatusDot status={status} />
         <span className="svc-port">:{port}</span>
+        {critical === false && <span className="svc-optional-tag">可选</span>}
       </div>
       <div className="svc-name">{label}</div>
+      {role && <div className="svc-role">{role}</div>}
       <div className="svc-meta">
         <span className={`svc-status-label ${klass}`}>{statusLabel}</span>
         {latency > 0 && <span className="svc-latency">{latency}ms</span>}
