@@ -841,7 +841,7 @@ async def submit_feedback(request: FeedbackRequest):
     }
     _feedback_default = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
+        "..", "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
     )
     feedback_path = os.environ.get("FEEDBACK_LOG_PATH", _feedback_default)
     os.makedirs(os.path.dirname(os.path.abspath(feedback_path)), exist_ok=True)
@@ -982,7 +982,7 @@ import os as _os_learn
 _LEARN_DIR = _os_learn.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
 _feedback_default_learn = _os_learn.path.join(
     _os_learn.path.dirname(_os_learn.path.abspath(__file__)),
-    "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
+    "..", "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
 )
 _FEEDBACK_PATH = _os_learn.environ.get("FEEDBACK_LOG_PATH", _feedback_default_learn)
 
