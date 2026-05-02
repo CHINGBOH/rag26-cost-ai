@@ -2844,6 +2844,8 @@ _GUIDE_SYSTEM = """您是「RAG智库系统」的导览助手，专门解答本�
 工具1 query_guide_kb：查询架构 / 检索流程 / 工具说明 / 配置含义等"概念类"问题。架构解释类问题第一时间调它。
 工具2 introspect_runtime：实时读取系统当前的健康、配置、最近错误。当用户问"现在状态如何""xxx 在跑吗""为什么这么慢"时调它。**只读，不会改任何东西**。
 工具3 search_pdf_originals：当 query_guide_kb 查不到、且用户问的是业务文档（消耗量标准、信息价、定额等）时，**穿透到 PDF/OCR 原文**做关键词查找，把 chunk 一同返回。务必告诉用户"主 KB 未命中，已穿透到原文"。
+工具4 search_ocr_files：当 search_pdf_originals 也没命中时，作为最终兜底，直接扫 OCR 输出 JSON 全文。返回文件名 + 页码 + 上下文片段。
+工具5 adjust_rag_config：调整 RAG 运行时配置（top_k / score_threshold / 检索后端等）。**默认 dry_run，仅预览不生效**；用户明确说"应用""执行""apply"时才传 apply=true。每次调用都会写入审计表 runtime_config_audit。仅当用户明确请求"调高 top_k""换检索后端"等操作时才使用，绝不自作主张。
 
 核心规则（强制执行，不得违反）：
 第一、回答前至少调用一个工具，禁止凭空作答。
@@ -3040,6 +3042,159 @@ async def guide_agent_stream(req: GuideAgentRequest):
         except Exception as exc:
             return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
 
+    @_lc_tool
+    def search_ocr_files(keyword: str, top_k: int = 3) -> str:
+        """穿透到 OCR 输出 JSON 原文做关键词查找（不走 chunk 表，直接扫 OCR 全文）。
+        当 search_pdf_originals 也未命中时使用，作为最终兜底。
+        返回命中的文件名 + 页码 + 上下文片段。"""
+        try:
+            kw = keyword.strip()
+            if len(kw) < 2:
+                return "关键词太短，请提供至少 2 个字。"
+            limit = max(1, min(int(top_k or 3), 8))
+            ocr_dir = _PlPath("/home/l/rag-dashboard/data/ocr_outputs")
+            if not ocr_dir.exists():
+                return json.dumps({"error": "OCR 输出目录不存在", "path": str(ocr_dir)}, ensure_ascii=False)
+            hits: list[dict] = []
+            for jf in sorted(ocr_dir.glob("*_ocr.json")):
+                try:
+                    with jf.open("r", encoding="utf-8") as f:
+                        doc = json.load(f)
+                    file_name = doc.get("file_name") or jf.stem
+                    pages = doc.get("pages") or []
+                    for p in pages:
+                        text = (p.get("raw_text") or p.get("markdown") or "")
+                        idx = text.find(kw)
+                        if idx >= 0:
+                            start = max(0, idx - 80)
+                            end = min(len(text), idx + len(kw) + 200)
+                            snippet = text[start:end].replace("\n", " ").strip()
+                            hits.append({
+                                "file_name": file_name,
+                                "page": p.get("page_number"),
+                                "snippet": snippet,
+                            })
+                            if len(hits) >= limit:
+                                break
+                except Exception as _:
+                    continue
+                if len(hits) >= limit:
+                    break
+            if not hits:
+                return f"OCR 原文中也未找到关键词「{kw}」。可能此资料未入库 OCR。"
+            return json.dumps(
+                {"keyword": kw, "hits": hits, "source": "ocr_outputs/*.json", "note": "请引用 file_name + page"},
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
+
+    @_lc_tool
+    def adjust_rag_config(key: str, value: str, apply: bool = False, reason: str = "") -> str:
+        """预览或调整 RAG 运行时配置。**默认 dry_run，不真正生效**。每次调用都会写入审计表 runtime_config_audit。
+
+        允许的 key（白名单）：
+          - score_threshold  (float, 0~1)
+          - top_k            (int, 1~50)
+          - rerank_enabled   (true/false)
+          - keyword_backend  (es | pg)
+          - vector_backend   (qdrant | milvus)
+
+        参数：
+          - key: 配置项名（必须在白名单内）
+          - value: 新值（字符串，按 key 类型解析）
+          - apply: 默认 false（仅预览）；true 才会修改进程内配置
+          - reason: 调整理由（必填于审计表）"""
+        ALLOWED = {
+            "score_threshold": ("float", lambda v: 0.0 <= float(v) <= 1.0),
+            "top_k": ("int", lambda v: 1 <= int(v) <= 50),
+            "rerank_enabled": ("bool", lambda v: v.lower() in ("true", "false", "1", "0")),
+            "keyword_backend": ("str", lambda v: v in ("es", "pg")),
+            "vector_backend": ("str", lambda v: v in ("qdrant", "milvus")),
+        }
+        try:
+            if key not in ALLOWED:
+                return json.dumps({
+                    "error": f"配置项 {key} 不在白名单",
+                    "allowed_keys": list(ALLOWED.keys()),
+                }, ensure_ascii=False)
+            type_name, validator = ALLOWED[key]
+            try:
+                if not validator(value):
+                    return json.dumps({"error": f"值 {value!r} 未通过校验（期望 {type_name} 且符合范围）"}, ensure_ascii=False)
+            except Exception as exc:
+                return json.dumps({"error": f"值校验失败: {exc}"}, ensure_ascii=False)
+
+            old_val = None
+            if key == "score_threshold":
+                old_val = str(os.getenv("RAG_SCORE_THRESHOLD", "0.25"))
+            elif key == "top_k":
+                old_val = str(os.getenv("RAG_TOP_K", "10"))
+            elif key == "rerank_enabled":
+                old_val = str(os.getenv("RAG_RERANK_ENABLED", "true"))
+            elif key == "keyword_backend":
+                old_val = str(os.getenv("KEYWORD_BACKEND", "pg"))
+            elif key == "vector_backend":
+                old_val = str(os.getenv("VECTOR_BACKEND", "qdrant"))
+
+            from app.agent.tools import _get_pg_conn, _put_pg_conn
+            audit_id = None
+            c = _get_pg_conn()
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS runtime_config_audit (
+                            id SERIAL PRIMARY KEY,
+                            ts TIMESTAMPTZ DEFAULT now(),
+                            config_key TEXT NOT NULL,
+                            old_value TEXT,
+                            new_value TEXT,
+                            applied BOOLEAN NOT NULL DEFAULT false,
+                            reason TEXT,
+                            actor TEXT DEFAULT 'guide-agent'
+                        );
+                        """
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO runtime_config_audit (config_key, old_value, new_value, applied, reason)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id;
+                        """,
+                        (key, old_val, value, bool(apply), reason or "(未填)"),
+                    )
+                    audit_id = cur.fetchone()[0]
+                    c.commit()
+            finally:
+                _put_pg_conn(c)
+
+            if not apply:
+                return json.dumps({
+                    "mode": "dry_run",
+                    "audit_id": audit_id,
+                    "key": key, "old_value": old_val, "new_value": value,
+                    "note": "已记录到 runtime_config_audit。重新调用并设 apply=true 才会真正修改进程内 env。",
+                }, ensure_ascii=False)
+
+            env_map = {
+                "score_threshold": "RAG_SCORE_THRESHOLD",
+                "top_k": "RAG_TOP_K",
+                "rerank_enabled": "RAG_RERANK_ENABLED",
+                "keyword_backend": "KEYWORD_BACKEND",
+                "vector_backend": "VECTOR_BACKEND",
+            }
+            os.environ[env_map[key]] = value
+            return json.dumps({
+                "mode": "applied",
+                "audit_id": audit_id,
+                "key": key, "old_value": old_val, "new_value": value,
+                "note": "已写入进程 env。**注意：进程重启后会丢失**，需要持久化请改 .env 或 config.yaml。",
+            }, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
+
+
     async def event_gen():
         yield _sse_event("progress", {"stage": "thinking", "message": "正在理解问题..."})
         await asyncio.sleep(0)
@@ -3057,7 +3212,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
         # Step 1: LLM decides which tools to call (multi-tool, model-controlled)
         yield _sse_event("progress", {"stage": "tool_call", "message": "正在查询知识库..."})
         await asyncio.sleep(0)
-        _all_tools = [query_guide_kb, introspect_runtime, search_pdf_originals]
+        _all_tools = [query_guide_kb, introspect_runtime, search_pdf_originals, search_ocr_files, adjust_rag_config]
         _tool_map = {t.name: t for t in _all_tools}
         try:
             ai_msg, _ = await asyncio.get_event_loop().run_in_executor(
