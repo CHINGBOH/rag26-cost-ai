@@ -86,17 +86,13 @@
   min-width: 300px;
   display: flex;
   flex-direction: column;
-  /* Fully opaque dark background — no page bleed-through at any edge */
-  background: rgb(16, 8, 2);
-  border: 1px solid rgba(201, 169, 110, 0.28);
+  /* Fully transparent — page content shows through */
+  background: transparent;
+  border: none;
   border-radius: 16px;
-  box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.55),
-    0 4px 16px rgba(0, 0, 0, 0.4),
-    inset 0 1px 0 rgba(201, 169, 110, 0.12);
+  box-shadow: none;
   overflow: hidden;
   animation: sa-slide-in 0.22s cubic-bezier(0.34, 1.26, 0.64, 1);
-  /* position: fixed already establishes containing block for absolute children */
 }
 
 @keyframes sa-slide-in {
@@ -143,9 +139,12 @@
   align-items: center;
   gap: 8px;
   padding: 12px 14px 11px;
-  background: rgba(201, 169, 110, 0.08);
+  background: rgba(16, 8, 2, 0.82);
   border-bottom: 1px solid rgba(201, 169, 110, 0.18);
+  border-radius: 16px 16px 0 0;
   flex-shrink: 0;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .sa-header-icon {
@@ -200,6 +199,8 @@
   gap: 10px;
   scrollbar-width: thin;
   scrollbar-color: rgba(201, 169, 110, 0.2) transparent;
+  /* Transparent — only individual bubbles have backgrounds */
+  background: transparent;
 }
 
 .sa-messages::-webkit-scrollbar {
@@ -266,13 +267,17 @@
   color: #1c1410;
   border-bottom-right-radius: 4px;
   font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
 .sa-msg--assistant .sa-msg-content {
-  background: rgba(201, 169, 110, 0.08);
+  background: rgba(16, 8, 2, 0.85);
   color: rgba(245, 242, 235, 0.92);
-  border: 1px solid rgba(201, 169, 110, 0.14);
+  border: 1px solid rgba(201, 169, 110, 0.18);
   border-bottom-left-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 /* Streaming cursor blink */
@@ -326,9 +331,11 @@
   gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid rgba(201, 169, 110, 0.15);
+  border-radius: 0 0 16px 16px;
   flex-shrink: 0;
-  /* Explicitly opaque — prevents page background showing through at panel bottom */
-  background: rgb(14, 7, 2);
+  background: rgba(16, 8, 2, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .sa-input {
