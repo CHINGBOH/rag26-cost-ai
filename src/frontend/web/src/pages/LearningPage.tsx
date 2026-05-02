@@ -29,6 +29,8 @@ import { fmtDateTime } from '../utils/dateUtils';
 import {
   LineChart,
   Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -448,6 +450,56 @@ export const LearningPage: React.FC = () => {
             </ResponsiveContainer>
           </div>
         )}
+
+        {/* 标签分布 + 差评高亮 */}
+        {(feedbackStats?.records?.length ?? 0) > 0 && (() => {
+          const records = feedbackStats!.records;
+          const tagCount = new Map<string, number>();
+          records.forEach(r => (r.tags ?? []).forEach(t => tagCount.set(t, (tagCount.get(t) ?? 0) + 1)));
+          const tagData = Array.from(tagCount.entries())
+            .map(([tag, count]) => ({ tag, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
+          const badReviews = records.filter(r => r.rating < 0 || (r.overall_rating != null && r.overall_rating <= 2));
+          if (tagData.length === 0 && badReviews.length === 0) return null;
+          return (
+            <div className="fb-aux-row">
+              {tagData.length > 0 && (
+                <div className="fb-tag-dist">
+                  <h4 className="muted small">标签分布（Top 10）</h4>
+                  <ResponsiveContainer width="100%" height={Math.max(120, tagData.length * 24)}>
+                    <BarChart data={tagData} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                      <XAxis type="number" tick={{ fontSize: 11, fill: '#888' }} allowDecimals={false} />
+                      <YAxis type="category" dataKey="tag" width={110} tick={{ fontSize: 11, fill: '#ccc' }} />
+                      <Tooltip
+                        contentStyle={{ background: '#1a1208', border: '1px solid rgba(212,168,39,0.3)', borderRadius: 6 }}
+                        labelStyle={{ color: '#d4a827' }}
+                        itemStyle={{ color: '#ccc' }}
+                      />
+                      <Bar dataKey="count" name="次数" fill="#d4a827" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              {badReviews.length > 0 && (
+                <div className="fb-bad-list">
+                  <h4 className="muted small">⚠️ 差评高亮 ({badReviews.length})</h4>
+                  <ul className="bad-review-ul">
+                    {badReviews.slice(0, 8).map((r, i) => (
+                      <li key={i}>
+                        <span className="bad-meta">{fmtDateTime(r.ts)}</span>
+                        <span className="bad-score">总分 {r.overall_rating ?? (r.rating > 0 ? '+' : '−')}</span>
+                        {r.criticism && <span className="bad-text">{r.criticism}</span>}
+                        {!r.criticism && r.query && <span className="bad-text muted">Q: {r.query.slice(0, 80)}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 反馈列表 */}
         {(feedbackStats?.records?.length ?? 0) === 0 ? (

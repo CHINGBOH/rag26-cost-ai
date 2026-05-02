@@ -122,3 +122,20 @@
 .learn-engine-stats { margin: 4px 0 12px; padding-left: 18px; line-height: 1.7; }
 .learn-engine-stats li { font-size: 13px; }
 .learn-engine-stats code { background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 3px; }
+
+/* Feedback dashboard auxiliary panels */
+.fb-aux-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 12px 0 18px; }
+@media (max-width: 900px) { .fb-aux-row { grid-template-columns: 1fr; } }
+.fb-tag-dist, .fb-bad-list {
+  background: rgba(212,168,39,0.04); border: 1px solid rgba(212,168,39,0.18);
+  border-radius: 6px; padding: 10px 14px;
+}
+.fb-bad-list .bad-review-ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.fb-bad-list .bad-review-ul li {
+  display: grid; grid-template-columns: 130px 80px 1fr; gap: 8px;
+  padding: 6px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); font-size: 12px;
+}
+.fb-bad-list .bad-meta { color: #888; }
+.fb-bad-list .bad-score { color: #e07b3a; font-weight: 600; }
+.fb-bad-list .bad-text { color: #e0e0e0; }
+.fb-bad-list .bad-text.muted { color: #888; font-style: italic; }
