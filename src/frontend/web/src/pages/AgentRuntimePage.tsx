@@ -19,6 +19,7 @@ import {
 import './AgentRuntimePage.css';
 import { fmtTime, fmtUnixTime } from '../utils/dateUtils';
 import { AgentFlowPanel } from '../components/agent/AgentFlowPanel';
+import { GuideHistoryPanel } from '../components/agent/GuideHistoryPanel';
 
 const HISTORY_KEY = 'rag.agent.runtime.history.v1';
 const HISTORY_MAX = 50;
@@ -205,6 +206,7 @@ export function AgentRuntimePage() {
   return (
     <div className="runtime-page">
       <AgentFlowPanel />
+      <GuideHistoryPanel />
       <header className="runtime-header">
         <div>
           <h1>Agent 运行时</h1>
