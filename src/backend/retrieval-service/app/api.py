@@ -3105,7 +3105,40 @@ async def guide_agent_stream(req: GuideAgentRequest):
             yield _sse_event("error", {"message": f"生成回答失败: {exc}"})
             return
 
+        # Generate 2-3 follow-up suggestions BEFORE done so clients receive them
+        try:
+            sugg_messages = [
+                _Sys(content=(
+                    "你是导览助手的追问推荐器。基于用户原始问题和已给出的回答，"
+                    "生成 2-3 个用户可能感兴趣的后续问题。"
+                    "要求：每个问题不超过 25 字，覆盖不同方向（深入/相关/对比/操作）。"
+                    "只输出 JSON 数组，例如 [\"问题1\", \"问题2\", \"问题3\"]，不要其他文字。"
+                )),
+                _Human(content=f"原始问题: {req.query}\n\n回答摘要: {accumulated[:600]}\n\n请生成追问建议 JSON 数组:"),
+            ]
+            sugg_text = ""
+            async for ev in stream_llm_response(sugg_messages, llm_config=_llm_config):
+                if ev.get("type") == "token":
+                    sugg_text += ev["delta"]
+            import re as _re_sg
+            m = _re_sg.search(r"\[.*?\]", sugg_text, _re_sg.DOTALL)
+            suggestions: list[str] = []
+            if m:
+                try:
+                    arr = json.loads(m.group(0))
+                    if isinstance(arr, list):
+                        suggestions = [str(s).strip() for s in arr if str(s).strip()][:3]
+                except Exception:
+                    pass
+            if suggestions:
+                yield _sse_event("suggestions", {"suggestions": suggestions})
+            else:
+                logger.warning(f"[guide_suggestions] no suggestions parsed from: {sugg_text[:200]!r}")
+        except Exception as _sg_err:
+            logger.warning(f"[guide_suggestions] error: {_sg_err}")
+
         yield _sse_event("done", {"answer": accumulated})
+
         # Server-side conversation logging for guide agent
         try:
             import asyncpg as _apg_g

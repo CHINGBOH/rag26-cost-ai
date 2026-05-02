@@ -79,7 +79,10 @@ const AssistantMessage: React.FC<{ content: string; streaming?: boolean }> = ({ 
 };
 
 // SSE async generator for the guide agent stream endpoint
-type GuideStreamEvent = { type: 'token'; delta: string } | { type: 'tools'; tools: string[] };
+type GuideStreamEvent =
+  | { type: 'token'; delta: string }
+  | { type: 'tools'; tools: string[] }
+  | { type: 'suggestions'; list: string[] };
 
 async function* sendGuideStream(
   query: string,
@@ -116,6 +119,8 @@ async function* sendGuideStream(
             yield { type: 'token', delta: obj.delta as string };
           } else if (currentEvent === 'progress' && obj.stage === 'tools_done' && Array.isArray(obj.tools)) {
             yield { type: 'tools', tools: obj.tools as string[] };
+          } else if (currentEvent === 'suggestions' && Array.isArray(obj.suggestions)) {
+            yield { type: 'suggestions', list: obj.suggestions as string[] };
           } else if (currentEvent === 'error') {
             throw new Error(obj.message ?? 'guide agent error');
           } else if (currentEvent === 'done') {
@@ -138,6 +143,7 @@ interface Msg {
   content: string;
   streaming?: boolean;
   tools?: string[];
+  suggestions?: string[];
 }
 
 export const SystemAssistant: React.FC = () => {
@@ -289,6 +295,15 @@ export const SystemAssistant: React.FC = () => {
           });
           continue;
         }
+        if (ev.type === 'suggestions') {
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === 'assistant') next[next.length - 1] = { ...last, suggestions: ev.list };
+            return next;
+          });
+          continue;
+        }
         accumulated += ev.delta;
         setMessages(prev => {
           const next = [...prev];
@@ -424,6 +439,25 @@ export const SystemAssistant: React.FC = () => {
                       } as Record<string,string>)[t] ?? t;
                       return label;
                     }).join(' · ')}
+                  </div>
+                )}
+                {m.role === 'assistant' && !m.streaming && m.suggestions && m.suggestions.length > 0 && (
+                  <div className="sa-followups">
+                    <span className="sa-followup-label">💡 你可能还想问：</span>
+                    <div className="sa-followup-list">
+                      {m.suggestions.map((s, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className="sa-followup-chip"
+                          onClick={() => { if (!isStreaming) send(s); }}
+                          disabled={isStreaming}
+                          title={s}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
