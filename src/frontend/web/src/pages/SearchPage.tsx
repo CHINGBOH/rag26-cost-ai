@@ -89,6 +89,7 @@ export const SearchPage: React.FC = () => {
   const [loadError, setLoadError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
   const [history, setHistory] = useState<InvokeResponse[]>([]);
+  const [showHelp, setShowHelp] = useState(false);
 
   // 加载工具清单
   useEffect(() => {
@@ -242,7 +243,14 @@ export const SearchPage: React.FC = () => {
       <PageHeader
         title="检索工具箱"
         subtitle={`Agent 工具沙盒 · 共 ${tools.length} 个原子能力`}
+        actions={
+          <button className="toolbox-help-btn" onClick={() => setShowHelp(true)} title="使用说明">
+            📖 使用说明
+          </button>
+        }
       />
+
+      {showHelp && <ToolboxHelpDrawer onClose={() => setShowHelp(false)} />}
 
       <div className="toolbox-layout">
         {/* 左：工具列表 */}
@@ -373,6 +381,89 @@ export const SearchPage: React.FC = () => {
           )}
         </section>
       </div>
+    </div>
+  );
+};
+
+// ── 使用说明 Drawer ──────────────────────────────────────────────────────
+const ToolboxHelpDrawer: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  return (
+    <div className="toolbox-help-overlay" onClick={onClose}>
+      <aside className="toolbox-help-drawer" onClick={(e) => e.stopPropagation()}>
+        <header className="toolbox-help-head">
+          <h2>📖 检索工具箱使用说明</h2>
+          <button className="toolbox-help-close" onClick={onClose}>✕</button>
+        </header>
+        <div className="toolbox-help-body">
+          <section>
+            <h3>这是什么？</h3>
+            <p>
+              本页面是 <strong>Agent 工具沙盒</strong>——RAG 系统内部 Agent
+              在回答问题时调用的所有原子工具，都被独立暴露出来供你手动调用。
+              想知道 Agent 是如何"思考"的？跟随它的脚步，自己点一遍即可。
+            </p>
+          </section>
+
+          <section>
+            <h3>工具分类速查</h3>
+            <ul className="toolbox-help-cats">
+              <li><strong>检索 (retrieval)</strong>：向量 / 关键词 / 混合检索 — 找文档与片段。</li>
+              <li><strong>价格 (pricing)</strong>：<code>price_query</code> 单点查价、<code>price_trend</code> 时序趋势。</li>
+              <li><strong>图谱 (graph)</strong>：从概念出发查关联、依赖、上下游。</li>
+              <li><strong>数据 (data)</strong>：结构化表查询、目录索引、章节定位。</li>
+              <li><strong>计算 (compute)</strong>：<code>calculator</code> 高精度数值计算、<code>python_eval</code> 沙盒脚本。</li>
+              <li><strong>分析 (datasci)</strong>：可视化 / 数据统计。</li>
+              <li><strong>主动 (proactive)</strong>：知识缺口诊断 / 追问建议。</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3>典型用法</h3>
+            <ol className="toolbox-help-cookbook">
+              <li>
+                <strong>找一个概念的定义</strong> →
+                选 <code>vector_search</code>，<code>query</code> 填中文短语，回车执行。
+              </li>
+              <li>
+                <strong>查某月某材料价格</strong> →
+                选 <code>price_query</code>，填 <code>material_name</code> 和 <code>year_month</code>（格式 <code>YYYY-MM</code>）。
+              </li>
+              <li>
+                <strong>查跨月价格趋势</strong> →
+                选 <code>price_trend</code>，填 <code>start_month</code> / <code>end_month</code>。
+                ⚠️ 系统会自动检测规格不一致并发出警告，避免误算环比。
+              </li>
+              <li>
+                <strong>找规则条款 / 计算规则</strong> →
+                选 <code>keyword_search</code> 或 <code>hybrid_search</code>，把规则关键字（如"系统调试"）放进去。
+              </li>
+              <li>
+                <strong>跑一段 Python 计算</strong> →
+                选 <code>python_eval</code>，沙盒禁网、限内存、超时 10 秒。
+              </li>
+            </ol>
+          </section>
+
+          <section>
+            <h3>读懂结果</h3>
+            <ul>
+              <li>每条结果右上 <strong>百分比</strong> 是相关性分数（0–100%），越高越相关。</li>
+              <li><strong>来源标记</strong>：<code>source_db</code> 标识结果来自哪个库（qdrant/postgres/elasticsearch/neo4j）。</li>
+              <li>底部 <strong>历史记录</strong> 区可对比同一工具不同入参的耗时与结果数。</li>
+              <li>开 <strong>原始 raw</strong> 可看 Agent 实际收到的字符串（含元数据）。</li>
+            </ul>
+          </section>
+
+          <section>
+            <h3>失败排查</h3>
+            <ul>
+              <li>结果为空 → 换近义词、放宽 <code>top_k</code>，或先用 <code>hybrid_search</code> 验证库里有相关内容。</li>
+              <li>红色 ❌ → 看错误文本；常见为 PG/ES 未启动（去运维看板确认核心服务全绿）。</li>
+              <li>价格类工具空结果 → 用 <code>price_db_diagnose</code> 看该材料在每个月的样本规格分布。</li>
+            </ul>
+          </section>
+        </div>
+      </aside>
     </div>
   );
 };
