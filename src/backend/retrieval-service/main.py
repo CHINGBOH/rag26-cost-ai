@@ -117,3 +117,10 @@ async def _metrics_middleware(request, call_next):
 
 app.include_router(router)
 app.include_router(tools_router)
+
+# OpenTelemetry — opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (#87 P4)
+try:
+    from app.telemetry import init_telemetry
+    init_telemetry(app)
+except Exception as _otel_exc:  # never block startup on tracing
+    logger.warning(f"telemetry init failed: {_otel_exc}")
