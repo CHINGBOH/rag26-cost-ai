@@ -247,7 +247,8 @@ class UnifiedStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, document_id, content, page_number, period, doc_type,
+                    SELECT id, doc_id, content, page_number, section,
+                           COALESCE(metadata->>'doc_type', '') AS doc_type,
                            embedding <=> %s::vector AS distance
                     FROM text_chunks
                     WHERE embedding IS NOT NULL
@@ -281,15 +282,59 @@ class UnifiedStore:
             self.pg_pool.putconn(conn)
 
     def _pg_fulltext_search(self, query_text: str, top_k: int) -> List[SearchResultItem]:
+        # ── ES backend (BM25 + IK 分词) when KEYWORD_BACKEND=es ──
+        try:
+            from infrastructure import elasticsearch_store as _es
+
+            if _es.is_enabled():
+                hits = _es.search(query_text, top_k=top_k)
+                if hits:
+                    from domain_models.document import DocumentChunk, ChunkType
+
+                    results: List[SearchResultItem] = []
+                    for h in hits:
+                        cid_raw = h.get("chunk_id") or ""
+                        cid = cid_raw[3:] if isinstance(cid_raw, str) and cid_raw.startswith("tc_") else cid_raw
+                        chunk = DocumentChunk(
+                            chunk_id=str(cid),
+                            doc_id=str(h.get("doc_id") or ""),
+                            content=h.get("content") or "",
+                            chunk_type=ChunkType.TEXT,
+                            page_number=int(h.get("page_number") or 1),
+                            section=(h.get("metadata") or {}).get("section") or "",
+                        )
+                        # Normalise ES BM25 score (~0..60) into ~0..1 band so it
+                        # plays well with vector_score in composite ranking.
+                        raw = float(h.get("score") or 0.0)
+                        norm = min(raw / 30.0, 1.0)
+                        results.append(
+                            SearchResultItem(
+                                result_id=str(uuid.uuid4()),
+                                chunk=chunk,
+                                keyword_score=norm,
+                            )
+                        )
+                    return results
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "[unified_store] ES fulltext failed, falling back to PG: %s", exc
+            )
+
         conn = self.pg_pool.getconn()
         try:
             with conn.cursor() as cur:
+                # text_chunks has a GIN index on to_tsvector('chinese', content);
+                # use that directly instead of a non-existent tsv column.
                 cur.execute(
                     """
-                    SELECT id, document_id, content, page_number, period, doc_type,
-                           ts_rank(tsv, plainto_tsquery('simple', %s)) AS rank
+                    SELECT id, doc_id, content, page_number, section,
+                           COALESCE(metadata->>'doc_type', '') AS doc_type,
+                           ts_rank(to_tsvector('chinese', content),
+                                   plainto_tsquery('chinese', %s)) AS rank
                     FROM text_chunks
-                    WHERE tsv @@ plainto_tsquery('simple', %s)
+                    WHERE to_tsvector('chinese', content)
+                          @@ plainto_tsquery('chinese', %s)
                     ORDER BY rank DESC
                     LIMIT %s
                 """,

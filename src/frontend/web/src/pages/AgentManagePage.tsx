@@ -1,211 +1,354 @@
 /**
- * Agent Management Page — Task Queue + Active Agents 看板
- * 当前为 .agent/agents/ 配置文件的演示视图，数据为本地种子，
- * 待后端 agent registry / task queue 接口完成后接通真实数据。
+ * /agents — Agent 定义浏览器
+ *
+ * 单一职能：浏览 .agent/agents/*.md（只读）。
+ * 数据源：
+ *   - 列表：GET /api/v1/agents/registry
+ *   - 详情：GET /api/v1/agents/registry/{id}（raw markdown + frontmatter + mtime）
+ *
+ * 已删除（和 /pipeline /runtime 的重合内容）：
+ *   - Task Queue（→ /pipeline）
+ *   - Active Agents 实时状态/runtimeSec/taskCount（→ /runtime）
  */
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { PageHeader } from '../components/common/PageHeader';
 import './AgentManagePage.css';
 
-/* ── Types ───────────────────────────────────────────── */
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
-type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
-type AgentStatus = 'active' | 'completed' | 'idle';
-
-interface Task {
-  id: string;
-  label: string;
-  tag: string;
-  status: TaskStatus;
-}
-
-interface ActiveAgent {
+interface AgentSummary {
   id: string;
   name: string;
   role: string;
-  model: 'SONNET' | 'HAIKU' | 'OPUS';
+  model: string;
+  trigger: string;
   description: string;
-  runtimeSec: number;
-  taskCount: number;
-  status: AgentStatus;
+  file: string;
 }
 
-/* ── Static seed data (replace with API when backend ready) ── */
+interface AgentDetail {
+  id: string;
+  name: string;
+  frontmatter: Record<string, unknown>;
+  body_markdown: string;
+  raw_markdown: string;
+  file: string;
+  path: string;
+  size_bytes: number;
+  modified_ts: number;
+}
 
-const SEED_TASKS: Task[] = [
-  { id: 'task-001', label: 'Setup Express server with TypeScript', tag: 'eng-backend', status: 'completed' },
-  { id: 'task-002', label: 'Create initial SQLite schema', tag: 'eng-database', status: 'completed' },
-  { id: 'task-003', label: 'Initialize React with Vite', tag: 'eng-frontend', status: 'completed' },
-  { id: 'task-004', label: 'Configure ESLint and Prettier', tag: 'ops-devops', status: 'completed' },
-  { id: 'task-005', label: 'Implement user registration endpoint', tag: 'eng-backend', status: 'completed' },
-  { id: 'task-012', label: 'Implement JWT refresh token rotation', tag: 'eng-backend', status: 'in_progress' },
-  { id: 'task-013', label: 'Add form validation to signup page', tag: 'eng-frontend', status: 'in_progress' },
-  { id: 'task-015', label: 'Create migration for user preferences table', tag: 'eng-database', status: 'pending' },
-  { id: 'task-016', label: 'Implement dark mode toggle component', tag: 'eng-frontend', status: 'pending' },
-  { id: 'task-017', label: 'Write E2E tests for checkout flow', tag: 'qa-testing', status: 'pending' },
+const HTML_ESCAPE: Record<string, string> = {
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+};
+const escapeHtml = (s: string): string => String(s).replace(/[&<>"']/g, (ch) => HTML_ESCAPE[ch] || ch);
+
+/**
+ * Render trusted repo markdown to HTML. Always escape first; only whitelisted
+ * tags introduced AFTER escaping remain. Source files come from .agent/agents
+ * which are version-controlled and authored by maintainers, but we still treat
+ * them as if untrusted to keep XSS surface minimal.
+ */
+function renderMd(md: string): string {
+  if (!md) return '';
+  let s = escapeHtml(md);
+
+  // Fenced code blocks ```lang ... ```
+  s = s.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    return `<pre class="md-pre"><code>${code}</code></pre>`;
+  });
+
+  // Headings (must be at start of line)
+  s = s.replace(/^###### (.+)$/gm, '<h6>$1</h6>')
+       .replace(/^##### (.+)$/gm, '<h5>$1</h5>')
+       .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+       .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+       .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+       .replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // List items: leading `- ` or `* ` or `1. `
+  s = s.replace(/^(?:- |\* )(.+)$/gm, '<li>$1</li>')
+       .replace(/^\d+\.\s(.+)$/gm, '<li>$1</li>');
+  s = s.replace(/(<li>.+<\/li>(?:\n|$))+/g, (m) => `<ul class="md-ul">${m.replace(/\n/g, '')}</ul>`);
+
+  // Inline patterns
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+       .replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
+
+  // Markdown links [text](url) — only http(s)/relative paths
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
+    const safe = /^(https?:\/\/|\/|\.\/|\.\.\/|#)/.test(url) ? url : '#';
+    return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  });
+
+  // Paragraph breaks
+  s = s.replace(/\n{2,}/g, '</p><p class="md-p">');
+  s = `<p class="md-p">${s}</p>`;
+  // Single newlines → <br/>
+  s = s.replace(/\n/g, '<br/>');
+  // Cleanup empty wrappers
+  s = s.replace(/<p class="md-p">\s*<\/p>/g, '');
+
+  return s;
+}
+
+const ROLE_GROUPS: Array<{ key: string; label: string; match: (role: string) => boolean }> = [
+  { key: 'orchestrator', label: 'Orchestrator', match: (r) => /orchestrat/i.test(r) },
+  { key: 'reviewer',     label: 'Reviewer',     match: (r) => /(review|qa|security|inspector)/i.test(r) },
+  { key: 'specialist',   label: 'Specialist',   match: (r) => /(specialist|planner|debugger|devops|ops)/i.test(r) },
+  { key: 'worker',       label: 'Worker',       match: (r) => /worker|engineer/i.test(r) },
 ];
 
-const SEED_AGENTS: ActiveAgent[] = [
-  {
-    id: 'eng-001-backend-api', name: 'eng-001-backend-api', role: 'Engineering Backend',
-    model: 'SONNET', status: 'active', runtimeSec: 754,
-    taskCount: 5, description: 'Implementing POST /api/todos endpoint with validation and SQLite storage',
-  },
-  {
-    id: 'eng-002-frontend-ui', name: 'eng-002-frontend-ui', role: 'Engineering Frontend',
-    model: 'SONNET', status: 'active', runtimeSec: 501,
-    taskCount: 3, description: 'Building React components for todo list with Tailwind styling',
-  },
-  {
-    id: 'qa-001-testing', name: 'qa-001-testing', role: 'QA Testing',
-    model: 'HAIKU', status: 'active', runtimeSec: 345,
-    taskCount: 8, description: 'Writing unit tests for authentication module',
-  },
-  {
-    id: 'review-security-001', name: 'review-security-001', role: 'Security Review',
-    model: 'OPUS', status: 'active', runtimeSec: 192,
-    taskCount: 2, description: 'Analyzing auth flow for OWASP vulnerabilities',
-  },
-  {
-    id: 'ops-devops-001', name: 'ops-devops-001', role: 'Operations DevOps',
-    model: 'SONNET', status: 'active', runtimeSec: 908,
-    taskCount: 4, description: 'Configuring GitHub Actions CI/CD pipeline',
-  },
-  {
-    id: 'biz-marketing-001', name: 'biz-marketing-001', role: 'Business Marketing',
-    model: 'HAIKU', status: 'completed', runtimeSec: 393,
-    taskCount: 2, description: 'Creating landing page copy and SEO meta tags',
-  },
-];
-
-/* ── Helpers ─────────────────────────────────────────── */
-
-function fmtRuntime(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
-  return `${m}m ${String(s).padStart(2, '0')}s`;
+function groupOf(role: string): string {
+  for (const g of ROLE_GROUPS) if (g.match(role)) return g.key;
+  return 'worker';
 }
 
-function countByStatus(tasks: Task[], status: TaskStatus): number {
-  return tasks.filter((t) => t.status === status).length;
-}
-
-const MODEL_COLOR: Record<ActiveAgent['model'], string> = {
-  SONNET: 'model-sonnet',
-  HAIKU: 'model-haiku',
-  OPUS: 'model-opus',
+const MODEL_BADGE: Record<string, string> = {
+  SONNET: 'badge-sonnet',
+  HAIKU:  'badge-haiku',
+  OPUS:   'badge-opus',
 };
 
-/* ── Sub-components ──────────────────────────────────── */
+const TRIGGER_LABEL: Record<string, string> = {
+  always_on:      '常驻',
+  model_decision: '模型决定',
+  on_demand:      '按需',
+  manual:         '手动',
+};
 
-function TaskCard({ task }: { task: Task }) {
-  return (
-    <div className="task-card">
-      <div className="task-id">{task.id}</div>
-      <div className={`task-tag tag-${task.tag.split('-')[0]}`}>{task.tag}</div>
-      <div className="task-label">{task.label}</div>
-    </div>
-  );
-}
+const AgentManagePage: React.FC = () => {
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [agentsErr, setAgentsErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+  const [groupFilter, setGroupFilter] = useState<string>('all');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<AgentDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailErr, setDetailErr] = useState<string | null>(null);
+  const [showRaw, setShowRaw] = useState(false);
 
-function TaskColumn({ title, status, count, tasks, accentClass }: {
-  title: string; status: TaskStatus; count: number; tasks: Task[]; accentClass: string;
-}) {
-  const col = tasks.filter((t) => t.status === status);
-  return (
-    <div className="task-column">
-      <div className={`task-column-header ${accentClass}`}>
-        <span className="col-title">{title}</span>
-        <span className="col-count">{count}</span>
-      </div>
-      <div className="task-column-body">
-        {col.map((t) => <TaskCard key={t.id} task={t} />)}
-      </div>
-    </div>
-  );
-}
-
-function AgentCard({ agent }: { agent: ActiveAgent }) {
-  return (
-    <div className={`agent-card ${agent.status === 'completed' ? 'agent-completed' : ''}`}>
-      <div className="agent-card-header">
-        <span className="agent-name">{agent.name}</span>
-        <span className={`agent-model-badge ${MODEL_COLOR[agent.model]}`}>{agent.model}</span>
-      </div>
-      <div className="agent-role">{agent.role}</div>
-      <div className="agent-desc">{agent.description}</div>
-      <div className="agent-meta">
-        <span>Runtime: {fmtRuntime(agent.runtimeSec)}</span>
-        <span>Tasks: {agent.taskCount}</span>
-      </div>
-      <div className="agent-footer">
-        {agent.status === 'active'
-          ? <span className="agent-status-dot active">● Active</span>
-          : <span className="agent-status-dot completed">Completed</span>}
-      </div>
-    </div>
-  );
-}
-
-/* ── Main page ───────────────────────────────────────── */
-
-export const AgentManagePage: React.FC = () => {
-  const [tasks, setTasks] = useState<Task[]>(SEED_TASKS);
-  const [agents] = useState<ActiveAgent[]>(SEED_AGENTS);
-
-  // Simulate runtime ticking (replace with real WebSocket/polling)
   useEffect(() => {
-    const interval = setInterval(() => {
-      setTasks((prev) => [...prev]); // trigger re-render for live feel
-    }, 30_000);
-    return () => clearInterval(interval);
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/v1/agents/registry`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        const list: AgentSummary[] = data.agents || [];
+        setAgents(list);
+        if (list.length > 0 && !selectedId) setSelectedId(list[0].id);
+      } catch (e) {
+        setAgentsErr(e instanceof Error ? e.message : '加载失败');
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    let alive = true;
+    setDetailLoading(true);
+    setDetailErr(null);
+    setDetail(null);
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/v1/agents/registry/${encodeURIComponent(selectedId)}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = (await r.json()) as AgentDetail;
+        if (!alive) return;
+        setDetail(d);
+      } catch (e) {
+        if (alive) setDetailErr(e instanceof Error ? e.message : '加载失败');
+      } finally {
+        if (alive) setDetailLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [selectedId]);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return agents.filter((a) => {
+      if (groupFilter !== 'all' && groupOf(a.role) !== groupFilter) return false;
+      if (!q) return true;
+      return (
+        a.id.toLowerCase().includes(q) ||
+        a.name.toLowerCase().includes(q) ||
+        a.role.toLowerCase().includes(q) ||
+        a.description.toLowerCase().includes(q)
+      );
+    });
+  }, [agents, filter, groupFilter]);
+
+  const byGroup = useMemo(() => {
+    const m: Record<string, AgentSummary[]> = {};
+    for (const a of filtered) {
+      const g = groupOf(a.role);
+      (m[g] ||= []).push(a);
+    }
+    return m;
+  }, [filtered]);
+
+  const detailHtml = useMemo(
+    () => (detail ? renderMd(detail.body_markdown || detail.raw_markdown || '') : ''),
+    [detail]
+  );
+
+  const groupCounts = useMemo(() => {
+    const c: Record<string, number> = { all: agents.length };
+    for (const a of agents) {
+      const g = groupOf(a.role);
+      c[g] = (c[g] || 0) + 1;
+    }
+    return c;
+  }, [agents]);
 
   return (
     <div className="agent-manage-page">
-      <PageHeader
-        title="Agents 看板"
-        subtitle="任务队列与运行中的 agent 概览"
-        actions={<span className="demo-tag">演示数据</span>}
-      />
+      <PageHeader title="Agent 定义浏览器" subtitle=".agent/agents/*.md — 只读浏览仓库 Agent 系统" />
 
-      {/* Task Queue */}
-      <section className="section-block">
-        <h2 className="section-title">Task Queue</h2>
-        <div className="task-queue-grid">
-          <TaskColumn
-            title="Pending" status="pending"
-            count={countByStatus(tasks, 'pending')} tasks={tasks}
-            accentClass="accent-pending"
-          />
-          <TaskColumn
-            title="In Progress" status="in_progress"
-            count={countByStatus(tasks, 'in_progress')} tasks={tasks}
-            accentClass="accent-inprogress"
-          />
-          <TaskColumn
-            title="Completed" status="completed"
-            count={countByStatus(tasks, 'completed')} tasks={tasks}
-            accentClass="accent-completed"
-          />
-          <TaskColumn
-            title="Failed" status="failed"
-            count={countByStatus(tasks, 'failed')} tasks={tasks}
-            accentClass="accent-failed"
-          />
-        </div>
-      </section>
+      {agentsErr && <div className="agm-error">加载 registry 失败：{agentsErr}</div>}
 
-      {/* Active Agents */}
-      <section className="section-block">
-        <h2 className="section-title">Active Agents</h2>
-        <div className="agents-grid">
-          {agents.map((a) => <AgentCard key={a.id} agent={a} />)}
+      <div className="agm-toolbar">
+        <input
+          type="search"
+          className="agm-search"
+          placeholder="搜索 id / 名称 / 角色 / 描述…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <div className="agm-filter-group">
+          <button
+            type="button"
+            className={`agm-pill ${groupFilter === 'all' ? 'active' : ''}`}
+            onClick={() => setGroupFilter('all')}
+          >
+            全部 <span className="agm-pill-num">{groupCounts.all || 0}</span>
+          </button>
+          {ROLE_GROUPS.map((g) => (
+            <button
+              key={g.key}
+              type="button"
+              className={`agm-pill ${groupFilter === g.key ? 'active' : ''}`}
+              onClick={() => setGroupFilter(g.key)}
+            >
+              {g.label} <span className="agm-pill-num">{groupCounts[g.key] || 0}</span>
+            </button>
+          ))}
         </div>
-      </section>
+      </div>
+
+      <div className="agm-layout">
+        {/* Left list */}
+        <aside className="agm-list">
+          {ROLE_GROUPS.map((g) => {
+            const items = byGroup[g.key];
+            if (!items || items.length === 0) return null;
+            return (
+              <div key={g.key} className="agm-group">
+                <div className="agm-group-head">{g.label} <span>{items.length}</span></div>
+                <ul>
+                  {items.map((a) => (
+                    <li
+                      key={a.id}
+                      className={`agm-row ${selectedId === a.id ? 'active' : ''}`}
+                      onClick={() => setSelectedId(a.id)}
+                    >
+                      <div className="agm-row-top">
+                        <span className="agm-row-name">{a.name}</span>
+                        <span className={`agm-badge ${MODEL_BADGE[a.model] || 'badge-default'}`}>
+                          {a.model || 'SONNET'}
+                        </span>
+                      </div>
+                      <div className="agm-row-id">@{a.id}</div>
+                      {a.trigger && (
+                        <div className="agm-row-meta">
+                          {TRIGGER_LABEL[a.trigger] || a.trigger}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+          {filtered.length === 0 && agents.length > 0 && (
+            <div className="agm-empty">无匹配项</div>
+          )}
+          {agents.length === 0 && !agentsErr && (
+            <div className="agm-empty">加载中…</div>
+          )}
+        </aside>
+
+        {/* Right detail */}
+        <main className="agm-detail">
+          {detailLoading && <div className="agm-empty">加载详情…</div>}
+          {detailErr && <div className="agm-error">详情加载失败：{detailErr}</div>}
+          {detail && !detailLoading && (
+            <>
+              <div className="agm-detail-head">
+                <div>
+                  <h1>{detail.name}</h1>
+                  <div className="agm-detail-id">@{detail.id} · <code>{detail.path}</code></div>
+                </div>
+                <div className="agm-detail-actions">
+                  <span className="agm-detail-meta">
+                    {(detail.size_bytes / 1024).toFixed(1)} KB · 改于{' '}
+                    {new Date(detail.modified_ts * 1000).toLocaleString()}
+                  </span>
+                  <button
+                    type="button"
+                    className="agm-btn"
+                    onClick={() => setShowRaw((p) => !p)}
+                  >
+                    {showRaw ? '渲染视图' : '查看原文'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Frontmatter table */}
+              {Object.keys(detail.frontmatter || {}).length > 0 && (
+                <div className="agm-fm">
+                  <div className="agm-fm-title">Frontmatter</div>
+                  <table>
+                    <tbody>
+                      {Object.entries(detail.frontmatter).map(([k, v]) => (
+                        <tr key={k}>
+                          <td>{k}</td>
+                          <td>
+                            {typeof v === 'string'
+                              ? v
+                              : Array.isArray(v)
+                                ? v.join(', ')
+                                : JSON.stringify(v)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {showRaw ? (
+                <pre className="agm-raw">{detail.raw_markdown}</pre>
+              ) : (
+                <div
+                  className="agm-md"
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: detailHtml }}
+                />
+              )}
+            </>
+          )}
+          {!detail && !detailLoading && !detailErr && (
+            <div className="agm-empty">从左侧选择一个 Agent 查看定义</div>
+          )}
+        </main>
+      </div>
     </div>
   );
 };
 
 export default AgentManagePage;
+export { AgentManagePage };

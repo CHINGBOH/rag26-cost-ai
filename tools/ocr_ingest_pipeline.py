@@ -23,6 +23,7 @@ from collections import defaultdict
 
 import psycopg2
 from psycopg2.extras import execute_values
+from typing import Optional
 
 # ============ CONFIG ============
 DB_CONFIG = dict(host='localhost', dbname='rag_db', user='rag_user', password=os.environ.get('POSTGRES_PASSWORD', 'rag_password'))
@@ -506,11 +507,51 @@ def _split_multi_item_row(col_text, max_col, seq_nums):
     return entries
 
 
+def _normalize_labor_row(material_name: str, spec: str, unit: Optional[str],
+                         price: Optional[float]) -> tuple:
+    """Detect labor rows misparsed by OCR (price leaked into spec column).
+
+    Pattern: material_name contains '工日' marker, spec is purely numeric,
+    unit is empty. PDF originally had columns [name, 工日, price] but column
+    boundaries collapsed so '工日' merged into name and price slid into spec.
+
+    Returns (material_name, spec, unit, price) with corrections applied.
+    """
+    if unit:
+        return material_name, spec, unit, price
+    if not material_name or '工日' not in material_name:
+        return material_name, spec, unit, price
+    if not spec or not re.fullmatch(r'\d+(\.\d+)?', spec.strip()):
+        return material_name, spec, unit, price
+
+    # Labor row detected: spec value is the price
+    spec_price = clean_num(spec)
+    if spec_price is not None:
+        if price is None:
+            price = spec_price
+        # Conservatively clean material_name only if result is mostly Chinese
+        cleaned = re.sub(r'\s*工日\s*', ' ', material_name).strip()
+        cleaned = re.sub(r'^([A-Za-z]\s+)+', '', cleaned)
+        cleaned = re.sub(r'(\s+[A-Za-z](\s+[A-Za-z])*)+$', '', cleaned).strip()
+        # Only adopt cleaned name if it has ≥2 Chinese characters (real name)
+        if cleaned and len(re.findall(r'[\u4e00-\u9fff]', cleaned)) >= 2:
+            material_name = cleaned
+        return material_name, '', '工日', price
+    return material_name, spec, unit, price
+
+
 def _build_record(entry, period, page_number, doc_id, doc_code, source_doc, category):
     """Build a DB-ready dict from a parsed entry."""
     material_name = entry.get('material_name', '').strip()
     price = entry.get('price')
     price_formula = entry.get('price_formula')
+    spec = (entry.get('spec') or '').strip()
+    unit = entry.get('unit')
+
+    # Upstream fix for OCR labor-row column misalignment (issue #91)
+    material_name, spec, unit, price = _normalize_labor_row(
+        material_name, spec, unit, price
+    )
 
     # Must have at least a name
     if not material_name or len(material_name) < 2:
@@ -530,8 +571,8 @@ def _build_record(entry, period, page_number, doc_id, doc_code, source_doc, cate
         'period':        period,
         'category':      category,
         'material_name': material_name[:200],
-        'spec':          (entry.get('spec') or '')[:200],
-        'unit':          (entry.get('unit') or '')[:20] or None,
+        'spec':          spec[:200],
+        'unit':          (unit or '')[:20] or None,
         'price':         price,
         'price_formula': price_formula,
         'page_number':   page_number,

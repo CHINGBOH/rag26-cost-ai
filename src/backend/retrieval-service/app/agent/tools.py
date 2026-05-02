@@ -1657,20 +1657,24 @@ def _query_fee_comparison_text_chunks(conn, query: str, top_k: int = 10) -> list
     return results[:top_k]
 
 
-def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
+def _query_text_chunks_literal(conn, query: str, top_k: int = 10, path_constraint: str = "") -> list[dict]:
     if not query.strip():
         return []
 
+    path_clause = "AND path LIKE %s" if path_constraint else ""
+    path_params: tuple = (path_constraint,) if path_constraint else ()
+
     with conn.cursor() as cur:
         cur.execute(
-            """
-                SELECT id, doc_id, page_number, content
+            f"""
+                SELECT id, doc_id, page_number, content, file_name, path, metadata
                 FROM text_chunks
                 WHERE content ILIKE %s
+                {path_clause}
                 ORDER BY length(content)
                 LIMIT %s
             """,
-            (f"%{query.strip()}%", top_k),
+            (f"%{query.strip()}%", *path_params, top_k),
         )
         rows = cur.fetchall()
 
@@ -1683,7 +1687,10 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
                 "source_db": "literal_text",
                 "content": row[3] or "",
                 "score": 0.72,
-                "metadata": {},
+                "doc_filename": row[4] or "",
+                "file_name": row[4] or "",
+                "path": row[5] or "",
+                "metadata": dict(row[6] or {}),
             },
             RETRIEVAL_PATH_PDF_PAGE,
             evidence_kind="pdf_page_literal",
@@ -2744,6 +2751,60 @@ def keyword_search(query: str, top_k: int = 10) -> str:
     if not query.strip():
         return json.dumps([])
 
+    # ── ES backend (BM25 + IK 分词) — drop-in replacement when KEYWORD_BACKEND=es ──
+    es_results: list = []
+    try:
+        from infrastructure import elasticsearch_store as _es
+
+        if _es.is_enabled():
+            es_results = _es.search(query, top_k=top_k)
+            if es_results:
+                tagged = [
+                    _with_retrieval_path(
+                        {**r, "score": round(float(r.get("score") or 0), 4)},
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="fulltext_chunk",
+                        route_stage="primary",
+                    )
+                    for r in es_results
+                ]
+                logger.info("[keyword_search] ES backend returned %d hits", len(tagged))
+                # Continue to structured tables enrichment below using PG
+                conn = None
+                try:
+                    conn = _get_pg_conn()
+                    seen = {r.get("chunk_id") for r in tagged}
+                    for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    if _should_include_structured_tables(query):
+                        tagged.extend(_query_structured_tables(query, top_k))
+                    for chunk in _query_text_chunks_literal(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                finally:
+                    if conn is not None:
+                        _put_pg_conn(conn)
+                return json.dumps(tagged, ensure_ascii=False)
+            # if ES enabled but returned 0 hits, fall through to PG (defensive)
+            logger.info("[keyword_search] ES returned 0 hits, falling back to PG")
+    except Exception as _es_exc:
+        logger.warning("[keyword_search] ES backend error, falling back to PG: %s", _es_exc)
+
     conn = None
     try:
         conn = _get_pg_conn()
@@ -3342,7 +3403,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
                     observability["structured_hits"] = int(observability["structured_hits"]) + 1
                     results.append(chunk)
 
-        for chunk in _query_text_chunks_literal(conn, query, int(cfg["literal_top_k"])):
+        for chunk in _query_text_chunks_literal(conn, query, int(cfg["literal_top_k"]), path_constraint=path_constraint):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 observability["literal_hits"] = int(observability["literal_hits"]) + 1
@@ -3426,7 +3487,8 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT id, doc_id, page_number, content,
-                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
+                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score,
+                           file_name, path, metadata
                     FROM text_chunks
                     WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
                     {path_filter_sql}
@@ -3446,7 +3508,10 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                                     "source_db": "pg_fulltext",
                                     "content": row[3] or "",
                                     "score": round(float(row[4] or 0), 4),
-                                    "metadata": {},
+                                    "doc_filename": row[5] or "",
+                                    "file_name": row[5] or "",
+                                    "path": row[6] or "",
+                                    "metadata": dict(row[7] or {}),
                                 },
                                 RETRIEVAL_PATH_DATABASE,
                                 evidence_kind="fulltext_chunk",
@@ -3520,7 +3585,7 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                     seen_ids.add(chunk["chunk_id"])
                     results.append(chunk)
 
-        for chunk in _query_text_chunks_literal(conn, query, top_k):
+        for chunk in _query_text_chunks_literal(conn, query, top_k, path_constraint=path_constraint):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
@@ -4226,6 +4291,53 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 )
             )
         chunks.sort(key=lambda chunk: chunk["metadata"].get("year_month", ""))
+
+        # ── Comparability guard ──────────────────────────────────────────────
+        # If primary rows and fallback rows mix different specifications,
+        # cross-month % change is meaningless ("apples-to-oranges").  Emit a
+        # synthetic warning chunk so the synthesizer can refuse the bogus delta.
+        primary_specs = {(r[3] or "").strip() for r in rows if r[3]}
+        all_specs: set[str] = set(primary_specs)
+        for fb in fallback_chunks:
+            md = fb.get("metadata") or {}
+            spec = (md.get("specification") or "").strip()
+            if spec:
+                all_specs.add(spec)
+            elif fallback_chunks:  # fallback aggregate uses material_name → marker
+                all_specs.add("__fallback_aggregate__")
+        spec_mismatch = (
+            len(chunks) >= 2
+            and (
+                len(all_specs) > 1
+                or "__fallback_aggregate__" in all_specs
+            )
+        )
+        if spec_mismatch:
+            warning = {
+                "chunk_id": f"price_trend_warning_{material_name}",
+                "doc_id": "price_trend",
+                "page_number": 1,
+                "source_db": "price_records",
+                "content": (
+                    f"⚠️ 数据可比性提示：检索到的 {material_name} 跨月样本规格不一致，"
+                    f"涉及规格 {sorted(all_specs)[:5]}。不同规格的电线/电缆价格差异极大，"
+                    f"直接计算环比变化幅度会产生误导性结论。"
+                    f"建议：(1) 指定具体规格再查询，或 (2) 仅展示分月均价并明确说明样本规格差异。"
+                ),
+                "score": 0.99,
+                "metadata": {
+                    "evidence_kind": "comparability_warning",
+                    "specs_seen": sorted(all_specs)[:10],
+                    "year_month": "*",
+                },
+                "retrieval_path": RETRIEVAL_PATH_DATABASE,
+            }
+            chunks.insert(0, warning)
+            logger.info(
+                f"[price_trend] spec_mismatch warning emitted material='{material_name}' "
+                f"specs={sorted(all_specs)[:5]}"
+            )
+
         logger.info(
             f"[price_trend] material='{material_name}' "
             f"range=[{start_month},{end_month}] points={len(chunks)}"
@@ -4409,3 +4521,1508 @@ def get_catalog_map(query: str, top_k: int = 12) -> str:
     finally:
         if conn is not None:
             _put_pg_conn(conn)
+
+
+# ===========================================================================
+# Schema-aware domain-neutral data backbone tools
+# ---------------------------------------------------------------------------
+# These tools are deliberately field-name-agnostic so the same agent toolbox
+# works on any structured corpus (construction prices today, annual reports
+# tomorrow). They introspect schema instead of hardcoding column names.
+# ===========================================================================
+
+# Whitelist of tables this toolbox is allowed to query. Add new domain tables
+# here; nothing outside the whitelist is reachable through these tools.
+_QUERYABLE_TABLES = {
+    "text_chunks",
+    "catalog_index",
+    "document_registry",
+    "price_records",
+    "fee_rates",
+    "trend_points",
+    "trend_relations",
+}
+
+# Forbidden SQL keywords (case-insensitive) for sql_query. Anything matching
+# is rejected before reaching PG. Read-only role would be ideal but rag_user
+# is a single shared role so we enforce at the application layer.
+_SQL_FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|GRANT|REVOKE|"
+    r"COPY|CREATE|MERGE|VACUUM|ANALYZE|REINDEX|CLUSTER|LOCK|"
+    r"SET|RESET|CALL|DO|EXECUTE|PREPARE|DEALLOCATE|LISTEN|NOTIFY|"
+    r"BEGIN|COMMIT|ROLLBACK|SAVEPOINT)\b",
+    re.IGNORECASE,
+)
+
+
+def _safe_table(table: str) -> str | None:
+    """Return canonical table name if whitelisted, else None."""
+    t = (table or "").strip().lower()
+    if t in _QUERYABLE_TABLES:
+        return t
+    return None
+
+
+@tool
+def list_tables() -> str:
+    """列出工具箱可查询的所有表及行数。领域无关，自描述数据库内容。"""
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        results = []
+        with conn.cursor() as cur:
+            for tbl in sorted(_QUERYABLE_TABLES):
+                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                row_count = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=%s",
+                    (tbl,),
+                )
+                cols = [r[0] for r in cur.fetchall()]
+                results.append({
+                    "table": tbl,
+                    "row_count": int(row_count or 0),
+                    "column_count": len(cols),
+                    "columns_preview": cols[:6],
+                })
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[list_tables] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def describe_table(table: str) -> str:
+    """给定表名返回完整字段列表（名称、类型、是否可空）。用于 agent 写查询前自我探索。"""
+    canonical = _safe_table(table)
+    if canonical is None:
+        return json.dumps({"error": f"table '{table}' not in whitelist"})
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name=%s "
+                "ORDER BY ordinal_position",
+                (canonical,),
+            )
+            cols = [
+                {
+                    "name": r[0],
+                    "type": r[1],
+                    "nullable": (r[2] == "YES"),
+                    "default": r[3],
+                }
+                for r in cur.fetchall()
+            ]
+            cur.execute(f"SELECT COUNT(*) FROM {canonical}")
+            row_count = int(cur.fetchone()[0] or 0)
+        return json.dumps(
+            {"table": canonical, "row_count": row_count, "columns": cols},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[describe_table] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def sql_query(sql: str, max_rows: int = 50) -> str:
+    """执行只读 SELECT。安全约束：单条 SELECT、禁 DDL/DML、强制 LIMIT≤200。
+
+    例：SELECT material_name, price FROM price_records WHERE year_month='2026-01' LIMIT 10
+    换皮场景：SELECT company, revenue FROM annual_reports WHERE year=2024 LIMIT 10
+    """
+    if not sql or not sql.strip():
+        return json.dumps({"error": "empty sql"})
+
+    cleaned = sql.strip().rstrip(";").strip()
+
+    # 必须以 SELECT 或 WITH 开头
+    head = cleaned[:6].upper()
+    if head not in ("SELECT", "WITH  ") and not cleaned.upper().startswith("WITH "):
+        if not cleaned.upper().startswith("SELECT"):
+            return json.dumps({"error": "only SELECT/WITH queries are allowed"})
+
+    # 禁多语句
+    if ";" in cleaned:
+        return json.dumps({"error": "multiple statements forbidden"})
+
+    # 禁危险关键字
+    if _SQL_FORBIDDEN.search(cleaned):
+        return json.dumps({"error": "forbidden keyword detected"})
+
+    cap = max(1, min(int(max_rows or 50), 200))
+    # 若用户 SQL 已经写了 LIMIT，则保留；否则附加
+    if not re.search(r"\blimit\b", cleaned, re.IGNORECASE):
+        cleaned = f"{cleaned} LIMIT {cap}"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(cleaned)
+            cols = [d[0] for d in (cur.description or [])]
+            rows = cur.fetchmany(cap)
+            data = [
+                {col: (v.isoformat() if hasattr(v, "isoformat") else v)
+                 for col, v in zip(cols, row)}
+                for row in rows
+            ]
+        return json.dumps(
+            {"columns": cols, "row_count": len(data), "rows": data},
+            ensure_ascii=False, default=str,
+        )
+    except Exception as e:
+        logger.error(f"[sql_query] error: {e} sql={cleaned[:200]}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn, error=True)
+
+
+@tool
+def aggregate_query(
+    table: str,
+    group_by: str = "",
+    agg: str = "count",
+    agg_column: str = "",
+    where: str = "",
+    order_desc: bool = True,
+    top_k: int = 20,
+) -> str:
+    """通用结构化聚合。agg ∈ {count,sum,avg,min,max}。where 是无引号的安全片段（仅 = 比较）。
+
+    例 1（建筑造价）: aggregate_query(table='price_records', group_by='year_month', agg='avg', agg_column='price_tax_included')
+    例 2（年报场景）: aggregate_query(table='annual_reports',  group_by='industry',   agg='sum', agg_column='revenue')
+    """
+    canonical = _safe_table(table)
+    if canonical is None:
+        return json.dumps({"error": f"table '{table}' not in whitelist"})
+
+    agg_lower = (agg or "count").strip().lower()
+    if agg_lower not in {"count", "sum", "avg", "min", "max"}:
+        return json.dumps({"error": f"unsupported agg '{agg}'"})
+
+    # column safety: alphanumeric/underscore only
+    def _safe_col(c: str) -> bool:
+        return bool(c) and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", c))
+
+    group = (group_by or "").strip()
+    if group and not _safe_col(group):
+        return json.dumps({"error": "invalid group_by"})
+
+    if agg_lower != "count":
+        if not _safe_col(agg_column):
+            return json.dumps({"error": "agg_column required for non-count"})
+        agg_expr = f"{agg_lower.upper()}({agg_column})"
+    else:
+        agg_expr = "COUNT(*)"
+
+    # WHERE: very limited; only equality of safe column to a literal
+    where_sql = ""
+    where_params: list = []
+    if where:
+        m = re.fullmatch(
+            r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^';]{0,80})'\s*",
+            where,
+        )
+        if not m:
+            return json.dumps({"error": "where must be: col='value' (single equality)"})
+        where_sql = f"WHERE {m.group(1)} = %s"
+        where_params = [m.group(2)]
+
+    cap = max(1, min(int(top_k or 20), 200))
+    direction = "DESC" if order_desc else "ASC"
+
+    if group:
+        sql = (
+            f"SELECT {group} AS bucket, {agg_expr} AS value "
+            f"FROM {canonical} {where_sql} "
+            f"GROUP BY {group} ORDER BY value {direction} LIMIT {cap}"
+        )
+    else:
+        sql = f"SELECT {agg_expr} AS value FROM {canonical} {where_sql}"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(sql, where_params)
+            cols = [d[0] for d in (cur.description or [])]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return json.dumps(
+            {"sql": sql, "rows": rows, "row_count": len(rows)},
+            ensure_ascii=False, default=str,
+        )
+    except Exception as e:
+        logger.error(f"[aggregate_query] error: {e} sql={sql}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn, error=True)
+
+
+@tool
+def list_documents(
+    name_like: str = "",
+    limit: int = 20,
+) -> str:
+    """列出已入库文档（document_registry）。可按文件名模糊过滤。领域无关。"""
+    cap = max(1, min(int(limit or 20), 100))
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            # 自适应字段：取所有列再返回，确保换皮场景仍有用
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='document_registry' "
+                "ORDER BY ordinal_position"
+            )
+            all_cols = [r[0] for r in cur.fetchall()]
+            select_list = ", ".join(all_cols) if all_cols else "*"
+            params: list = []
+            where = ""
+            if name_like and "file_name" in all_cols:
+                where = "WHERE file_name ILIKE %s"
+                params.append(f"%{name_like}%")
+            cur.execute(
+                f"SELECT {select_list} FROM document_registry {where} LIMIT %s",
+                params + [cap],
+            )
+            cols = [d[0] for d in (cur.description or [])]
+            rows = [
+                {c: (v.isoformat() if hasattr(v, "isoformat") else v)
+                 for c, v in zip(cols, r)}
+                for r in cur.fetchall()
+            ]
+        return json.dumps({"row_count": len(rows), "rows": rows},
+                          ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[list_documents] error: {e}")
+        return json.dumps({"error": str(e), "rows": []})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def fetch_chunk(chunk_id: str, with_neighbors: bool = True) -> str:
+    """按 chunk_id 取完整 chunk，可同时返回同文档前后 2 条邻居。
+
+    chunk_id 可为 'tc_123' 或纯数字。
+    """
+    raw_id = (chunk_id or "").strip()
+    if raw_id.startswith("tc_"):
+        raw_id = raw_id[3:]
+    if not raw_id.isdigit():
+        return json.dumps({"error": "invalid chunk_id"})
+    pk = int(raw_id)
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, doc_id, page_number, content, metadata "
+                "FROM text_chunks WHERE id=%s",
+                (pk,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return json.dumps({"error": "not found"})
+            main = {
+                "chunk_id": f"tc_{row[0]}",
+                "doc_id": str(row[1] or ""),
+                "page_number": row[2],
+                "content": row[3] or "",
+                "metadata": row[4] or {},
+            }
+            neighbors: list = []
+            if with_neighbors:
+                cur.execute(
+                    "SELECT id, page_number, content FROM text_chunks "
+                    "WHERE doc_id=%s AND id<>%s "
+                    "ORDER BY ABS(id-%s) LIMIT 4",
+                    (row[1], pk, pk),
+                )
+                for n in cur.fetchall():
+                    neighbors.append({
+                        "chunk_id": f"tc_{n[0]}",
+                        "page_number": n[1],
+                        "content": (n[2] or "")[:300],
+                    })
+        return json.dumps({"chunk": main, "neighbors": neighbors},
+                          ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[fetch_chunk] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def similar_chunks(chunk_id: str, top_k: int = 5) -> str:
+    """给定 chunk_id 用 pgvector 找余弦最相似的其它 chunk。用于推荐/去重/盲点发现。"""
+    raw_id = (chunk_id or "").strip()
+    if raw_id.startswith("tc_"):
+        raw_id = raw_id[3:]
+    if not raw_id.isdigit():
+        return json.dumps({"error": "invalid chunk_id"})
+    pk = int(raw_id)
+    cap = max(1, min(int(top_k or 5), 20))
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT embedding FROM text_chunks WHERE id=%s", (pk,))
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                return json.dumps({"error": "chunk has no embedding"})
+            emb = row[0]
+            cur.execute(
+                "SELECT id, doc_id, page_number, content, "
+                "1 - (embedding <=> %s::vector) AS score "
+                "FROM text_chunks "
+                "WHERE id<>%s AND embedding IS NOT NULL "
+                "ORDER BY embedding <=> %s::vector LIMIT %s",
+                (emb, pk, emb, cap),
+            )
+            results = []
+            for r in cur.fetchall():
+                results.append({
+                    "chunk_id": f"tc_{r[0]}",
+                    "doc_id": str(r[1] or ""),
+                    "page_number": r[2],
+                    "content": (r[3] or "")[:400],
+                    "score": round(float(r[4] or 0), 4),
+                })
+        return json.dumps(results, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[similar_chunks] error: {e}")
+        return json.dumps([])
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def stats_overview() -> str:
+    """库内全局体检：每表行数、向量覆盖率、最早/最晚时间。无参数。"""
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        out: dict = {"tables": {}}
+        with conn.cursor() as cur:
+            for tbl in sorted(_QUERYABLE_TABLES):
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    out["tables"][tbl] = {"rows": int(cur.fetchone()[0] or 0)}
+                except Exception:
+                    out["tables"][tbl] = {"rows": 0}
+
+            # 向量覆盖率
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE embedding IS NOT NULL),"
+                    " COUNT(*) FROM text_chunks"
+                )
+                with_e, total = cur.fetchone()
+                out["embedding_coverage"] = {
+                    "with_embedding": int(with_e or 0),
+                    "total_chunks": int(total or 0),
+                    "ratio": round((with_e or 0) / max(int(total or 1), 1), 3),
+                }
+            except Exception:
+                pass
+
+            # 时间维度（如果存在 year_month / created_at 等）
+            for tbl, col in [
+                ("price_records", "year_month"),
+                ("trend_points", "year_month"),
+                ("document_registry", "created_at"),
+            ]:
+                try:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s AND column_name=%s",
+                        (tbl, col),
+                    )
+                    if cur.fetchone():
+                        cur.execute(f"SELECT MIN({col}), MAX({col}) FROM {tbl}")
+                        lo, hi = cur.fetchone()
+                        out.setdefault("time_ranges", {})[tbl] = {
+                            "column": col,
+                            "min": str(lo) if lo else None,
+                            "max": str(hi) if hi else None,
+                        }
+                except Exception:
+                    pass
+
+        return json.dumps(out, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"[stats_overview] error: {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Round 3: Active RAG penetration tools (graph + proactive)
+# ════════════════════════════════════════════════════════════════════════
+
+import re as _re_r3
+
+_CN_TERM_RE = _re_r3.compile(r"[\u4e00-\u9fff][\u4e00-\u9fff\w]{1,7}")
+_STOPWORDS_R3 = {
+    "我们", "他们", "可以", "进行", "包括", "如下", "以及", "等等", "不过",
+    "因此", "所以", "如果", "虽然", "但是", "同时", "或者", "并且", "其中",
+    "应当", "需要", "不能", "可能", "不得", "应该", "要求", "通过", "采用",
+    "本节", "本章", "本规", "本标", "本条", "说明", "本表", "本款",
+    "什么", "怎么", "哪些", "哪个", "如何", "为何", "多少",
+}
+
+def _extract_terms(text: str, min_len: int = 2, max_len: int = 8) -> list:
+    """从中文文本里抽 2-8 字术语，去停用词。先按助词拆，再滑窗。"""
+    if not text:
+        return []
+    # 按常见助词/疑问词切段，避免长跨界 term
+    segments = _re_r3.split(r"[的中和或与是以为及对到从在由把被让所对于关于以及通过根据按照另外另一这一那些这些任何什么怎么哪些哪个如何为何多少\s\W]+", text)
+    out = []
+    seen = set()
+    for seg in segments:
+        if not seg:
+            continue
+        # 在段内用原 regex 抽
+        for w in _CN_TERM_RE.findall(seg):
+            if min_len <= len(w) <= max_len and w not in _STOPWORDS_R3 and w not in seen:
+                seen.add(w)
+                out.append(w)
+        # 段本身若是合法长度也加入
+        if min_len <= len(seg) <= max_len and seg not in seen and seg not in _STOPWORDS_R3 and _re_r3.match(r"^[\u4e00-\u9fff]+$", seg):
+            seen.add(seg)
+            out.insert(0, seg)  # 整段优先级更高
+    return out
+
+
+@tool
+def concept_neighbors(concept: str, hops: int = 1, top_k: int = 15) -> str:
+    """图谱穿透：给定概念，返回语义+结构相关概念。
+    实现：embedding 近邻 chunk → 抽 catalog path 节点 + 关键词；hops>=2 时迭代扩展。
+    Args: concept 概念词；hops 跳数 1-2；top_k 返回数量
+    Returns: JSON {seed, neighbors:[{term,score,source}]}
+    """
+    if not concept or not concept.strip():
+        return json.dumps({"error": "concept is required"})
+    hops = max(1, min(int(hops or 1), 2))
+    top_k = max(1, min(int(top_k or 15), 50))
+
+    vec = _get_embedding(concept.strip())
+    if not vec:
+        return json.dumps({"error": "embedding failed"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+            cur.execute(
+                """
+                SELECT id, content, section, path, depth,
+                       1 - (embedding <=> %s::vector) AS score
+                FROM text_chunks
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT 30
+                """,
+                (vec_lit, vec_lit),
+            )
+            rows = cur.fetchall()
+
+        scores = {}  # term -> {score, source}
+        for cid, content, section, path, depth, sim in rows:
+            sim = float(sim or 0)
+            # catalog path 节点 (e.g. "1/2/3" or "建筑/安装/电气")
+            if path:
+                for part in str(path).split("/"):
+                    part = part.strip()
+                    if part and part != concept and len(part) >= 2:
+                        s = scores.setdefault(part, {"score": 0, "source": "catalog"})
+                        s["score"] = max(s["score"], sim * 0.95)
+            # section 标题
+            if section and section != concept:
+                s = scores.setdefault(str(section), {"score": 0, "source": "section"})
+                s["score"] = max(s["score"], sim * 0.9)
+            # 内容里的术语
+            for term in _extract_terms(content[:400]):
+                if term == concept or concept in term:
+                    continue
+                s = scores.setdefault(term, {"score": 0, "source": "term"})
+                s["score"] = max(s["score"], sim * 0.7)
+
+        # hop 2: 用 top-3 邻居自动扩展
+        if hops >= 2 and scores:
+            top_seeds = sorted(scores.items(), key=lambda x: -x[1]["score"])[:3]
+            for seed, _ in top_seeds:
+                vec2 = _get_embedding(seed)
+                if not vec2:
+                    continue
+                vec_lit2 = "[" + ",".join(f"{x:.6f}" for x in vec2) + "]"
+                conn2 = _get_pg_conn()
+                try:
+                    with conn2.cursor() as cur:
+                        cur.execute(
+                            "SELECT content, 1 - (embedding <=> %s::vector) "
+                            "FROM text_chunks WHERE embedding IS NOT NULL "
+                            "ORDER BY embedding <=> %s::vector LIMIT 5",
+                            (vec_lit2, vec_lit2),
+                        )
+                        for content, sim2 in cur.fetchall():
+                            for term in _extract_terms(content[:200]):
+                                if term in (concept, seed):
+                                    continue
+                                s = scores.setdefault(term, {"score": 0, "source": "hop2"})
+                                s["score"] = max(s["score"], float(sim2) * 0.5)
+                finally:
+                    _put_pg_conn(conn2)
+
+        ranked = sorted(
+            [{"term": k, "score": round(v["score"], 4), "source": v["source"]} for k, v in scores.items()],
+            key=lambda x: -x["score"],
+        )[:top_k]
+        return json.dumps({"seed": concept, "hops": hops, "neighbors": ranked}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[concept_neighbors] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def concept_path(from_concept: str, to_concept: str, max_hops: int = 4) -> str:
+    """语义桥：找两个概念间的桥梁概念链（embedding 空间插值）。
+    Args: from_concept 起点；to_concept 终点；max_hops 最大跳数 2-6
+    Returns: JSON {from, to, path:[{step,term,sim_to_target}]}
+    """
+    if not from_concept or not to_concept:
+        return json.dumps({"error": "both concepts required"})
+    max_hops = max(2, min(int(max_hops or 4), 6))
+
+    v_from = _get_embedding(from_concept.strip())
+    v_to = _get_embedding(to_concept.strip())
+    if not v_from or not v_to:
+        return json.dumps({"error": "embedding failed"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        path = [{"step": 0, "term": from_concept, "sim_to_target": 0.0}]
+        current_vec = v_from
+        visited = {from_concept, to_concept}
+
+        for step in range(1, max_hops + 1):
+            # 朝目标插值：每步取 step/(max_hops) 比例朝 v_to
+            alpha = step / (max_hops + 1)
+            interp = [(1 - alpha) * a + alpha * b for a, b in zip(current_vec, v_to)]
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in interp) + "]"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT content, section, 1 - (embedding <=> %s::vector) AS sim "
+                    "FROM text_chunks WHERE embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT 8",
+                    (vec_lit, vec_lit),
+                )
+                rows = cur.fetchall()
+
+            picked = None
+            for content, section, sim in rows:
+                candidates = []
+                if section:
+                    candidates.append(str(section))
+                candidates.extend(_extract_terms(content[:300])[:5])
+                for cand in candidates:
+                    if cand and cand not in visited and 2 <= len(cand) <= 12:
+                        picked = (cand, float(sim))
+                        break
+                if picked:
+                    break
+            if not picked:
+                break
+            term, sim = picked
+            visited.add(term)
+            # sim to target
+            vec_term = _get_embedding(term)
+            sim_target = 0.0
+            if vec_term:
+                num = sum(a * b for a, b in zip(vec_term, v_to))
+                da = sum(a * a for a in vec_term) ** 0.5
+                db = sum(b * b for b in v_to) ** 0.5
+                if da and db:
+                    sim_target = num / (da * db)
+            path.append({"step": step, "term": term, "sim_to_target": round(sim_target, 4)})
+            current_vec = vec_term or interp
+            if sim_target > 0.85:
+                break
+
+        path.append({"step": len(path), "term": to_concept, "sim_to_target": 1.0})
+        return json.dumps({"from": from_concept, "to": to_concept, "path": path}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[concept_path] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def entity_cooccur(entity: str, top_k: int = 20) -> str:
+    """共现分析：找与指定实体在同一 chunk 中频繁共现的术语。
+    Args: entity 实体词；top_k 返回数量
+    Returns: JSON {entity, cooccur:[{term,count,sample_chunk_id}]}
+    """
+    if not entity or not entity.strip():
+        return json.dumps({"error": "entity is required"})
+    top_k = max(1, min(int(top_k or 20), 100))
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, content FROM text_chunks "
+                "WHERE content ILIKE %s LIMIT 200",
+                (f"%{entity}%",),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            return json.dumps({"entity": entity, "cooccur": [], "note": "no chunk contains this entity"}, ensure_ascii=False)
+
+        counts = {}  # term -> [count, sample_chunk_id]
+        for cid, content in rows:
+            for term in _extract_terms(content):
+                if term == entity or entity in term or term in entity:
+                    continue
+                if term not in counts:
+                    counts[term] = [0, cid]
+                counts[term][0] += 1
+
+        ranked = sorted(
+            [{"term": k, "count": v[0], "sample_chunk_id": v[1]} for k, v in counts.items()],
+            key=lambda x: -x["count"],
+        )[:top_k]
+        return json.dumps(
+            {"entity": entity, "containing_chunks": len(rows), "cooccur": ranked},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[entity_cooccur] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def upstream_downstream(item: str, direction: str = "both") -> str:
+    """上下游：给定物料/概念，找其 catalog 父/子/兄弟节点 + 文本中的因果短语。
+    Args: item 名称；direction 'up' | 'down' | 'both' (默认)
+    Returns: JSON {item, parents, children, siblings, causal_phrases}
+    """
+    if not item or not item.strip():
+        return json.dumps({"error": "item is required"})
+    direction = (direction or "both").lower()
+    if direction not in ("up", "down", "both"):
+        direction = "both"
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            # catalog hits
+            cur.execute(
+                "SELECT id, file_name, chapter_id, title, path, depth "
+                "FROM catalog_index WHERE title ILIKE %s LIMIT 10",
+                (f"%{item}%",),
+            )
+            cat_hits = cur.fetchall()
+
+            parents, children, siblings = [], [], []
+            for cid, fname, chap, title, path, depth in cat_hits:
+                if not path:
+                    continue
+                # parent: prefix of path
+                if direction in ("up", "both"):
+                    cur.execute(
+                        "SELECT title, path, depth FROM catalog_index "
+                        "WHERE file_name=%s AND %s LIKE path || '/%%' AND depth = %s "
+                        "LIMIT 5",
+                        (fname, path, max(0, (depth or 1) - 1)),
+                    )
+                    for t, p, d in cur.fetchall():
+                        if t and t != title:
+                            parents.append({"title": t, "path": p, "depth": d})
+                if direction in ("down", "both"):
+                    cur.execute(
+                        "SELECT title, path, depth FROM catalog_index "
+                        "WHERE file_name=%s AND path LIKE %s AND depth = %s LIMIT 10",
+                        (fname, path + "/%", (depth or 0) + 1),
+                    )
+                    for t, p, d in cur.fetchall():
+                        children.append({"title": t, "path": p, "depth": d})
+                    cur.execute(
+                        "SELECT title, path FROM catalog_index "
+                        "WHERE file_name=%s AND depth=%s AND path != %s "
+                        "AND path LIKE %s LIMIT 8",
+                        (fname, depth, path, "/".join(path.split("/")[:-1]) + "/%"),
+                    )
+                    for t, p in cur.fetchall():
+                        if t and t != title:
+                            siblings.append({"title": t, "path": p})
+
+            # causal phrases from chunks
+            cur.execute(
+                "SELECT content FROM text_chunks WHERE content ILIKE %s LIMIT 30",
+                (f"%{item}%",),
+            )
+            phrases = []
+            patterns = [
+                _re_r3.compile(rf"({item}[^。;；,，]{{0,30}}?(?:由|包含|包括|含有|组成|构成)[^。;；]{{2,40}})"),
+                _re_r3.compile(rf"((?:由|用于|应用于|适用于)[^。;；]{{2,30}}?{item}[^。;；,，]{{0,20}})"),
+                _re_r3.compile(rf"({item}[^。;；,，]{{0,20}}?(?:用于|适用于|对应)[^。;；]{{2,30}})"),
+            ]
+            seen_phr = set()
+            for (content,) in cur.fetchall():
+                for pat in patterns:
+                    for m in pat.findall(content)[:3]:
+                        m = m.strip()
+                        if m and m not in seen_phr and len(m) <= 80:
+                            seen_phr.add(m)
+                            phrases.append(m)
+                if len(phrases) >= 12:
+                    break
+
+        return json.dumps(
+            {
+                "item": item,
+                "direction": direction,
+                "parents": parents[:6],
+                "children": children[:12],
+                "siblings": siblings[:8],
+                "causal_phrases": phrases[:12],
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[upstream_downstream] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+_QUESTION_TEMPLATES = [
+    "{e}的定义/概念是什么？",
+    "{e}的计算规则/公式是什么？",
+    "{e}的适用范围/条件是什么？",
+    "{e}有哪些类型/分类？",
+    "{e}的标准依据/规范来源？",
+    "{e}的常见单位/计量方式？",
+    "{e}与相关概念的区别？",
+    "{e}的典型应用场景？",
+]
+
+
+@tool
+def expand_question(question: str, n: int = 5) -> str:
+    """问题展开：把一个问题拆成 N 个子问题（实体 × 5W1H 模板）。
+    Args: question 原问题；n 子问数量 (1-10)
+    Returns: JSON {question, sub_questions:[...]}
+    """
+    if not question or not question.strip():
+        return json.dumps({"error": "question is required"})
+    n = max(1, min(int(n or 5), 10))
+
+    entities = _extract_terms(question, min_len=2, max_len=10)[:4]
+    if not entities:
+        return json.dumps({"question": question, "sub_questions": [question], "note": "no entity extracted"}, ensure_ascii=False)
+
+    subs = []
+    seen = set()
+    # 主实体 × 多模板
+    main = entities[0]
+    for tpl in _QUESTION_TEMPLATES:
+        q = tpl.format(e=main)
+        if q not in seen:
+            seen.add(q)
+            subs.append(q)
+        if len(subs) >= n:
+            break
+    # 其它实体 × 1-2 个模板
+    if len(subs) < n:
+        for ent in entities[1:]:
+            for tpl in _QUESTION_TEMPLATES[:3]:
+                q = tpl.format(e=ent)
+                if q not in seen:
+                    seen.add(q)
+                    subs.append(q)
+                if len(subs) >= n:
+                    break
+            if len(subs) >= n:
+                break
+
+    return json.dumps({"question": question, "entities": entities, "sub_questions": subs[:n]}, ensure_ascii=False)
+
+
+@tool
+def suggest_followup(question: str, answer: str, n: int = 3) -> str:
+    """追问建议：用 LLM 基于问答原文生成 N 个上下文相关的追问。
+    Args: question 原问题；answer 回答文本；n 追问数量
+    Returns: JSON {followups:[{question, reason}]}
+    """
+    if not question or not answer:
+        return json.dumps({"error": "question and answer required"})
+    n = max(1, min(int(n or 3), 8))
+
+    try:
+        from app.agent.prompts import invoke_llm
+        from langchain_core.messages import SystemMessage, HumanMessage
+
+        system = (
+            "你是一个工程造价知识库的智能助手。"
+            "根据用户的问题和系统给出的回答，生成若干个自然、深入的追问建议。"
+            "要求：\n"
+            "1. 追问必须基于回答中实际出现的概念或数据，不能凭空造词\n"
+            "2. 追问应是用户看到这个回答后最可能想继续了解的问题\n"
+            "3. 避免模板化措辞，每个追问都应具体且有意义\n"
+            "4. 只输出 JSON，格式：{\"followups\": [{\"question\": \"...\", \"reason\": \"...\"}]}\n"
+            "5. reason 字段说明该追问基于回答中的哪个具体信息点"
+        )
+        user = (
+            f"原问题：{question}\n\n"
+            f"回答（前1200字）：{answer[:1200]}\n\n"
+            f"请生成 {n} 个追问建议。"
+        )
+        response, _ = invoke_llm([SystemMessage(content=system), HumanMessage(content=user)])
+        raw = response.content if hasattr(response, "content") else str(response)
+        # 从 LLM 输出中提取 JSON
+        m = re.search(r'\{.*\}', raw, re.DOTALL)
+        if m:
+            parsed = json.loads(m.group())
+            followups = parsed.get("followups", [])
+            if followups:
+                return json.dumps({"original": question, "followups": followups[:n]}, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"[suggest_followup] LLM call failed: {e}, falling back to entity templates")
+
+    # 降级：实体模板（LLM 不可用时兜底）
+    q_terms = set(_extract_terms(question))
+    a_terms = _extract_terms(answer, max_len=20)  # 放宽长度限制，保留完整实体名
+    new_entities = [t for t in a_terms if t not in q_terms][:4]
+    if not new_entities:
+        return json.dumps({"followups": [], "note": "no new entity in answer"}, ensure_ascii=False)
+    fallback_tpls = [
+        "{ne}的计算规则是什么？",
+        "{ne}的适用范围有哪些限制？",
+        "{ne}与{qe}有什么区别？",
+        "{ne}在哪些场景下需要调整系数？",
+    ]
+    main_q_entity = next(iter(q_terms), "本主题") if q_terms else "本主题"
+    followups = []
+    seen: set = set()
+    for ne in new_entities:
+        for tpl in fallback_tpls:
+            q = tpl.format(ne=ne, qe=main_q_entity)
+            if q not in seen:
+                seen.add(q)
+                followups.append({"question": q, "reason": f"基于回答中出现的「{ne}」"})
+            if len(followups) >= n:
+                break
+        if len(followups) >= n:
+            break
+    return json.dumps({"original": question, "followups": followups[:n]}, ensure_ascii=False)
+
+
+@tool
+def find_knowledge_gaps(question: str, threshold: float = 0.55) -> str:
+    """缺口侦测：把问题拆为子问，对每个子问做 vector_search，标出库中无法回答的部分。
+    Args: question 原问题；threshold 命中阈值 (默认 0.55)
+    Returns: JSON {gaps:[{sub_q,best_score}], covered:[...], advice}
+    """
+    if not question or not question.strip():
+        return json.dumps({"error": "question is required"})
+    threshold = float(threshold or 0.55)
+
+    # 先展开
+    expanded = json.loads(expand_question.invoke({"question": question, "n": 6}))
+    subs = expanded.get("sub_questions", [])
+    if not subs:
+        return json.dumps({"error": "could not expand"})
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        gaps, covered = [], []
+        for sub in subs:
+            vec = _get_embedding(sub)
+            if not vec:
+                continue
+            vec_lit = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 - (embedding <=> %s::vector) FROM text_chunks "
+                    "WHERE embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT 1",
+                    (vec_lit, vec_lit),
+                )
+                row = cur.fetchone()
+            best = float(row[0]) if row else 0.0
+            entry = {"sub_question": sub, "best_score": round(best, 4)}
+            if best < threshold:
+                gaps.append(entry)
+            else:
+                covered.append(entry)
+
+        advice = (
+            f"知识库覆盖 {len(covered)}/{len(subs)} 子问。建议补充以下方向资料："
+            + "; ".join(g["sub_question"] for g in gaps[:3])
+            if gaps
+            else f"知识库完整覆盖该问题的 {len(covered)} 个子方向。"
+        )
+        return json.dumps(
+            {"question": question, "threshold": threshold, "covered": covered, "gaps": gaps, "advice": advice},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        logger.error(f"[find_knowledge_gaps] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Round 4: Data science tools (numpy/pandas/sklearn/scipy)
+# ════════════════════════════════════════════════════════════════════════
+
+def _safe_table_check(table: str) -> bool:
+    return table in _QUERYABLE_TABLES
+
+
+@tool
+def forecast_series(
+    table: str,
+    time_col: str,
+    value_col: str,
+    where: str = "",
+    periods: int = 6,
+    method: str = "linear",
+) -> str:
+    """时间序列预测：对表中某时间序列做未来 N 期预测。
+    Args: table 表名；time_col 时间列；value_col 数值列；where 可选 col='val' 过滤；
+          periods 预测期数 (1-24)；method 'linear' 线性回归 | 'mean' 均值
+    Returns: JSON {history:[{t,v}], forecast:[{t,v_hat,lower,upper}], r2}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", time_col or ""):
+        return json.dumps({"error": "invalid time_col"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", value_col or ""):
+        return json.dumps({"error": "invalid value_col"})
+    periods = max(1, min(int(periods or 6), 24))
+    method = (method or "linear").lower()
+
+    where_sql = ""
+    where_params = []
+    if where:
+        m = _re_r3.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']{1,80})'$", where.strip())
+        if not m:
+            return json.dumps({"error": "where must be: col='value'"})
+        where_sql = f"WHERE {m.group(1)} = %s AND {value_col} IS NOT NULL AND {time_col} IS NOT NULL"
+        where_params = [m.group(2)]
+    else:
+        where_sql = f"WHERE {value_col} IS NOT NULL AND {time_col} IS NOT NULL"
+
+    conn = None
+    try:
+        import numpy as np  # local import
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {time_col}, AVG({value_col}::numeric)::float "
+                f"FROM {table} {where_sql} "
+                f"GROUP BY {time_col} ORDER BY {time_col} LIMIT 200",
+                where_params,
+            )
+            rows = cur.fetchall()
+        if len(rows) < 3:
+            return json.dumps({"error": f"need >=3 points, got {len(rows)}"})
+
+        ts = [str(r[0]) for r in rows]
+        vs = [float(r[1]) for r in rows]
+        x = np.arange(len(vs), dtype=float)
+        y = np.array(vs)
+
+        if method == "mean":
+            y_hat = float(y.mean())
+            std = float(y.std() or 0)
+            forecast = [{"t": f"+{i+1}", "v_hat": round(y_hat, 4),
+                         "lower": round(y_hat - 1.96 * std, 4),
+                         "upper": round(y_hat + 1.96 * std, 4)} for i in range(periods)]
+            r2 = 0.0
+        else:
+            slope, intercept = np.polyfit(x, y, 1)
+            pred_in = slope * x + intercept
+            ss_res = float(((y - pred_in) ** 2).sum())
+            ss_tot = float(((y - y.mean()) ** 2).sum()) or 1e-9
+            r2 = round(1 - ss_res / ss_tot, 4)
+            sigma = float(np.std(y - pred_in)) or 0
+            forecast = []
+            for i in range(periods):
+                xi = len(vs) + i
+                yh = slope * xi + intercept
+                forecast.append({
+                    "t": f"+{i+1}",
+                    "v_hat": round(float(yh), 4),
+                    "lower": round(float(yh - 1.96 * sigma), 4),
+                    "upper": round(float(yh + 1.96 * sigma), 4),
+                })
+
+        return json.dumps({
+            "table": table, "time_col": time_col, "value_col": value_col,
+            "method": method, "n_history": len(vs),
+            "history": [{"t": t, "v": round(v, 4)} for t, v in zip(ts, vs)],
+            "forecast": forecast, "r2": r2,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[forecast_series] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def outlier_detect(table: str, column: str, method: str = "iqr", where: str = "") -> str:
+    """异常值检测：用 IQR 或 zscore 找数值列异常。
+    Args: table 表名；column 数值列；method 'iqr' (默认) | 'zscore'；where 可选过滤
+    Returns: JSON {threshold_lo, threshold_hi, outlier_count, samples:[{rowid,value}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", column or ""):
+        return json.dumps({"error": "invalid column"})
+    method = (method or "iqr").lower()
+    if method not in ("iqr", "zscore"):
+        return json.dumps({"error": "method must be iqr or zscore"})
+
+    where_sql = f"WHERE {column} IS NOT NULL"
+    where_params = []
+    if where:
+        m = _re_r3.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']{1,80})'$", where.strip())
+        if not m:
+            return json.dumps({"error": "where must be: col='value'"})
+        where_sql += f" AND {m.group(1)} = %s"
+        where_params = [m.group(2)]
+
+    conn = None
+    try:
+        import numpy as np
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, {column}::numeric::float FROM {table} {where_sql} LIMIT 10000",
+                where_params,
+            )
+            rows = cur.fetchall()
+        if len(rows) < 5:
+            return json.dumps({"error": f"need >=5 rows, got {len(rows)}"})
+
+        ids = [r[0] for r in rows]
+        vals = np.array([float(r[1]) for r in rows])
+
+        if method == "iqr":
+            q1, q3 = np.percentile(vals, [25, 75])
+            iqr = q3 - q1
+            lo, hi = float(q1 - 1.5 * iqr), float(q3 + 1.5 * iqr)
+            mask = (vals < lo) | (vals > hi)
+        else:
+            mu, sd = float(vals.mean()), float(vals.std() or 1e-9)
+            lo, hi = mu - 3 * sd, mu + 3 * sd
+            mask = np.abs(vals - mu) > 3 * sd
+
+        out_idx = np.where(mask)[0]
+        samples = [{"row_id": int(ids[i]), "value": round(float(vals[i]), 4)} for i in out_idx[:30]]
+        return json.dumps({
+            "table": table, "column": column, "method": method,
+            "n": int(len(vals)),
+            "threshold_lo": round(lo, 4), "threshold_hi": round(hi, 4),
+            "outlier_count": int(mask.sum()),
+            "ratio": round(float(mask.mean()), 4),
+            "samples": samples,
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[outlier_detect] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def correlate(table: str, columns: str, method: str = "pearson") -> str:
+    """相关性矩阵：给定多个数值列，计算两两相关。
+    Args: table 表名；columns 逗号分隔的列名 (2-8 个)；method 'pearson' (默认) | 'spearman'
+    Returns: JSON {columns, matrix:[[...]], top_pairs:[{a,b,corr}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    if not (2 <= len(cols) <= 8):
+        return json.dumps({"error": "columns: 2-8 names, comma separated"})
+    for c in cols:
+        if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c):
+            return json.dumps({"error": f"invalid column: {c}"})
+    method = (method or "pearson").lower()
+    if method not in ("pearson", "spearman"):
+        return json.dumps({"error": "method must be pearson or spearman"})
+
+    conn = None
+    try:
+        import pandas as pd
+        conn = _get_pg_conn()
+        sel = ", ".join(f"{c}::numeric::float AS {c}" for c in cols)
+        where = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {sel} FROM {table} WHERE {where} LIMIT 5000")
+            rows = cur.fetchall()
+        if len(rows) < 5:
+            return json.dumps({"error": f"need >=5 rows, got {len(rows)}"})
+
+        df = pd.DataFrame(rows, columns=cols)
+        corr = df.corr(method=method).round(4)
+        # top pairs
+        pairs = []
+        for i, a in enumerate(cols):
+            for j, b in enumerate(cols):
+                if j <= i:
+                    continue
+                v = float(corr.iloc[i, j])
+                if not (v != v):  # not NaN
+                    pairs.append({"a": a, "b": b, "corr": round(v, 4)})
+        pairs.sort(key=lambda p: -abs(p["corr"]))
+
+        return json.dumps({
+            "table": table, "columns": cols, "method": method,
+            "n": int(len(rows)),
+            "matrix": corr.values.tolist(),
+            "top_pairs": pairs[:10],
+        }, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[correlate] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+@tool
+def cluster_records(table: str, columns: str, k: int = 4, sample_per_cluster: int = 3) -> str:
+    """KMeans 聚类：基于多列把记录分 K 簇，返回每簇统计 + 样本。
+    Args: table；columns 逗号分隔数值列 (2-8)；k 簇数 (2-10)；sample_per_cluster 每簇样本数
+    Returns: JSON {clusters:[{label,size,center,samples}]}
+    """
+    if not _safe_table_check(table):
+        return json.dumps({"error": f"table not allowed: {table}"})
+    cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    if not (2 <= len(cols) <= 8):
+        return json.dumps({"error": "columns: 2-8 names, comma separated"})
+    for c in cols:
+        if not _re_r3.match(r"^[A-Za-z_][A-Za-z0-9_]*$", c):
+            return json.dumps({"error": f"invalid column: {c}"})
+    k = max(2, min(int(k or 4), 10))
+    sample_per_cluster = max(1, min(int(sample_per_cluster or 3), 8))
+
+    conn = None
+    try:
+        import numpy as np
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+        conn = _get_pg_conn()
+        sel = "id, " + ", ".join(f"{c}::numeric::float AS {c}" for c in cols)
+        where = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT {sel} FROM {table} WHERE {where} LIMIT 5000")
+            rows = cur.fetchall()
+        if len(rows) < k * 3:
+            return json.dumps({"error": f"need >={k*3} rows, got {len(rows)}"})
+
+        ids = [r[0] for r in rows]
+        X = np.array([list(r[1:]) for r in rows], dtype=float)
+        Xs = StandardScaler().fit_transform(X)
+        km = KMeans(n_clusters=k, n_init=10, random_state=42).fit(Xs)
+        labels = km.labels_
+
+        clusters = []
+        for cid in range(k):
+            idx = np.where(labels == cid)[0]
+            if len(idx) == 0:
+                continue
+            center = X[idx].mean(axis=0)
+            sample_idx = idx[:sample_per_cluster]
+            samples = [{"row_id": int(ids[i]), **{cols[j]: round(float(X[i, j]), 4) for j in range(len(cols))}} for i in sample_idx]
+            clusters.append({
+                "label": int(cid),
+                "size": int(len(idx)),
+                "center": {cols[j]: round(float(center[j]), 4) for j in range(len(cols))},
+                "samples": samples,
+            })
+        clusters.sort(key=lambda c: -c["size"])
+        return json.dumps({"table": table, "columns": cols, "k": k, "n": int(len(rows)), "clusters": clusters}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"[cluster_records] {e}")
+        return json.dumps({"error": str(e)})
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Round 6 · Sandbox utilities + proactive knowledge explorer
+# Domain-agnostic helpers so the agent can operate on cost data today
+# and pivot to e.g. annual reports tomorrow.
+# ──────────────────────────────────────────────────────────────────────
+
+def regex_extract(text: str, pattern: str, flags: str = "") -> str:
+    """从一段文本里按正则提取所有匹配（含命名分组）。flags: i(忽略大小写) m(多行) s(.匹配换行)"""
+    import re as _re
+    try:
+        flag_val = 0
+        if "i" in flags.lower(): flag_val |= _re.IGNORECASE
+        if "m" in flags.lower(): flag_val |= _re.MULTILINE
+        if "s" in flags.lower(): flag_val |= _re.DOTALL
+        rx = _re.compile(pattern, flag_val)
+        out = []
+        for m in rx.finditer(text or ""):
+            if m.groupdict():
+                out.append({"match": m.group(0), **m.groupdict()})
+            elif m.groups():
+                out.append({"match": m.group(0), "groups": list(m.groups())})
+            else:
+                out.append({"match": m.group(0)})
+            if len(out) >= 200:
+                break
+        return json.dumps({"count": len(out), "matches": out}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+_UNIT_CATEGORIES = {
+    "length":   {"mm": 0.001, "cm": 0.01, "dm": 0.1, "m": 1.0, "km": 1000.0, "寸": 0.0333, "尺": 0.333, "丈": 3.333},
+    "area":     {"mm2": 1e-6, "cm2": 1e-4, "m2": 1.0, "㎡": 1.0, "公顷": 1e4, "亩": 666.6667, "km2": 1e6},
+    "volume":   {"ml": 1e-6, "L": 1e-3, "m3": 1.0, "立方米": 1.0, "㎥": 1.0},
+    "mass":     {"mg": 1e-6, "g": 1e-3, "kg": 1.0, "t": 1000.0, "吨": 1000.0, "斤": 0.5},
+    "currency": {"元": 1.0, "¥": 1.0, "RMB": 1.0, "千元": 1000.0, "万元": 10000.0, "亿元": 1e8},
+    "time":     {"s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0, "工日": 28800.0, "月": 2592000.0, "年": 31536000.0},
+}
+
+def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
+    """单位换算：长度/面积/体积/质量/货币/时间。
+    支持单位：mm/cm/m/km、mm2/m2/㎡、L/m3、g/kg/t、元/万元/亿元、min/h/d/工日 等。"""
+    try:
+        fv = float(value)
+        for cat, table in _UNIT_CATEGORIES.items():
+            if from_unit in table and to_unit in table:
+                base = fv * table[from_unit]
+                result = base / table[to_unit]
+                return json.dumps({
+                    "input": {"value": fv, "unit": from_unit},
+                    "output": {"value": round(result, 8), "unit": to_unit},
+                    "category": cat,
+                    "factor": round(table[from_unit] / table[to_unit], 8),
+                }, ensure_ascii=False)
+        return json.dumps({"error": "unknown_or_mismatched_units",
+                           "supported": {k: list(v.keys()) for k, v in _UNIT_CATEGORIES.items()}},
+                          ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def date_math(operation: str, a: str = "", b: str = "", days: int = 0, fmt: str = "%Y-%m-%d") -> str:
+    """日期算术。operation:
+       - diff:  返回 a - b 的天数差
+       - add:   返回 a + days 的日期
+       - period_diff: a/b 为 YYYY-MM 或 YYYYMM，返回相差月数
+       - quarter: a 为日期，返回所属季度（YYYYQn）"""
+    from datetime import datetime, timedelta
+    try:
+        op = (operation or "").strip().lower()
+        if op == "diff":
+            da = datetime.strptime(a, fmt); db = datetime.strptime(b, fmt)
+            return json.dumps({"days": (da - db).days})
+        if op == "add":
+            da = datetime.strptime(a, fmt)
+            return json.dumps({"date": (da + timedelta(days=int(days))).strftime(fmt)})
+        if op == "period_diff":
+            def parse_p(s: str):
+                s = s.replace("-", "").replace("/", "")
+                return int(s[:4]), int(s[4:6])
+            ya, ma = parse_p(a); yb, mb = parse_p(b)
+            return json.dumps({"months": (ya - yb) * 12 + (ma - mb)})
+        if op == "quarter":
+            da = datetime.strptime(a, fmt)
+            return json.dumps({"quarter": f"{da.year}Q{(da.month - 1) // 3 + 1}"})
+        return json.dumps({"error": f"unknown operation: {operation}",
+                           "supported": ["diff", "add", "period_diff", "quarter"]})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def compare_values(current: float, baseline: float, label: str = "") -> str:
+    """比较两个数值，给出绝对差、百分比变化、基点变化（适合费率/价格对比）。"""
+    try:
+        c = float(current); b = float(baseline)
+        abs_diff = c - b
+        pct = (abs_diff / b * 100.0) if b != 0 else None
+        bp  = abs_diff * 10000.0
+        direction = "up" if abs_diff > 0 else "down" if abs_diff < 0 else "flat"
+        return json.dumps({
+            "label": label,
+            "current": c,
+            "baseline": b,
+            "abs_change": round(abs_diff, 6),
+            "pct_change": round(pct, 4) if pct is not None else None,
+            "bp_change": round(bp, 2),
+            "direction": direction,
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def number_stats(values_json: str) -> str:
+    """对一组数值做描述性统计：均值/中位数/标准差/极值/分位数。values_json 为 JSON 数组。"""
+    try:
+        arr = json.loads(values_json) if isinstance(values_json, str) else list(values_json)
+        nums = [float(x) for x in arr if x is not None]
+        if not nums:
+            return json.dumps({"error": "empty"})
+        import statistics as _st
+        ns = sorted(nums)
+        n = len(ns)
+        def q(p):
+            idx = (n - 1) * p; lo = int(idx); hi = min(lo + 1, n - 1); frac = idx - lo
+            return ns[lo] * (1 - frac) + ns[hi] * frac
+        return json.dumps({
+            "n": n, "min": ns[0], "max": ns[-1],
+            "mean": round(sum(ns) / n, 6),
+            "median": round(_st.median(ns), 6),
+            "stdev": round(_st.pstdev(ns), 6) if n > 1 else 0.0,
+            "p25": round(q(0.25), 6), "p75": round(q(0.75), 6),
+            "p95": round(q(0.95), 6), "p99": round(q(0.99), 6),
+            "sum": round(sum(ns), 6),
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def chart_spec(chart_type: str, data_json: str, title: str = "", x_key: str = "x", y_key: str = "y") -> str:
+    """生成可被前端 recharts 渲染的图表 spec。chart_type: line/bar/pie/area/scatter。
+       data_json 为对象数组 JSON 字符串。返回 {chart_spec: ...} 供前端直接消费。"""
+    try:
+        rows = json.loads(data_json) if isinstance(data_json, str) else data_json
+        if not isinstance(rows, list):
+            return json.dumps({"error": "data_json must be a JSON array of objects"})
+        ct = (chart_type or "line").lower().strip()
+        if ct not in {"line", "bar", "pie", "area", "scatter"}:
+            return json.dumps({"error": f"unknown chart_type: {chart_type}"})
+        return json.dumps({
+            "chart_spec": {
+                "type": ct,
+                "title": title,
+                "x_key": x_key,
+                "y_key": y_key,
+                "data": rows[:200],
+            }
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def proactive_explore(question: str, max_concepts: int = 3, neighbor_top_k: int = 8) -> str:
+    """主动认知 — 从问题里抽取核心概念，沿图谱穿透邻居/上下游/共现实体，
+    把用户没主动问、但极相关的知识点也带回来。返回:
+    { question, concepts:[{name, neighbors:[...], upstream:[...], downstream:[...]}],
+      followups:[...], gaps:[...] }"""
+    out = {"question": question, "concepts": [], "followups": [], "gaps": []}
+    try:
+        # 1. 概念命中
+        concept_raw = concept_search(question, top_k=max_concepts, include_evidence=False)
+        try:
+            concept_payload = json.loads(concept_raw)
+        except Exception:
+            concept_payload = {}
+        concept_hits = (concept_payload or {}).get("concepts") or []
+        seen = set()
+        names: list[str] = []
+        for c in concept_hits:
+            nm = (c.get("concept") or c.get("name") or "").strip()
+            if nm and nm not in seen:
+                seen.add(nm)
+                names.append(nm)
+            if len(names) >= max_concepts:
+                break
+        # 2. 退化为关键词
+        if not names:
+            terms = _extract_terms(question, min_len=2, max_len=8)
+            names = list(dict.fromkeys(terms))[:max_concepts]
+
+        # 3. 对每个概念跑邻居 / 上下游
+        for nm in names:
+            entry = {"concept": nm, "neighbors": [], "upstream": [], "downstream": [], "cooccur": []}
+            try:
+                nb = json.loads(concept_neighbors(nm, hops=1, top_k=neighbor_top_k))
+                entry["neighbors"] = (nb or {}).get("neighbors", [])[:neighbor_top_k]
+            except Exception:
+                pass
+            try:
+                ud = json.loads(upstream_downstream(nm, direction="both"))
+                entry["upstream"]   = (ud or {}).get("upstream", [])[:6]
+                entry["downstream"] = (ud or {}).get("downstream", [])[:6]
+            except Exception:
+                pass
+            try:
+                co = json.loads(entity_cooccur(nm, top_k=6))
+                entry["cooccur"] = (co or {}).get("cooccur", [])[:6]
+            except Exception:
+                pass
+            out["concepts"].append(entry)
+
+        # 4. 追问 + 知识缺口
+        try:
+            fu = json.loads(suggest_followup(question, "", n=3))
+            out["followups"] = (fu or {}).get("suggestions", [])
+        except Exception:
+            pass
+        try:
+            gp = json.loads(find_knowledge_gaps(question, threshold=0.55))
+            out["gaps"] = (gp or {}).get("gaps", [])
+        except Exception:
+            pass
+        return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        out["error"] = str(e)
+        return json.dumps(out, ensure_ascii=False)

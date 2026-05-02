@@ -68,8 +68,8 @@
 
 .service-card.active {
   border-color: var(--color-primary);
-  background: rgba(59, 130, 246, 0.1);
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.1);
+  box-shadow: 0 0 20px rgba(var(--page-accent-rgb), 0.15);
 }
 
 .service-card.healthy {
@@ -254,7 +254,7 @@
 }
 
 .session-item.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
   border-color: var(--color-primary);
 }
 
@@ -386,8 +386,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: rgba(var(--page-accent-rgb), 0.1);
+  border: 1px solid rgba(var(--page-accent-rgb), 0.2);
   border-radius: var(--radius-lg);
   margin-bottom: 14px;
   font-size: var(--text-base);
@@ -707,8 +707,8 @@
 }
 
 .chat-message.user {
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: rgba(var(--page-accent-rgb), 0.1);
+  border: 1px solid rgba(var(--page-accent-rgb), 0.2);
 }
 
 .chat-message.assistant {
@@ -728,7 +728,7 @@
 }
 
 .chat-message.user .message-avatar {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
 }
 
 .chat-message.assistant .message-avatar {
@@ -848,7 +848,7 @@
 }
 
 .inline-ref:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: rgba(var(--page-accent-rgb), 0.2);
 }
 
 .message-meta {
@@ -930,7 +930,7 @@
 .chat-input textarea:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--page-accent-rgb), 0.2);
 }
 
 .chat-input textarea::placeholder {
@@ -1103,7 +1103,7 @@
 
 .temperature-slider::-webkit-slider-thumb:hover {
   transform: scale(1.15);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 12px rgba(var(--page-accent-rgb), 0.6);
   background: var(--color-primary-hover);
 }
 
@@ -1130,7 +1130,7 @@
 
 .temperature-slider::-moz-range-thumb:hover {
   transform: scale(1.15);
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.6);
+  box-shadow: 0 0 12px rgba(var(--page-accent-rgb), 0.6);
   background: var(--color-primary-hover);
 }
 
@@ -1156,7 +1156,7 @@
   font-weight: 700;
   min-width: 36px;
   text-align: center;
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(var(--page-accent-rgb), 0.1);
   padding: 2px 8px;
   border-radius: var(--radius-sm);
 }
@@ -1188,7 +1188,7 @@
 .preset-btn:hover:not(:disabled) {
   border-color: var(--color-primary);
   color: var(--text-primary);
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(var(--page-accent-rgb), 0.1);
 }
 
 .preset-btn.active {
@@ -1228,7 +1228,7 @@
 
 .settings-btn-small:hover:not(:disabled) {
   border-color: var(--color-primary);
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
   transform: scale(1.05);
 }
 
@@ -1378,7 +1378,7 @@
 }
 
 .provider-btn.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
@@ -1419,7 +1419,7 @@
 }
 
 .tab-btn.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
@@ -1903,7 +1903,7 @@ body {
 }
 
 .pipeline-stage-badge.running {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(var(--page-accent-rgb), 0.15);
   color: var(--color-primary);
   border: 1px solid rgba(56, 189, 248, 0.3);
 }

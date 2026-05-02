@@ -13,6 +13,7 @@ import {
   PresentationBlock,
 } from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
+import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
 import { evaluate } from 'mathjs';
 import {
   RadarChart,
@@ -31,11 +32,25 @@ import {
   Line,
 } from 'recharts';
 import './AgentChat.css';
+import { QUICK_QUESTIONS, DOC_TYPE_OPTIONS } from '../config/kb-config';
 
 /* ── Simple Markdown Renderer ───────────────────────── */
-/** Converts **bold**, `code`, and line-breaks to HTML. No external deps. */
+const HTML_ESCAPE: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, ch => HTML_ESCAPE[ch] || ch);
+}
+/** Converts **bold**, `code`, and line-breaks to HTML.
+ *  All input is HTML-escaped first to prevent XSS — only the whitelisted
+ *  bold/code/br tags introduced AFTER escaping remain as live HTML. */
 function renderMarkdown(text: string): string {
-  return text
+  if (text == null) return '';
+  return escapeHtml(String(text))
     // bold
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     // inline code
@@ -875,7 +890,6 @@ const DEFAULT_CONFIG: ConfigState = {
   llmEngine: 'api',
 };
 
-const DOC_TYPE_OPTIONS = ['信息价', '定额', '费率', '指南', '划分'];
 const LLM_ROUTE_OPTIONS: Array<ConfigState['llmRoute']> = ['auto', 'local', 'deepseek'];
 
 function getDefaultModel(route: ConfigState['llmRoute']): string {
@@ -893,6 +907,7 @@ function getDefaultEngine(route: ConfigState['llmRoute']): string {
 export const AgentChat: React.FC = () => {
   const { messages, isLoading, sendMessage, clearMessages, cancelStream, sessionId } = useAgent();
   const [input, setInput] = useState('');
+  const [pendingInput, setPendingInput] = useState<string | null>(null);
   const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -901,8 +916,34 @@ export const AgentChat: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Auto-fire queued message when stream finishes
+  useEffect(() => {
+    if (!isLoading && pendingInput !== null) {
+      const text = pendingInput;
+      setPendingInput(null);
+      const agentConfig: AgentConfig = {
+        maxIterations: config.maxIterations,
+        scoreThreshold: config.scoreThreshold,
+        topK: config.topK,
+        searchMode: config.searchMode,
+        docTypes: config.docTypes,
+        llmRoute: config.llmRoute,
+        llmProvider: config.llmRoute === 'auto' ? undefined : config.llmRoute,
+        llmModel: config.llmModel,
+        llmEngine: config.llmEngine,
+      };
+      sendMessage(text, agentConfig);
+      inputRef.current?.focus();
+    }
+  }, [isLoading]);
+
   const handleSend = () => {
-    if (!input.trim() || isLoading) return;
+    if (!input.trim()) return;
+    if (isLoading) {
+      setPendingInput(input.trim());
+      setInput('');
+      return;
+    }
     const agentConfig: AgentConfig = {
       maxIterations: config.maxIterations,
       scoreThreshold: config.scoreThreshold,
@@ -961,7 +1002,7 @@ export const AgentChat: React.FC = () => {
                   }))
                 }
               >
-                {route}
+                {route === 'auto' ? '自动' : route === 'local' ? '本地' : route === 'deepseek' ? 'DeepSeek' : route}
               </button>
             ))}
           </div>
@@ -985,7 +1026,7 @@ export const AgentChat: React.FC = () => {
                 className={`mode-btn ${config.llmEngine === engine ? 'active' : ''}`}
                 onClick={() => setConfig((c) => ({ ...c, llmEngine: engine }))}
               >
-                {engine}
+                {engine === 'api' ? '云端API' : '本地推理'}
               </button>
             ))}
           </div>
@@ -1000,7 +1041,7 @@ export const AgentChat: React.FC = () => {
                 className={`mode-btn ${config.searchMode === m ? 'active' : ''}`}
                 onClick={() => setConfig((c) => ({ ...c, searchMode: m }))}
               >
-                {m}
+                {m === 'hybrid' ? '混合' : m === 'vector' ? '向量' : m === 'text' ? '文本' : '价格'}
               </button>
             ))}
           </div>
@@ -1077,7 +1118,12 @@ export const AgentChat: React.FC = () => {
             <WelcomeScreen onQuickAsk={(q) => sendMessage(q, config)} />
           ) : (
             messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} sessionId={sessionId} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                sessionId={sessionId}
+                onFollowupClick={(q) => sendMessage(q, config)}
+              />
             ))
           )}
           {isLoading && <StreamingBubble />}
@@ -1093,9 +1139,8 @@ export const AgentChat: React.FC = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="输入造价相关问题…"
+                placeholder={pendingInput ? `排队中：${pendingInput.slice(0, 30)}…` : '请输入您的问题…'}
                 rows={1}
-                disabled={isLoading}
               />
               {isLoading ? (
                 <button className="cancel-btn" onClick={cancelStream}>停止</button>
@@ -1114,7 +1159,9 @@ export const AgentChat: React.FC = () => {
             </div>
           </div>
           <div className="input-hints">
-            <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
+            <span className="hint-text">
+              {pendingInput ? `⏳ 排队中 — 流式结束后自动发送` : 'Enter 发送 · 流式中自动排队'}
+            </span>
             <div className="input-meta-actions">
               {input.length > 0 && <span className="char-count">{input.length}</span>}
               {messages.length > 0 && (
@@ -1135,18 +1182,11 @@ export const AgentChat: React.FC = () => {
 
 /* ── Welcome Screen ──────────────────────────────────── */
 
-const QUICK_QUESTIONS = [
-  '2025版费率标准中，企业管理费的计算方法是什么？',
-  '某工程人工费500万，按2025版费率计算企业管理费是多少？',
-  '2026年1月普通硅酸盐水泥P.O 42.5的含税价格是多少？',
-  '一般计税与简易计税的适用条件分别是什么？',
-];
-
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">
     <div className="welcome-content">
-      <h1 className="welcome-title">造价知识问答</h1>
-      <p className="welcome-desc">深圳市建设工程定额 · 费率标准 · 信息价</p>
+      <h1 className="welcome-title">智能知识问答</h1>
+      <p className="welcome-desc">基于企业知识库，智能检索 · 精准解答</p>
       <div className="quick-questions">
         {QUICK_QUESTIONS.map((q, i) => (
           <button key={i} className="quick-question-btn" onClick={() => onQuickAsk(q)}>
@@ -1160,15 +1200,27 @@ const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickA
 
 /* ── Message Bubble ──────────────────────────────────── */
 
-const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }> = ({
-  message,
-  sessionId,
-}) => {
+const SOURCE_LABELS: Record<string, string> = {
+  llm_followup: '追问',
+  graph_neighbor: '图谱邻居',
+  graph_upstream: '上游',
+  graph_downstream: '下游',
+  gap: '缺口',
+};
+const labelSource = (s: string): string => SOURCE_LABELS[s] || s || '';
+
+const MessageBubble: React.FC<{
+  message: ChatMessage;
+  sessionId: string | null;
+  onFollowupClick?: (q: string) => void;
+}> = ({ message, sessionId, onFollowupClick }) => {
   const [showDetail, setShowDetail] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [pendingRating, setPendingRating] = useState<1 | -1 | null>(null);
 
-  const sendFeedback = async (rating: number) => {
-    if (!sessionId || feedbackSent !== null) return;
+  const sendFeedback = async (rating: number, detail?: FeedbackDetail) => {
+    if (!sessionId) return;
     try {
       await submitFeedback({
         session_id: sessionId,
@@ -1176,11 +1228,32 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
         rating,
         query: undefined,
         answer_summary: message.content.slice(0, 200),
+        ...(detail ?? {}),
       });
       setFeedbackSent(rating);
     } catch (e) {
       console.error('Feedback error', e);
     }
+  };
+
+  const handleThumb = (rating: 1 | -1) => {
+    if (feedbackSent !== null) return;
+    sendFeedback(rating);
+    setPendingRating(rating);
+    setShowFeedbackModal(true);
+  };
+
+  const handleModalSubmit = (detail: FeedbackDetail) => {
+    if (!sessionId || pendingRating === null) return;
+    submitFeedback({
+      session_id: sessionId,
+      message_id: message.id,
+      rating: pendingRating,
+      answer_summary: message.content.slice(0, 200),
+      ...detail,
+    }).catch(console.error);
+    setShowFeedbackModal(false);
+    setPendingRating(null);
   };
 
   if (message.error) {
@@ -1237,7 +1310,7 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
             <div className="feedback-btns">
               <button
                 className={`feedback-btn ${feedbackSent === 1 ? 'active' : ''}`}
-                onClick={() => sendFeedback(1)}
+                onClick={() => handleThumb(1)}
                 title="有帮助"
                 disabled={feedbackSent !== null}
               >
@@ -1245,19 +1318,69 @@ const MessageBubble: React.FC<{ message: ChatMessage; sessionId: string | null }
               </button>
               <button
                 className={`feedback-btn ${feedbackSent === -1 ? 'active' : ''}`}
-                onClick={() => sendFeedback(-1)}
+                onClick={() => handleThumb(-1)}
                 title="没帮助"
                 disabled={feedbackSent !== null}
               >
                 👎
               </button>
+              {feedbackSent !== null && (
+                <button
+                  className="feedback-btn detail-review"
+                  onClick={() => { setPendingRating(feedbackSent as 1 | -1); setShowFeedbackModal(true); }}
+                  title="详细点评"
+                >
+                  点评
+                </button>
+              )}
             </div>
+
+            {showFeedbackModal && pendingRating !== null && (
+              <FeedbackModal
+                initialRating={pendingRating}
+                onSubmit={handleModalSubmit}
+                onClose={() => setShowFeedbackModal(false)}
+              />
+            )}
 
             {message.chunks && message.chunks.length > 0 && (
               <button className="detail-toggle" onClick={() => setShowDetail(!showDetail)}>
                 {showDetail ? '收起 ▲' : '详情 ▼'}
               </button>
             )}
+          </div>
+        )}
+
+        {message.role === 'assistant' && message.followups && message.followups.length > 0 && (
+          <div className="followup-chips">
+            <div className="followup-label">🔗 顺着这条线继续探</div>
+            <div className="followup-list">
+              {message.followups.slice(0, 6).map((f, i) => {
+                const tier = f.coverage_tier || 'high';
+                const score = typeof f.coverage_score === 'number' ? f.coverage_score : null;
+                const tipParts = [
+                  f.reason || f.source,
+                  score !== null ? `KB 覆盖 ${(score * 100).toFixed(0)}% (${tier})` : null,
+                  typeof f.coverage_chunks === 'number' ? `${f.coverage_chunks} 命中` : null,
+                ].filter(Boolean);
+                return (
+                  <button
+                    key={i}
+                    className={`followup-chip src-${(f.source || 'llm').replace(/[^a-z_]/g, '')} tier-${tier}`}
+                    title={tipParts.join(' · ')}
+                    onClick={() => onFollowupClick?.(f.question)}
+                  >
+                    <span className="chip-q">{f.question}</span>
+                    <span className="chip-src">{labelSource(f.source)}</span>
+                    {tier !== 'high' && (
+                      <span className={`chip-tier tier-${tier}`}>
+                        {tier === 'med' ? '· 部分' : '· 弱'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 

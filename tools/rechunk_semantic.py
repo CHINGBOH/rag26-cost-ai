@@ -32,6 +32,10 @@ from typing import Optional
 import psycopg2
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
+# tools/path_utils sibling import; this file lives at tools/rechunk_semantic.py
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from tools.path_utils import compute_chunk_path  # noqa: E402
+
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "backend" / "retrieval-service"))
 
@@ -357,18 +361,20 @@ def insert_chunks(conn, chunks: list[dict], file_name: str, doc_id: Optional[int
     with conn.cursor() as cur:
         for i, ch in enumerate(chunks):
             sec = ch["metadata"].get("subsection") or ch["metadata"].get("section") or ch["metadata"].get("chapter")
-            meta = json.dumps({
+            meta_dict = {
                 "chapter":    ch["metadata"].get("chapter"),
                 "section":    ch["metadata"].get("section"),
                 "subsection": ch["metadata"].get("subsection"),
                 "breadcrumb": ch["breadcrumb"],
                 "chunk_type": ch["chunk_type"],
-            })
+            }
+            meta = json.dumps(meta_dict)
+            chunk_path, chunk_depth = compute_chunk_path(file_name, meta_dict)
             cur.execute(
                 """
                 INSERT INTO text_chunks
-                    (doc_id, file_name, chunk_index, content, page_number, section, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    (doc_id, file_name, chunk_index, content, page_number, section, metadata, path, depth)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                 """,
                 (
                     doc_id,
@@ -378,6 +384,8 @@ def insert_chunks(conn, chunks: list[dict], file_name: str, doc_id: Optional[int
                     ch["page_number"],
                     sec,
                     meta,
+                    chunk_path,
+                    chunk_depth,
                 ),
             )
             inserted += 1
@@ -487,6 +495,14 @@ def process_file(stem: str, dry_run: bool = False) -> dict:
         last_lines = result.stdout.strip().split("\n")[-5:]
         for ln in last_lines:
             print(f"    {ln}")
+
+    # 8. Backfill parent_summary into metadata (#46 contextual enrichment)
+    try:
+        print(f"  Backfilling parent_summary ...")
+        from tools.backfill_parent_summary import main as _ps_main
+        _ps_main()
+    except Exception as e:
+        print(f"  [WARNING] parent_summary backfill failed: {e}")
 
     elapsed = time.time() - t0
     print(f"  Done in {elapsed:.1f}s")

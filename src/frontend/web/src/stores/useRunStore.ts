@@ -127,6 +127,15 @@ export interface PresentationPayload {
   support_label?: string;
 }
 
+export interface FollowupSuggestion {
+  question: string;
+  source: string;
+  reason?: string;
+  coverage_score?: number;
+  coverage_tier?: 'high' | 'med' | 'low';
+  coverage_chunks?: number;
+}
+
 export interface RunState {
   runId: string | null;
   isStreaming: boolean;
@@ -142,6 +151,7 @@ export interface RunState {
   loopStates: LoopState[];
   evalScores: EvalScores | null;
   presentation: PresentationPayload | null;
+  followups: FollowupSuggestion[];
 
   finalIterations: number;
   finalLatencyMs: number;
@@ -163,6 +173,7 @@ export interface RunState {
   addLoopState: (ls: LoopState) => void;
   setEvalScores: (scores: EvalScores) => void;
   setPresentation: (payload: PresentationPayload | null) => void;
+  setFollowups: (items: FollowupSuggestion[]) => void;
   finishRun: (data: {
     answer: string;
     iterations: number;
@@ -171,6 +182,7 @@ export interface RunState {
     tokens_out?: number;
     tokens_think?: number;
     presentation?: PresentationPayload | null;
+    followups?: FollowupSuggestion[];
   }) => void;
   clearRun: () => void;
 }
@@ -189,6 +201,7 @@ export const useRunStore = create<RunState>((set) => ({
   loopStates: [],
   evalScores: null,
   presentation: null,
+  followups: [],
   finalIterations: 0,
   finalLatencyMs: 0,
   tokensIn: 0,
@@ -210,6 +223,7 @@ export const useRunStore = create<RunState>((set) => ({
       loopStates: [],
       evalScores: null,
       presentation: null,
+      followups: [],
       finalIterations: 0,
       finalLatencyMs: 0,
       tokensIn: 0,
@@ -241,6 +255,7 @@ export const useRunStore = create<RunState>((set) => ({
   addLoopState: (ls) => set((s) => ({ loopStates: [...s.loopStates, ls] })),
   setEvalScores: (scores) => set({ evalScores: scores }),
   setPresentation: (payload) => set({ presentation: payload }),
+  setFollowups: (items) => set({ followups: items || [] }),
 
   finishRun: (data) =>
     set({
@@ -253,6 +268,7 @@ export const useRunStore = create<RunState>((set) => ({
       tokensOut: data.tokens_out ?? 0,
       tokensThink: data.tokens_think ?? 0,
       presentation: data.presentation ?? null,
+      followups: data.followups ?? [],
     }),
 
   clearRun: () =>
@@ -270,5 +286,6 @@ export const useRunStore = create<RunState>((set) => ({
       loopStates: [],
       evalScores: null,
       presentation: null,
+      followups: [],
     }),
 }));

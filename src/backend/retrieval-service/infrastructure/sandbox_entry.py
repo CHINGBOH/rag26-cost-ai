@@ -12,6 +12,8 @@ Docker 沙箱内的 Python 代码执行入口
 import ast
 import io
 import json
+import math as _math
+import statistics as _statistics
 import sys
 import traceback
 from decimal import Decimal, ROUND_HALF_UP
@@ -75,6 +77,20 @@ SAFE_BUILTINS = {
     # 数学
     "abs": abs, "round": round, "max": max, "min": min, "sum": sum,
     "pow": pow, "divmod": divmod,
+    # math 模块常用函数（直接注入，无需 import）
+    "sqrt": _math.sqrt, "ceil": _math.ceil, "floor": _math.floor,
+    "log": _math.log, "log10": _math.log10, "log2": _math.log2,
+    "exp": _math.exp, "fabs": _math.fabs, "factorial": _math.factorial,
+    "gcd": _math.gcd, "isnan": _math.isnan, "isinf": _math.isinf,
+    "pi": _math.pi, "e": _math.e, "tau": _math.tau, "inf": _math.inf,
+    "sin": _math.sin, "cos": _math.cos, "tan": _math.tan,
+    "asin": _math.asin, "acos": _math.acos, "atan": _math.atan, "atan2": _math.atan2,
+    "degrees": _math.degrees, "radians": _math.radians,
+    "hypot": _math.hypot, "trunc": _math.trunc, "comb": _math.comb, "perm": _math.perm,
+    # statistics 模块常用函数
+    "mean": _statistics.mean, "median": _statistics.median,
+    "stdev": _statistics.stdev, "variance": _statistics.variance,
+    "fmean": _statistics.fmean,
     # 迭代
     "len": len, "range": range, "enumerate": enumerate, "zip": zip,
     "sorted": sorted, "reversed": reversed, "map": map, "filter": filter,

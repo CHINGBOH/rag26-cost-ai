@@ -5,12 +5,34 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 export interface ServiceHealth {
-  status: 'healthy' | 'degraded' | 'unhealthy';
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'not_running';
   latency_ms: number;
+  critical?: boolean;
+  role?: string;
+  status_code?: number;
+  error?: string;
+}
+
+export interface HealthSummary {
+  overall: 'ok' | 'degraded' | 'down';
+  critical_total: number;
+  critical_healthy: number;
+}
+
+export interface SystemMetrics {
+  load_1m?: number;
+  load_5m?: number;
+  load_15m?: number;
+  mem_total_mb?: number;
+  mem_available_mb?: number;
+  mem_used_pct?: number;
+  cpu_count?: number;
 }
 
 export interface HealthDetailResponse {
   services: Record<string, ServiceHealth>;
+  summary?: HealthSummary;
+  system?: SystemMetrics;
   timestamp: string;
 }
 
@@ -40,14 +62,65 @@ export async function getLlmMetrics(): Promise<LlmMetricsResponse> {
   }
 }
 
-export async function submitFeedback(data: {
+export interface FeedbackDetail {
   session_id: string;
   message_id: string;
   rating: number;
   comment?: string;
   query?: string;
   answer_summary?: string;
-}): Promise<{ status: string; message_id: string }> {
+  overall_rating?: number;
+  rating_relevance?: number;
+  rating_accuracy?: number;
+  rating_completeness?: number;
+  praise?: string;
+  criticism?: string;
+  suggestion?: string;
+  tags?: string[];
+}
+
+export interface ConversationTurn {
+  id: number;
+  session_id: string;
+  turn_index: number;
+  user_content: string;
+  assistant_content: string;
+  source: string;
+  status: string;
+  latency_ms: number | null;
+  ts: string;
+}
+
+export interface FeedbackRecord {
+  ts: string;
+  session_id: string;
+  message_id: string;
+  rating: number;
+  overall_rating: number | null;
+  rating_relevance: number | null;
+  rating_accuracy: number | null;
+  rating_completeness: number | null;
+  praise: string | null;
+  criticism: string | null;
+  suggestion: string | null;
+  tags: string[] | null;
+  query: string | null;
+  answer_summary: string | null;
+}
+
+export interface FeedbackStats {
+  records: FeedbackRecord[];
+  summary: {
+    positive: number;
+    negative: number;
+    total: number;
+    avg_overall_rating: number | null;
+  };
+  trend: Array<{ day: string; positive: number; total: number }>;
+  error?: string;
+}
+
+export async function submitFeedback(data: FeedbackDetail): Promise<{ status: string; message_id: string }> {
   const res = await fetch(`${API_BASE}/api/v1/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -55,4 +128,355 @@ export async function submitFeedback(data: {
   });
   if (!res.ok) throw new Error(`Feedback API error: ${res.status}`);
   return res.json();
+}
+
+// ── Ops Metrics ──────────────────────────────────────────────────────────────
+
+export interface OpsMetricsResponse {
+  window_sec: number;
+  requests: number;
+  qps: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  error_rate: number;
+  by_status: Record<string, number>;
+  top_paths: Array<{ path: string; count: number }>;
+  qps_buckets: number[];
+  total_recorded?: number;
+}
+
+export async function getOpsMetrics(windowSec = 60): Promise<OpsMetricsResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/ops/metrics?window_sec=${windowSec}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+// ── Learning ─────────────────────────────────────────────────────────────────
+
+export interface LearningRun {
+  ts: string;
+  query: string;
+  query_type: string;
+  answer: string;
+  iterations: number;
+  chunks_count: number;
+  tools_used: string[];
+  evaluation: {
+    confidence: number;
+    information_gain: number;
+    completeness: number;
+    consistency: number;
+  };
+  quality: 'good' | 'weak' | 'failure' | string;
+  refused: boolean;
+  runtime: { provider?: string; model?: string };
+}
+
+export interface LearningSummary {
+  total_runs: number;
+  by_quality: Record<string, number>;
+  refused_count: number;
+  avg_confidence: number;
+  tool_frequency: Record<string, number>;
+  type_frequency: Record<string, number>;
+  feedback: { positive: number; negative: number; total: number };
+}
+
+export interface LearningGap {
+  query: string;
+  ts: string;
+  quality: string;
+  refused: boolean;
+  chunks_count: number;
+  confidence: number;
+  answer_preview: string;
+}
+
+export async function getLearningSummary(): Promise<LearningSummary | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/summary`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLearningRuns(limit = 50, quality?: string): Promise<LearningRun[]> {
+  try {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (quality) q.set('quality', quality);
+    const res = await fetch(`${API_BASE}/api/v1/learning/runs?${q}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.runs || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getLearningGaps(limit = 30): Promise<LearningGap[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps?limit=${limit}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.gaps || [];
+  } catch {
+    return [];
+  }
+}
+
+// ── System ───────────────────────────────────────────────────────────────────
+
+export interface SystemVersion {
+  git_sha: string;
+  git_branch: string;
+  python_version: string;
+  platform: string;
+  service_start_ts: number;
+}
+
+export interface SystemConfig {
+  llm: { provider: string; model: string; route?: string; base_url?: string; max_tokens?: number; temperature?: number };
+  embedding: { model: string; backend?: string; dim?: number };
+  retrieval: { default_top_k?: number; score_threshold?: number; max_iterations?: number; rrf_k?: number };
+  stores: Record<string, string>;
+}
+
+export interface SystemKb {
+  chunks_total: number | null;
+  documents_total: number | null;
+  concepts_total: number | null;
+  relations_total: number | null;
+  price_records_total: number | null;
+  chunks_by_source: Array<{ source: string; count: number }>;
+  latest_chunk_ts: string | null;
+  error?: string;
+}
+
+export async function getSystemVersion(): Promise<SystemVersion | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/version`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+export async function getSystemConfig(): Promise<SystemConfig | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/config`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+export async function getSystemKb(): Promise<SystemKb | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/system/kb`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+export interface ArchitectureStore {
+  role?: string;
+  available: boolean;
+  version?: string;
+  chunk_count?: number;
+  collections?: string[];
+  collection_count?: number;
+  cluster_status?: string;
+  nodes?: number;
+  index?: string;
+  index_exists?: boolean;
+  extensions?: Record<string, boolean>;
+  error?: string;
+  [k: string]: unknown;
+}
+
+export interface ArchitectureLive {
+  generated_at: string;
+  stores: Record<string, ArchitectureStore>;
+  summary?: { available?: number; total?: number };
+}
+
+export async function getArchitectureLive(): Promise<ArchitectureLive | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/architecture/live`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Blind-spot clusters ──────────────────────────────────────────────────────
+
+export interface BlindspotCluster {
+  representative: string;
+  size: number;
+  queries: string[];
+  refused_count?: number;
+  avg_chunks?: number;
+  avg_confidence?: number;
+  diagnosis: string;
+}
+
+export interface BlindspotResponse {
+  clusters: BlindspotCluster[];
+  total_bad: number;
+  note?: string;
+}
+
+export async function getLearningBlindspots(minSize = 2): Promise<BlindspotResponse | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/blindspots?min_size=${minSize}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Agent traces (R9) ────────────────────────────────────────────────────────
+
+export interface AgentTraceSummary {
+  trace_id: string;
+  query: string;
+  started_ts: number;
+  ended_ts?: number;
+  duration_ms?: number;
+  node_count: number;
+  answer_preview?: string;
+  query_type?: string;
+  iterations?: number;
+}
+
+export interface AgentTraceNode {
+  version: number;
+  node: string;
+  ts: number;
+  latency_ms: number;
+  iteration_at_entry?: number;
+  delta_keys: string[];
+  delta_summary: Record<string, unknown>;
+  tool_calls: Array<{ tool: string; args?: unknown; status?: string; duration_ms?: number }>;
+  error?: string;
+}
+
+export interface AgentTrace {
+  trace_id: string;
+  query: string;
+  started_ts: number;
+  ended_ts?: number;
+  duration_ms?: number;
+  nodes: AgentTraceNode[];
+  query_type?: string;
+  iterations?: number;
+  answer_preview?: string;
+}
+
+export async function getAgentTraces(limit = 30): Promise<AgentTraceSummary[]> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/agent/traces?limit=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.traces || [];
+  } catch { return []; }
+}
+
+export async function getAgentTrace(id: string): Promise<AgentTrace | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/agent/trace/${id}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Pipeline jobs (R10) ──────────────────────────────────────────────────────
+
+export interface PipelineJob {
+  job_id: string;
+  file_name: string;
+  file_size?: number;
+  status: 'queued' | 'ocr' | 'chunk' | 'embed' | 'ingest' | 'done' | 'failed';
+  created_at?: string;
+  updated_at?: string;
+  duration_ms?: number;
+  ocr_pages?: number;
+  text_chars?: number;
+  chunks_total?: number;
+  chunks_inserted?: number;
+  doc_id?: string;
+  error?: string;
+  ocr_unavailable?: boolean;
+}
+
+export async function pipelineUpload(file: File): Promise<{ ok: boolean; job_id?: string; error?: string }> {
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/upload`, { method: 'POST', body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: d.detail || `HTTP ${r.status}` };
+    return { ok: true, job_id: d.job_id };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'network error' };
+  }
+}
+
+export async function getPipelineJobs(limit = 50): Promise<PipelineJob[]> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/jobs?limit=${limit}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.jobs || [];
+  } catch { return []; }
+}
+
+export async function getPipelineJob(id: string): Promise<PipelineJob | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/pipeline/job/${id}`);
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Learning Loop: conversations + feedback stats ─────────────────────────────
+
+export async function getConversations(limit = 50, source?: string): Promise<ConversationTurn[]> {
+  try {
+    const qs = source ? `?limit=${limit}&source=${source}` : `?limit=${limit}`;
+    const r = await fetch(`${API_BASE}/api/v1/learning/conversations${qs}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.turns || [];
+  } catch { return []; }
+}
+
+export async function getFeedbackStats(limit = 100): Promise<FeedbackStats | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/feedback-stats?limit=${limit}`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+export interface LearningEngineStatus {
+  trigger_mode: string;
+  trigger_description: string;
+  trigger_conditions: Array<{ name: string; active: boolean; command?: string; note?: string }>;
+  last_run: {
+    ts?: string;
+    file?: string;
+    file_mtime?: string;
+    summary?: { total?: number; passed?: number; ok?: number; avg_confidence?: number };
+    result_count?: number;
+    error?: string;
+  };
+  signals_24h: {
+    weak_or_failed_runs: number;
+    pending_negative_feedback_with_text: number;
+  };
+  next_actions: string[];
+}
+
+export async function getLearningEngine(): Promise<LearningEngineStatus | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/engine`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
 }

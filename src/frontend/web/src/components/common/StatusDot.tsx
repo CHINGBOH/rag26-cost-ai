@@ -14,9 +14,9 @@ interface StatusDotProps {
 
 function classify(status: string): StatusKind {
   const s = status.toLowerCase();
-  if (s === 'healthy' || s === 'ok' || s === 'online' || s === '在线') return 'healthy';
+  if (s === 'healthy' || s === 'ok' || s === 'online' || s === 'available' || s === '在线') return 'healthy';
   if (s === 'degraded' || s === 'warn' || s === 'warning') return 'degraded';
-  if (s === 'unknown' || s === '—' || !s) return 'unknown';
+  if (s === 'unknown' || s === '—' || s === '未配置' || s === 'not_running' || s === 'not running' || s === '未启用' || !s) return 'unknown';
   return 'unhealthy';
 }
 

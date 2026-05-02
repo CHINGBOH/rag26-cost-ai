@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // createReverseProxy builds a reverse proxy for the given target URL.
@@ -21,6 +22,9 @@ func createReverseProxy(targetURL string) *httputil.ReverseProxy {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// Wrap default transport so outbound spans get created and traceparent
+	// header is injected for downstream service correlation.
+	proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
@@ -105,18 +109,26 @@ func getRouteMapping() map[string]string {
 		"/api/v1/documents": "python",
 		"/api/stats":        "python",
 		"/api/v1/stats":     "python",
-		"/api/search":       "retrieval",
-		"/api/v1/sandbox":   "retrieval",
-		"/api/v1/search":    "retrieval",
-		"/api/v1/rerank":    "retrieval",
-		"/api/v1/evaluate":  "retrieval",
-		"/api/v1/decompose": "retrieval",
-		"/api/v1/rag":       "retrieval",
-		"/api/v1/agent":     "retrieval",
-		"/api/v1/feedback":  "retrieval",
-		"/api/v1/metrics":   "retrieval",
-		"/api/v1/health":    "retrieval",
-		"/api/retrieval":    "retrieval",
+		"/api/search":             "retrieval",
+		"/api/v1/sandbox":         "retrieval",
+		"/api/v1/tools":           "retrieval",
+		"/api/v1/search":          "retrieval",
+		"/api/v1/rerank":          "retrieval",
+		"/api/v1/evaluate":        "retrieval",
+		"/api/v1/decompose":       "retrieval",
+		"/api/v1/rag":             "retrieval",
+		"/api/v1/agent":           "retrieval",
+		"/api/v1/feedback":        "retrieval",
+		"/api/v1/metrics":         "retrieval",
+		"/api/v1/health":          "retrieval",
+		"/api/retrieval":          "retrieval",
+		"/api/v1/system-kb":       "retrieval",
+		"/api/v1/guide-agent":     "retrieval",
+		"/api/v1/learning":        "retrieval",
+		"/api/v1/ops":             "retrieval",
+		"/api/v1/pipeline":        "retrieval",
+		"/api/v1/architecture":    "retrieval",
+		"/api/v1/collections":     "retrieval",
 		"/api/generate":     "llm",
 		"/api/chat":         "llm",
 		"/ws":               "websocket",

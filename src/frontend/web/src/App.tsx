@@ -5,12 +5,12 @@
 
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { ThemeToggle } from './components/common/ThemeToggle';
-import { initTheme } from './config/theme';
 
 // Core pages
+import { LibraryPage } from './pages/LibraryPage';
 import { AgentChat } from './pages/AgentChat';
 import { AgentManagePage } from './pages/AgentManagePage';
+import { AgentRuntimePage } from './pages/AgentRuntimePage';
 import { SearchPage } from './pages/SearchPage';
 import { PipelinePage } from './pages/PipelinePage';
 import { SystemPage } from './pages/SystemPage';
@@ -26,54 +26,77 @@ import './App.css';
 import './styles/theme.css';
 
 const NAV_ITEMS = [
-  { path: '/', label: 'Agent' },
-  { path: '/search', label: '检索' },
-  { path: '/pipeline', label: '管道' },
-  { path: '/ops', label: '运维' },
-  { path: '/system', label: '系统' },
-  { path: '/learning', label: '学习' },
-  { path: '/agents', label: 'Agents' },
-] as const;
+  { path: '/', label: '咨询馆员', icon: '📚' },
+  { path: '/runtime', label: '运行时', icon: '⚡' },
+  { path: '/search', label: '检索', icon: '🔍' },
+  { path: '/pipeline', label: '管道', icon: '⛓' },
+  { path: '/ops', label: '运维', icon: '🛡' },
+  { path: '/system', label: '系统', icon: '⚙' },
+  { path: '/learning', label: '学习', icon: '🧠' },
+  { path: '/agents', label: 'Agent', icon: '🤖' },
+];
+
+const ROUTE_MODULE: [string, string][] = [
+  ['/runtime', 'runtime'],
+  ['/search',   'search'],
+  ['/pipeline', 'pipeline'],
+  ['/ops',      'ops'],
+  ['/system',   'system'],
+  ['/learning', 'learning'],
+  ['/agents',   'agents'],
+  ['/pro',      'library'],
+  ['/',         'library'],
+];
+
+function getModule(pathname: string): string {
+  for (const [prefix, mod] of ROUTE_MODULE) {
+    if (pathname === prefix || (prefix !== '/' && pathname.startsWith(prefix + '/'))) {
+      return mod;
+    }
+  }
+  return 'library';
+}
 
 function Navigation() {
   const location = useLocation();
+
+  useEffect(() => {
+    document.documentElement.dataset.module = getModule(location.pathname);
+  }, [location.pathname]);
 
   return (
     <header className="app-nav">
       <div className="nav-brand">
         <span className="nav-mark">R</span>
-        <span className="nav-title">RAG Dashboard</span>
+        <span className="nav-title">RAG 智库系统</span>
       </div>
 
       <nav className="nav-links">
-        {NAV_ITEMS.map(({ path, label }) => (
+        {NAV_ITEMS.map(({ path, label, icon }) => (
           <Link
             key={path}
             to={path}
             className={`nav-link ${location.pathname === path ? 'active' : ''}`}
           >
+            <span aria-hidden="true" className="nav-icon">{icon}</span>
             {label}
           </Link>
         ))}
       </nav>
-
-      <div className="nav-actions">
-        <ThemeToggle />
-      </div>
     </header>
   );
 }
 
 export default function App() {
-  useEffect(() => { initTheme(); }, []);
-
   return (
     <BrowserRouter>
       <div className="app-shell">
         <Navigation />
         <main className="app-main">
           <Routes>
-            <Route path="/" element={<AgentChat />} />
+            <Route path="/" element={<LibraryPage />} />
+            <Route path="/pro" element={<AgentChat />} />
+            <Route path="/runtime" element={<AgentRuntimePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/ops" element={<OpsPage />} />

@@ -7,6 +7,9 @@ import { useInfrastructureStore } from '../../stores/infrastructureStore';
 import { MetricCard, StatusBadge } from '../charts';
 import { LLMProvider, VectorDB, GraphDB, DataPipeline } from '@rag/shared';
 import './Infrastructure.css';
+import { fmtDate } from '../../utils/dateUtils';
+import { LiveArchitecturePanel } from './LiveArchitecturePanel';
+import { LiveTopologyView } from './LiveTopologyView';
 
 export const InfrastructurePanel: React.FC = () => {
   const {
@@ -23,6 +26,10 @@ export const InfrastructurePanel: React.FC = () => {
 
   return (
     <div className="infrastructure-panel">
+      {/* 实时活架构 — 真四库连通性 (#81/#87) */}
+      <LiveTopologyView />
+      <LiveArchitecturePanel />
+
       {/* LLM 提供者 */}
       <section className="infra-section">
         <h3 className="section-title">🤖 LLM 服务</h3>
@@ -303,7 +310,7 @@ const GraphDBCard: React.FC<{ db: GraphDB }> = ({ db }) => {
       </div>
       
       <div className="db-backup">
-        上次备份: {new Date(db.lastBackup).toLocaleDateString()}
+        上次备份: {fmtDate(db.lastBackup)}
       </div>
     </div>
   );

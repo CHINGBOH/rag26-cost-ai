@@ -8,6 +8,7 @@ import { useInfrastructureStore } from '../../stores/infrastructureStore';
 import { MetricCard, StatusBadge } from '../charts';
 import { SystemPerformance } from '@rag/shared';
 import './System.css';
+import { fmtDateTime } from '../../utils/dateUtils';
 
 export const SystemMonitorPanel: React.FC = () => {
   const performance = useSystemStore(state => state.performance);
@@ -331,7 +332,7 @@ const AlertsList: React.FC<{ alerts: import('@rag/shared').Alert[] }> = ({ alert
               text={alert.level}
             />
             <span className="alert-time">
-              {new Date(alert.timestamp).toLocaleString()}
+              {fmtDateTime(alert.timestamp)}
             </span>
             {alert.resolved && (
               <span className="alert-resolved">已解决</span>

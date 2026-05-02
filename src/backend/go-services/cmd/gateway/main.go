@@ -1,13 +1,26 @@
 package main
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"rag-system/internal/gateway"
+	"rag-system/internal/telemetry"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	shutdown, err := telemetry.Init("go-gateway")
+	if err != nil {
+		log.Printf("[OTEL] init failed (continuing without tracing): %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = shutdown(ctx)
+	}()
 
 	cfg := gateway.LoadConfig()
 	router := gateway.SetupRouter(cfg)

@@ -14,6 +14,7 @@ import { StatusBadge } from '../charts';
 import { uiConfig } from '../../config';
 import AgentThoughtChain from './AgentThoughtChain';
 import './Chat.css';
+import { fmtTime } from '../../utils/dateUtils';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -94,7 +95,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             {isUser ? '用户' : message.model || 'AI'}
           </span>
           <span className="message-time">
-            {new Date(message.timestamp).toLocaleTimeString()}
+            {fmtTime(message.timestamp)}
           </span>
           {message.latency && (
             <span className="message-latency">{message.latency}ms</span>

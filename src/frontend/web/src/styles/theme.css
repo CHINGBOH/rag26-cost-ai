@@ -3,28 +3,32 @@
  */
 
 :root {
-  /* 默认深色主题 — 降饱和、和谐过渡 */
-  --bg-primary: #0b0d12;
-  --bg-surface: #14171f;
-  --bg-elevated: #1c2029;
-  --bg-hover: #232831;
-  
-  --text-primary: #e8eaed;
-  --text-secondary: #b3b7be;
-  --text-muted: #7c818b;
-  --text-inverse: #0b0d12;
-  
-  --border-default: #232831;
-  --border-highlight: #3b82f6;
-  
-  --color-primary: #5b8def;
-  --color-primary-hover: #7ba3f5;
-  --color-primary-light: rgba(91, 141, 239, 0.14);
-  
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #06b6d4;
+  /* 暖色亮底主题 — 皮纸/亚麻底色，耐看明亮 */
+  --bg-primary:  #F5F2EB;   /* 温暖皮纸色 */
+  --bg-surface:  #FDFBF7;   /* 奶白色 */
+  --bg-elevated: #EDE9DE;   /* 温暖沙色 */
+  --bg-hover:    #E3DDD2;   /* 稍深沙色 */
+
+  --text-primary:   #1C1410;   /* 墨水色，~15:1 对比度 */
+  --text-secondary: #52453A;   /* 温暖棕灰，~7:1 */
+  --text-muted:     #6B5B4C;   /* 温暖中灰，~5:1 */
+  --text-inverse:   #FDFBF7;   /* 亮色文字（用于深色按钮上） */
+
+  --border-default:   #D4CEBF;
+  --border-highlight: #8B5E2B;
+
+  --color-primary:       #8B5E2B;   /* 琥珀棕，5.9:1 对比度 */
+  --color-primary-hover: #7A5020;   /* 深琥珀（hover 加深保证对比度） */
+  --color-primary-light: rgba(139, 94, 43, 0.12);
+
+  /* Module accent (overridden per page by modules.css) */
+  --page-accent:     #8B5E2B;
+  --page-accent-rgb: 139, 94, 43;
+
+  --color-success: #15803D;
+  --color-warning: #B45309;
+  --color-error:   #B91C1C;
+  --color-info:    #0369A1;
   
   /* ============================================
      UI 布局变量 - 可由配置动态控制
@@ -130,35 +134,45 @@
   --messages-list-gap: 24px;
   --input-area-gap: 12px;
   --model-info-row-gap: 12px;
-}
 
-/* 浅色主题 */
-[data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-surface: #f8fafc;
-  --bg-elevated: #ffffff;
-  --bg-hover: #f1f5f9;
-  
-  --text-primary: #000000;
-  --text-secondary: #1e293b;
-  --text-muted: #475569;
-  --text-inverse: #ffffff;
-  
-  --border-default: #e2e8f0;
-  --border-highlight: #3b82f6;
-  
-  --color-primary: #3b82f6;
-  --color-primary-hover: #2563eb;
-  --color-primary-light: #dbeafe;
-  
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-error: #ef4444;
-  --color-info: #06b6d4;
-  
-  /* UI 布局变量 - 浅色主题覆盖 */
-  --sidebar-width: 220px;
-  --sidebar-collapsed-width: 60px;
+  /* ─────────────────────────────────────────
+     低奢设计令牌 — Luxury Design Tokens
+     ───────────────────────────────────────── */
+
+  /* Nav height token (used in calc(100dvh - var(--nav-height))) */
+  --nav-height: 64px;
+  --nav-height-md: 56px;   /* ≤ 768px */
+  --nav-height-sm: 52px;   /* ≤ 480px */
+
+  /* Gold palette — decorative only, NOT for body text */
+  --lux-gold-100: #FBF4E3;
+  --lux-gold-200: #F0DFA8;
+  --lux-gold-300: #E8C97A;
+  --lux-gold-400: #C9A96E;
+  --lux-gold-500: #9A7340;
+  --lux-gold-dark: #6B5020;
+  --lux-gold-rgb: 201, 169, 110;
+
+  /* Gold gradients */
+  --gradient-gold: linear-gradient(135deg, #C9A96E 0%, #E8D49A 40%, #C9A96E 70%, #9A7340 100%);
+  --gradient-gold-shimmer: linear-gradient(105deg, #9A7340 0%, #C9A96E 30%, #F0DFA8 50%, #C9A96E 70%, #9A7340 100%);
+  --gradient-gold-h: linear-gradient(90deg, #9A7340 0%, #C9A96E 30%, #E8D49A 50%, #C9A96E 70%, #9A7340 100%);
+
+  /* Warm shadow system (replaces flat box-shadow: none) */
+  --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 2px 8px rgba(139, 94, 43, 0.09), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(139, 94, 43, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 8px 32px rgba(139, 94, 43, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);
+  --shadow-xl: 0 16px 48px rgba(139, 94, 43, 0.20), 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-gold-ring: 0 0 0 2px rgba(201, 169, 110, 0.38), 0 0 0 5px rgba(201, 169, 110, 0.10);
+
+  /* Typography */
+  --font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, 'Times New Roman', serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
+
+  /* Luxury easing */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ============================================
@@ -172,19 +186,12 @@
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-sans);
   background: var(--bg-primary);
   color: var(--text-primary);
-  transition: background 0.3s ease, color 0.3s ease;
-}
-
-/* 浅色模式下增加文字清晰度和粗细 */
-[data-theme="light"] {
-  text-shadow: 0 0 0.3px rgba(0, 0, 0, 0.4);
-}
-
-[data-theme="light"] * {
-  font-weight: 500 !important;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* 确保所有表单元素继承主题颜色 */
@@ -249,11 +256,13 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: 12px;
-  transition: all 0.2s ease;
+  transition: transform 0.22s var(--ease-expo), box-shadow 0.22s ease, border-color 0.2s ease;
 }
 
 .card:hover {
-  border-color: var(--border-highlight);
+  border-color: rgba(var(--lux-gold-rgb), 0.45);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 /* 按钮 */
@@ -339,19 +348,55 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 
 /* 滚动条 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-surface);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--text-muted);
-  border-radius: 4px;
+  background: rgba(139, 94, 43, 0.22);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: rgba(139, 94, 43, 0.42);
+}
+
+/* Firefox */
+* { scrollbar-width: thin; scrollbar-color: rgba(139,94,43,0.22) transparent; }
+
+/* ─────────────────────────────────────────
+   全局动画关键帧
+   ───────────────────────────────────────── */
+
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes luxEntrance {
+  from { opacity: 0; transform: scale(0.96) translateY(10px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes shimmerGold {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+
+@keyframes pulseGold {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--lux-gold-rgb), 0.25); }
+  50%       { box-shadow: 0 0 0 6px rgba(var(--lux-gold-rgb), 0); }
+}
+
+/* Respect user's reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

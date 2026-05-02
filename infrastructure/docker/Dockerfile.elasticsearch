@@ -1,0 +1,15 @@
+# Elasticsearch 8.12.0 + IK Chinese analyzer
+# Plugin source: https://github.com/medcl/elasticsearch-analysis-ik
+#
+# Usage:
+#   docker build -t rag-elasticsearch:8.12-ik -f infrastructure/docker/Dockerfile.elasticsearch infrastructure/docker/
+
+FROM elasticsearch:8.12.0
+
+ARG IK_VERSION=8.12.0
+
+# Install IK analyzer (Chinese tokenizer with smart + max_word modes)
+RUN bin/elasticsearch-plugin install --batch \
+    https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-${IK_VERSION}.zip || \
+    bin/elasticsearch-plugin install --batch \
+    https://github.com/medcl/elasticsearch-analysis-ik/releases/download/v${IK_VERSION}/elasticsearch-analysis-ik-${IK_VERSION}.zip

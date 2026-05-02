@@ -64,6 +64,37 @@ from app.agent.tools import (
     price_trend,
     rule_clause_search,
     get_catalog_map,
+    # round 2: schema-aware data backbone
+    list_tables,
+    describe_table,
+    sql_query,
+    aggregate_query,
+    list_documents,
+    fetch_chunk,
+    similar_chunks,
+    stats_overview,
+    # round 3: graph penetration
+    concept_neighbors,
+    concept_path,
+    entity_cooccur,
+    upstream_downstream,
+    # round 3: proactive cognition
+    expand_question,
+    suggest_followup,
+    find_knowledge_gaps,
+    # round 4: data science
+    forecast_series,
+    outlier_detect,
+    correlate,
+    cluster_records,
+    # round 6: sandbox utilities + proactive explorer
+    regex_extract,
+    unit_convert,
+    date_math,
+    compare_values,
+    number_stats,
+    chart_spec,
+    proactive_explore,
 )
 from app.agent.evaluator import evaluate_retrieval_quality
 from app.agent.presentation_payloads import (
@@ -89,7 +120,24 @@ _checkpointer = None
 _analyzer = QueryAnalyzer()
 
 # ReAct 补充轮可用的工具（PG 优先，graph_search 已废弃返回空）
-REACT_TOOLS = [concept_search, price_query, price_trend, rule_clause_search, text_search, hybrid_search, pdf_page_search, vector_search, keyword_search, category_search, get_catalog_map, calculator, python_eval]
+# 6 轮交付的全部工具：13+8+4+3+4+7 = 39
+REACT_TOOLS = [
+    # —— 基础检索（13）——
+    concept_search, price_query, price_trend, rule_clause_search,
+    text_search, hybrid_search, pdf_page_search, vector_search,
+    keyword_search, category_search, get_catalog_map, calculator, python_eval,
+    # —— round 2: 数据骨干（8）——
+    list_tables, describe_table, sql_query, aggregate_query,
+    list_documents, fetch_chunk, similar_chunks, stats_overview,
+    # —— round 3: 图谱穿透（4）+ 主动认知（3）——
+    concept_neighbors, concept_path, entity_cooccur, upstream_downstream,
+    expand_question, suggest_followup, find_knowledge_gaps,
+    # —— round 4: 数据科学（4）——
+    forecast_series, outlier_detect, correlate, cluster_records,
+    # —— round 6: 沙箱通用工具（6）+ 主动穿透（1）——
+    regex_extract, unit_convert, date_math, compare_values, number_stats, chart_spec,
+    proactive_explore,
+]
 
 # Executor 节点的系统提示 — 带自省要求
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
@@ -136,6 +184,21 @@ _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工�
 - 若 text_search/keyword_search 返回空结果，立即去除位置限定词，只用材料名重试
 
 严格禁止：在没有检索证据时编造数值或费率。
+
+—— 主动认知 / 沙箱通用工具（2026-04 新增）——
+- proactive_explore(question)：**主动穿透** — 根据问题自动从图谱抽取核心概念的邻居/上下游/共现实体 + 追问 + 知识缺口；用于复杂问题先建立概念地图，再下钻具体证据
+- regex_extract(text, pattern, flags)：从文本里按正则抽取（支持命名分组），适合从规范条文里抠数值/编号
+- unit_convert(value, from_unit, to_unit)：单位换算（长度/面积/体积/质量/货币/时间，含工日/万元）
+- date_math(operation, a, b, days)：日期算术（diff/add/period_diff/quarter）
+- compare_values(current, baseline, label)：两个数值对比（绝对差/百分比/基点/方向）
+- number_stats(values_json)：一组数的描述性统计（均值/中位数/分位数/极值）
+- chart_spec(chart_type, data_json, title, x_key, y_key)：生成前端可直接渲染的图表 spec（line/bar/pie/area/scatter）
+
+使用建议：
+- 涉及单位混合（如 万元 vs 元、㎡ vs m2、工日 vs 小时）必须先 unit_convert 再计算
+- 涉及"新旧对比/增减/同比/环比"必须用 compare_values，不要让 LLM 心算
+- 若问题很发散（"X 的影响因素有哪些"），先 proactive_explore，再选具体工具下钻
+- 需要图表时，最后一步用 chart_spec 输出 JSON spec，前端会直接渲染
 引用格式：【文件名 P页码】，如【费率标准 P4】
 """
 
@@ -195,6 +258,10 @@ _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
 
 
 # ── 辅助函数 ────────────────────────────────────────────────────────────────
+
+
+# 内部数据集名（不应作为引用对外展示）。空集合 = 不过滤。
+_INTERNAL_SOURCES: set[str] = set()
 
 
 def _display_doc_name(doc_name: str) -> str:
@@ -297,6 +364,63 @@ def _prune_chunks_for_query(
             chunks = spec_matched
 
     return chunks
+
+
+def _gather_blindspots_for_chunks(chunks: list) -> list[dict]:
+    """For (doc_id, page) tuples present in chunks, fetch any blindspot rows
+    so the agent response can disclose chart/figure pages near the cited
+    evidence. Returns up to 5 entries — purely advisory, never blocks.
+    """
+    if not chunks:
+        return []
+    pairs: set[tuple[str, int]] = set()
+    for c in chunks:
+        d = c.get("doc_id")
+        p = c.get("page_number") or c.get("page") or 0
+        if d and p:
+            try:
+                pairs.add((d, int(p)))
+            except Exception:
+                continue
+    if not pairs:
+        return []
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        conn = _get_pg_conn()
+        try:
+            with conn.cursor() as cur:
+                # Find blindspots whose doc_id is in our chunk set; show
+                # nearby pages too (±2) since charts often reference text.
+                doc_ids = list({d for d, _ in pairs})
+                placeholders = ",".join(["%s"] * len(doc_ids))
+                cur.execute(
+                    f"""SELECT doc_id, file_name, page, kind, reason,
+                               image_count, text_chars
+                          FROM ingest_blindspots
+                         WHERE doc_id IN ({placeholders})
+                         ORDER BY doc_id, page LIMIT 50""",
+                    doc_ids,
+                )
+                rows = cur.fetchall()
+            out: list[dict] = []
+            for d, fn, pg, kind, reason, ic, tc in rows:
+                # Only include blindspots whose page is within ±2 of any cited page
+                near = any(d == cd and abs(pg - cp) <= 2 for cd, cp in pairs)
+                if not near:
+                    continue
+                out.append({
+                    "doc_id": d, "file_name": fn, "page": pg,
+                    "kind": kind, "reason": reason,
+                    "image_count": ic, "text_chars": tc,
+                })
+                if len(out) >= 5:
+                    break
+            return out
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.warning(f"[gather_blindspots] failed: {e}")
+        return []
 
 
 def _enrich_chunks_with_filename(chunks: list) -> list:
@@ -1222,8 +1346,56 @@ def verify_tool_contract(state: dict) -> ContractResult:
     return ContractResult(node="tool_node", passed=True, violations=[])
 
 
+_CITATION_RE = re.compile(r"《([^《》]{1,80})》")
+
+
+def _normalize_source_name(name: str) -> str:
+    """Normalize doc filename / cited title for cross-comparison."""
+    if not name:
+        return ""
+    s = str(name).strip().strip("《》")
+    for ext in (".pdf", ".PDF", ".xlsx", ".XLSX", ".docx", ".DOCX", ".md"):
+        if s.endswith(ext):
+            s = s[: -len(ext)]
+    return s
+
+
+def _detect_cross_source_hallucination(answer: str, chunks: list[dict]) -> list[str]:
+    """Return cited source names that do NOT appear in retrieved chunks (Source Constraint, #45).
+
+    Only flags structural sources like '第二册电气设备安装工程' or '《市政工程...》' that are
+    unique to a specific volume. Generic markers like book/page references are ignored.
+    """
+    if not answer or not chunks:
+        return []
+    cited = {
+        _normalize_source_name(m)
+        for m in _CITATION_RE.findall(answer)
+        if 2 < len(m) <= 60
+    }
+    if not cited:
+        return []
+    available: set[str] = set()
+    for c in chunks:
+        for key in ("doc_filename", "source", "file_name"):
+            v = c.get(key)
+            if v:
+                available.add(_normalize_source_name(v))
+        meta = c.get("metadata") or {}
+        for key in ("doc_filename", "source", "file_name", "book"):
+            v = meta.get(key)
+            if v:
+                available.add(_normalize_source_name(v))
+    violations: list[str] = []
+    for c in cited:
+        # substring match in either direction (cited='第二册电气...' vs file='第二册电气...安装工程定额')
+        if not any(c in a or a in c for a in available if a):
+            violations.append(c)
+    return violations
+
+
 def verify_synthesize_contract(state: dict) -> ContractResult:
-    """C4: synthesize_node post-conditions — answer quality checks."""
+    """C4: synthesize_node post-conditions — answer quality + Source Constraint (#45)."""
     eval_ = state.get("evaluation") or {}
     answer = state.get("final_answer", "")
     qt = state.get("query_type", "")
@@ -1241,6 +1413,15 @@ def verify_synthesize_contract(state: dict) -> ContractResult:
         cv = _compute_price_cv_from_chunks(chunks)
         if cv is not None and cv > 0.15:
             violations.append(("source_conflict", f"price CV={cv:.3f} exceeds 0.15 threshold"))
+
+    # Source Constraint (#45): block cross-volume hallucination.
+    if answer and chunks:
+        bogus = _detect_cross_source_hallucination(answer, chunks)
+        if bogus:
+            violations.append(
+                ("citation_hallucination",
+                 f"cited sources not in retrieved chunks: {', '.join(bogus[:3])}")
+            )
 
     return ContractResult(
         node="synthesize_node",
@@ -1908,7 +2089,19 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
         display = display.strip("《》")
         ref_label = f"《{display}》P{page}" if doc_name else f"来源[{i}]"
-        chunks_text += f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}\n内容：{content}\n"
+        # #46 Contextual enrichment: prepend parent-section summary if present in metadata
+        meta = c.get("metadata") or {}
+        parent_summary = (meta.get("parent_summary") or "").strip()
+        parent_section = (meta.get("parent_section") or "").strip()
+        parent_block = ""
+        if parent_summary:
+            label = f"父节{parent_section}" if parent_section else "父节"
+            parent_block = f"\n[{label}前置说明]：{parent_summary[:240]}\n"
+        chunks_text += (
+            f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}"
+            f"{parent_block}"
+            f"\n内容：{content}\n"
+        )
 
     first_ref = ""
     if chunks:
@@ -1958,7 +2151,9 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"1. 严格基于上述检索结果回答，每处数值后必须用【文件名 P页码】格式标注来源，如 【{first_ref}】；\n"
         f"   每条价格数据至少标注一次来源，禁止用\"来源为各期价格文件\"等模糊表述代替具体引用\n"
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
-        f"3. {query_type_hint}\n"
+        f"3. 【强制】只能引用上述证据中出现过的文件名，禁止引用任何未在证据列表中出现的册名/规范/定额；\n"
+        f"   若证据不足以回答，宁可声明信息不足，也不得编造来源。\n"
+        f"4. {query_type_hint}\n"
         f"{fallback_hint}\n"
         f"{trend_average_hint}\n"
         f"{catalog_only_hint}"
@@ -2133,7 +2328,10 @@ def _cache_tool_calls(state: RAGAgentState, results: list):
 
 _DOMAIN_RE = re.compile(
     r"工程|造价|定额|费率?|价格|材料|施工|建设|规范|标准|计算|工期|招标|合同|税|"
-    r"人工|机械|建筑|市政|安装|措施|费用|系数|推荐|预算|决算|清单|概算|签证|变更"
+    r"人工|机械|建筑|市政|安装|措施|费用|系数|推荐|预算|决算|清单|概算|签证|变更|"
+    r"单价|混凝土|钢筋|砂浆|水泥|砖|石材|木材|钢材|铝合金|防水|保温|脚手架|模板|"
+    r"挖土|回填|桩基|基础|梁|柱|板|墙|屋面|地面|装修|涂料|瓷砖|管道|电气|暖通|"
+    r"询价|报价|估价|行情|市场价|信息价|指导价|综合单价|分部分项|查|询|帮.*查|查.*价"
 )
 
 
@@ -2565,7 +2763,10 @@ def _parse_plan(content: str) -> list[str]:
 
 
 _QUESTION_STRIP_RE = re.compile(
-    r"(是什么|有哪些|怎么算|如何|是否|多少|的是|吗|呢|？|\?|请问|请|告诉我|帮我|查一下|计算规则|适用范围|说明|规定|规范)"
+    r"(是什么|有哪些|怎么算|怎么套|怎样|如何套用|如何执行|如何计算|如何|是否|多少|的是"
+    r"|吗|呢|？|\?|请问|请|告诉我|帮我|查一下|计算规则|适用范围|说明|规定|规范"
+    r"|套用定额|套定额|执行定额|计取定额|计算定额|适用定额|采用定额|使用定额"
+    r"|套用|执行|计取|采用|使用)"
 )
 
 def _extract_navigator_keywords(query: str) -> list[str]:
@@ -2574,13 +2775,33 @@ def _extract_navigator_keywords(query: str) -> list[str]:
     Returns a list of candidate strings to try in order, from most specific to broadest.
     """
     cleaned = _QUESTION_STRIP_RE.sub("", query).strip()
-    parts = [p.strip() for p in re.split(r"[中的，,\s]+", cleaned) if p.strip()]
+    parts = [p.strip() for p in re.split(r"[中的，,\s、。]+", cleaned) if p.strip()]
     candidates = [
         p for p in parts
         if 2 < len(p) <= 20
         and not re.fullmatch(r"\d+\.?\d*", p)   # skip pure numbers like "10." or "01."
         and not re.fullmatch(r"[a-zA-Z0-9]+", p)  # skip pure ASCII sequences
     ]
+    # Sliding-prefix fallback: when extraction yields a single long token (no splits hit),
+    # also try shorter prefixes so partial chapter titles can still hit BM25.
+    extra: list[str] = []
+    for c in candidates:
+        if len(c) >= 8:
+            for n in (8, 6, 5, 4):
+                if n < len(c):
+                    extra.append(c[:n])
+    candidates.extend(extra)
+
+    # ── #94-C R1 回写：合并已 adopt 的 navigator 字典扩展词 ──────────
+    # 从 improvement_events 读取最近 30 天 affected_route=R1 + applied
+    # 的事件，把 patch_payload.extra_keywords 加进候选列表。
+    try:
+        for kw in _load_r1_extra_keywords(query):
+            if kw and kw not in candidates:
+                candidates.append(kw)
+    except Exception as e:  # 容错：DB 不可达不应阻断 navigator
+        logger.debug(f"[navigator] R1 augment skipped: {e}")
+
     if not candidates:
         return [query[:20]]
     # Try all candidates; longer/digit-bearing ones tend to be more specific section titles
@@ -2588,7 +2809,71 @@ def _extract_navigator_keywords(query: str) -> list[str]:
     # Also include original cleaned text as last resort
     if cleaned not in candidates and 2 < len(cleaned) <= 30:
         candidates.append(cleaned)
-    return candidates or [query[:20]]
+    # De-dup preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out or [query[:20]]
+
+
+# ── R1 学习字典缓存 ─────────────────────────────────────────────────
+_R1_CACHE: dict = {"ts": 0.0, "items": []}  # items: list[(query_substring, [kws])]
+_R1_CACHE_TTL = 60.0  # 秒
+
+
+def _load_r1_extra_keywords(query: str) -> list[str]:
+    """读取已 adopt 的 R1 navigator 字典扩展词，按 query 触发条件命中后返回。
+
+    每条 patch_payload 形如：
+      {"trigger": "电线", "extra_keywords": ["电线电缆工程", "电气设备安装"]}
+    或：
+      {"extra_keywords": ["...", "..."]}  # 无 trigger 视为通用
+    """
+    import time as _t
+    now = _t.time()
+    if now - _R1_CACHE["ts"] > _R1_CACHE_TTL:
+        items: list[tuple[str, list[str]]] = []
+        try:
+            from app.agent.tools import _get_pg_conn, _put_pg_conn
+            conn = _get_pg_conn()
+            try:
+                with conn.cursor() as c:
+                    c.execute(
+                        """SELECT patch_payload
+                           FROM improvement_events
+                           WHERE affected_route = 'R1_navigator_dict'
+                             AND ts > NOW() - interval '30 days'
+                             AND reverted_at IS NULL""",
+                    )
+                    rows = c.fetchall()
+                for (payload,) in rows:
+                    if not isinstance(payload, dict):
+                        continue
+                    kws = payload.get("extra_keywords") or []
+                    if not isinstance(kws, list):
+                        continue
+                    kws = [str(k).strip() for k in kws if str(k).strip()]
+                    if not kws:
+                        continue
+                    trigger = payload.get("trigger") or ""
+                    items.append((str(trigger).strip(), kws))
+            finally:
+                _put_pg_conn(conn)
+        except Exception as e:
+            logger.debug(f"[navigator] R1 cache reload failed: {e}")
+            items = _R1_CACHE.get("items", [])
+        _R1_CACHE["ts"] = now
+        _R1_CACHE["items"] = items
+
+    out: list[str] = []
+    q = query.lower()
+    for trigger, kws in _R1_CACHE.get("items", []):
+        if not trigger or trigger.lower() in q:
+            out.extend(kws)
+    return out
 
 
 def navigator_node(state: RAGAgentState) -> dict:
@@ -2829,6 +3114,17 @@ def planner_node(state: RAGAgentState) -> dict:
                 logger.info(f"[planner] price compare override: {period1} vs {period2} target='{target}'")
 
     logger.info(f"[planner] plan={steps}")
+
+    # —— Round 7: exploratory-query proactive seed ——
+    # 若问题带"影响/关系/有哪些/上下游/相关/穿透/涉及"等发散词且当前 plan 较短，
+    # 前置 proactive_explore，把图谱邻居/上下游摸出来再下钻。
+    EXPLORATORY_RE = re.compile(r"(影响|有哪些|包括|穿透|相关|上下游|上游|下游|联系|依赖|关系|涉及)")
+    if EXPLORATORY_RE.search(query) and len(steps) <= 2:
+        first = (steps[0] if steps else "").lower()
+        if "proactive_explore" not in first and "概念地图" not in (steps[0] if steps else ""):
+            steps = [f"调用 proactive_explore 抽取『{query}』核心概念与图谱邻居/上下游"] + steps
+            logger.info("[planner] exploratory query detected, prepended proactive_explore step")
+
     # Channel seed：将 system + user 注入 messages，executor_node 追加
     seed_messages = [
         SystemMessage(content=_REACT_SYSTEM),
@@ -3131,7 +3427,28 @@ _prebuilt_tool_node = ToolNode(REACT_TOOLS)
 
 def tool_node(state: RAGAgentState) -> dict:
     """LangGraph ToolNode 处理工具调用和 ToolMessage 组装；补充 chunk 收集和 fallback 检测。"""
+    import time as _t_prom
+    _prom_t0 = _t_prom.perf_counter()
+    _prom_calls = []
+    try:
+        for _m in reversed(state.get("messages") or []):
+            if getattr(_m, "tool_calls", None):
+                _prom_calls = [tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?") for tc in _m.tool_calls]
+                break
+    except Exception:
+        _prom_calls = []
     result = _prebuilt_tool_node.invoke(state)
+    try:
+        from app.api import prom_record_tool as _prt
+        _dt = _t_prom.perf_counter() - _prom_t0
+        if _prom_calls:
+            per = _dt / max(1, len(_prom_calls))
+            for _n in _prom_calls:
+                _prt(_n or "unknown", "ok", per)
+        else:
+            _prt("tool_node", "ok", _dt)
+    except Exception:
+        pass
     previous_chunks = list(state.get("retrieved_chunks") or [])
     all_chunks = list(previous_chunks)
     category_hints = list(state.get("category_hints") or [])
@@ -3319,6 +3636,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "retrieved_chunks": all_chunks,
             "presentation": presentation,
             "presentation_policy": state.get("presentation_policy"),
+            "data_gaps": _gather_blindspots_for_chunks(all_chunks),
         }
 
     direct_answer = _build_rule_based_fallback_answer(query, all_chunks)
@@ -3346,6 +3664,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "retrieved_chunks": all_chunks,
             "presentation": presentation,
             "presentation_policy": state.get("presentation_policy"),
+            "data_gaps": _gather_blindspots_for_chunks(all_chunks),
         }
 
     try:
@@ -3376,6 +3695,26 @@ def synthesize_node(state: RAGAgentState) -> dict:
         existing_presentation=presentation,
     )
 
+    _log_agent_run(state, final_answer, evaluation, runtime, all_chunks)
+
+    try:
+        from app.api import prom_record_agent as _pra
+        _conf = float((evaluation or {}).get("confidence") or 0)
+        _ig = float((evaluation or {}).get("information_gain") or 0)
+        _refused = any(m in final_answer for m in ["无法直接回答","无法回答","无法提供","无法分析","不足以回答","未提供","无相关数据","未包含"])
+        if _refused or not all_chunks:
+            _q = "failure"
+        elif _conf < 0.5 or _ig < 0.3:
+            _q = "weak"
+        else:
+            _q = "good"
+        _lat = (runtime or {}).get("total_latency_s") or 0.0
+        _pra(_q, float(_lat))
+    except Exception:
+        pass
+
+    followup_suggestions = build_followup_suggestions(query, all_chunks, final_answer, max_n=5)
+
     return {
         "messages": [AIMessage(content=final_answer)],
         "final_answer": final_answer,
@@ -3386,7 +3725,231 @@ def synthesize_node(state: RAGAgentState) -> dict:
         "retrieved_chunks": all_chunks,
         "presentation": presentation,
         "presentation_policy": state.get("presentation_policy"),
+        "followup_suggestions": followup_suggestions,
+        "data_gaps": _gather_blindspots_for_chunks(all_chunks),
     }
+
+
+def _score_followup_coverage(question: str) -> tuple[float, int]:
+    """KB coverage probe: returns (coverage_score 0..1, chunk_count).
+
+    Uses embedding cosine similarity between the question and top-3 retrieved
+    chunks (strict) — way more reliable than FTS rank, which fires on any
+    keyword overlap. Falls back to FTS-based score if embedding service down.
+    """
+    if not question or len(question) < 4:
+        return (0.0, 0)
+    try:
+        from app.agent.tools import text_search as _ts
+        raw = _ts.invoke({"query": question, "top_k": 3}) if hasattr(_ts, "invoke") else _ts(query=question, top_k=3)
+        rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        if not isinstance(rows, list) or not rows:
+            return (0.0, 0)
+        contents = [str(r.get("content") or "")[:600] for r in rows if isinstance(r, dict)]
+        contents = [c for c in contents if c]
+        if not contents:
+            return (0.0, 0)
+        # Embedding cosine path
+        try:
+            from app.agent.tools import _get_embedding_svc
+            svc = _get_embedding_svc()
+            if svc is None:
+                raise RuntimeError("no embedding svc")
+            import numpy as _np
+            qv = svc.encode([question])
+            cv = svc.encode(contents)
+            qv = _np.asarray(qv).reshape(-1)
+            cv = _np.asarray(cv)
+            if cv.ndim == 1:
+                cv = cv.reshape(1, -1)
+            qn = qv / (_np.linalg.norm(qv) + 1e-9)
+            cn = cv / (_np.linalg.norm(cv, axis=1, keepdims=True) + 1e-9)
+            sims = (cn @ qn).tolist()
+            max_sim = float(max(sims))
+            # Clamp 0..1, treat <0.3 as essentially miss
+            coverage = round(max(0.0, min(1.0, max_sim)), 3)
+            return (coverage, len(rows))
+        except Exception as ee:
+            logger.debug(f"[followup-coverage] embedding fallback for {question!r}: {ee}")
+            # Fallback: use FTS but stricter
+            scores = [float(r.get("score") or 0.0) for r in rows if isinstance(r, dict)]
+            max_s = max(scores) if scores else 0.0
+            cnt_factor = min(1.0, len(rows) / 3.0)
+            coverage = round(min(1.0, max_s) * 0.7 + 0.3 * cnt_factor, 3)
+            return (coverage, len(rows))
+    except Exception as e:
+        logger.debug(f"[followup-coverage] probe failed for {question!r}: {e}")
+        return (0.0, 0)
+
+
+def _coverage_tier(score: float) -> str:
+    if score >= 0.65:
+        return "high"
+    if score >= 0.45:
+        return "med"
+    return "low"
+
+
+def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int = 5) -> list[dict]:
+    """生成"链式穿透"用的追问 chips，并通过 KB 覆盖检测过滤幻想式提问。
+    Returns: list of {question, source, reason, coverage_score, coverage_tier}.
+    Sources: llm_followup, graph_neighbor, graph_upstream, graph_downstream, gap.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(q: str, source: str, reason: str) -> None:
+        q = (q or "").strip().rstrip("?？。.! ")
+        if not q or q in seen or len(q) > 80:
+            return
+        seen.add(q)
+        out.append({"question": q, "source": source, "reason": reason})
+
+    def _call(tool_or_fn, **kwargs):
+        if hasattr(tool_or_fn, "invoke"):
+            return tool_or_fn.invoke(kwargs)
+        return tool_or_fn(**kwargs)
+
+    try:
+        from app.agent.tools import suggest_followup as _suggest_followup
+        fu_raw = _call(_suggest_followup, question=query, answer=(answer or "")[:1200], n=max_n)
+        fu = json.loads(fu_raw) if isinstance(fu_raw, str) else (fu_raw or {})
+        for s in (fu or {}).get("followups", []) or []:
+            if isinstance(s, dict):
+                _add(s.get("question") or s.get("text") or "", "llm_followup",
+                     f"基于实体：{s.get('based_on_entity','')}" if s.get('based_on_entity') else "基于答案的追问")
+            else:
+                _add(str(s), "llm_followup", "基于答案的追问")
+    except Exception as e:
+        logger.debug(f"[followup] suggest_followup failed: {e}")
+
+    try:
+        from app.agent.tools import proactive_explore as _proactive
+        pe_raw = _call(_proactive, question=query, max_concepts=2, neighbor_top_k=4)
+        pe = json.loads(pe_raw) if isinstance(pe_raw, str) else (pe_raw or {})
+        for c in (pe or {}).get("concepts", []) or []:
+            cname = (c.get("concept") or "").strip()
+            if not cname:
+                continue
+            for nb in (c.get("neighbors") or [])[:2]:
+                nm = (nb.get("name") if isinstance(nb, dict) else "") or (nb.get("concept") if isinstance(nb, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{cname}与{nm}有什么关系", "graph_neighbor", f"图谱邻居：{nm}")
+            for up in (c.get("upstream") or [])[:1]:
+                nm = (up.get("name") if isinstance(up, dict) else "") or (up.get("concept") if isinstance(up, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{nm}是如何影响{cname}的", "graph_upstream", f"上游：{nm}")
+            for dn in (c.get("downstream") or [])[:1]:
+                nm = (dn.get("name") if isinstance(dn, dict) else "") or (dn.get("concept") if isinstance(dn, dict) else "") or ""
+                if nm and nm != cname:
+                    _add(f"{cname}对{nm}的影响是什么", "graph_downstream", f"下游：{nm}")
+            if len(out) >= max_n + 4:
+                break
+        for fq in (pe or {}).get("followups", []) or []:
+            if isinstance(fq, str):
+                _add(fq, "llm_followup", "扩散追问")
+    except Exception as e:
+        logger.debug(f"[followup] proactive_explore failed: {e}")
+
+    try:
+        from app.agent.tools import find_knowledge_gaps as _gaps
+        gp_raw = _call(_gaps, question=query, threshold=0.55)
+        gp = json.loads(gp_raw) if isinstance(gp_raw, str) else (gp_raw or {})
+        for g in (gp or {}).get("gaps", []) or []:
+            if isinstance(g, dict):
+                q = g.get("question") or g.get("sub_q") or g.get("text") or ""
+                score = g.get("best_score")
+                reason = f"知识缺口（命中 {score:.2f}）" if isinstance(score, (int, float)) else "知识缺口"
+            else:
+                q, reason = str(g), "知识缺口"
+            _add(q, "gap", reason)
+    except Exception as e:
+        logger.debug(f"[followup] find_knowledge_gaps failed: {e}")
+
+    # ── R-grounded: probe each candidate against KB; drop low-coverage hallucinations ──
+    if not out:
+        return []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        candidates = out[: max_n * 3]  # over-collect, then prune
+        with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as ex:
+            scored = list(ex.map(lambda c: _score_followup_coverage(c["question"]), candidates))
+        for c, (s, n) in zip(candidates, scored):
+            c["coverage_score"] = s
+            c["coverage_tier"] = _coverage_tier(s)
+            c["coverage_chunks"] = n
+        # keep high+med; if none survive, keep up to 2 low-tier so UI shows "可能不在 KB"
+        kept = [c for c in candidates if c["coverage_tier"] != "low"]
+        if not kept:
+            kept = candidates[:2]
+        kept.sort(key=lambda c: c.get("coverage_score", 0.0), reverse=True)
+        return kept[:max_n]
+    except Exception as e:
+        logger.debug(f"[followup] coverage scoring failed: {e}")
+        return out[:max_n]
+
+
+def _log_agent_run(state: dict, final_answer: str, evaluation: dict, runtime: dict, all_chunks: list) -> None:
+    """Append a record of this agent run to a JSONL file for the learning loop.
+
+    Captures: query, final_answer, evaluation scores, tools used, chunk count,
+    iterations, runtime info. Quality is heuristically classified so the
+    learning page can surface failures and gaps without further analysis.
+    """
+    try:
+        log_dir = os.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "agent_runs.jsonl")
+
+        ev = evaluation or {}
+        confidence = float(ev.get("confidence", 0) or 0)
+        info_gain = float(ev.get("information_gain", 0) or 0)
+
+        # Tools called (collected from messages with name attr in tool_node)
+        tools_used = []
+        for m in state.get("messages", []) or []:
+            tn = getattr(m, "name", None)
+            if tn and tn not in tools_used:
+                tools_used.append(tn)
+
+        # Heuristic classification — answer text leakage of refusal patterns
+        refusal_markers = ["无法直接回答", "无法回答", "无法提供", "无法分析",
+                           "不足以回答", "未提供", "无相关数据", "未包含"]
+        refused = any(m in final_answer for m in refusal_markers)
+        no_chunks = len(all_chunks) == 0
+        if refused or no_chunks:
+            quality = "failure"
+        elif confidence < 0.5 or info_gain < 0.3:
+            quality = "weak"
+        else:
+            quality = "good"
+
+        record = {
+            "ts": datetime.now().isoformat(),
+            "query": state.get("query", ""),
+            "query_type": state.get("query_type", ""),
+            "answer": final_answer[:1500],
+            "answer_truncated": len(final_answer) > 1500,
+            "iterations": int(state.get("iterations", 0) or 0),
+            "chunks_count": len(all_chunks),
+            "tools_used": tools_used,
+            "evaluation": {
+                "confidence": confidence,
+                "information_gain": info_gain,
+                "completeness": float(ev.get("completeness", 0) or 0),
+                "consistency": float(ev.get("consistency", 0) or 0),
+            },
+            "quality": quality,
+            "refused": refused,
+            "runtime": {
+                "provider": (runtime or {}).get("provider"),
+                "model": (runtime or {}).get("model"),
+            },
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"agent_run log failed: {e}")
 
 
 # ── Iterative Convergence Nodes ────────────────────────────────────────────────
@@ -3607,17 +4170,19 @@ def build_agent_graph(checkpointer=None):
     """
     g = StateGraph(RAGAgentState)
 
-    g.add_node("query_analysis", query_analysis_node)
-    g.add_node("intent_guard_node", intent_guard_node)
-    g.add_node("navigator_node", navigator_node)
-    g.add_node("planner_node", planner_node)
-    g.add_node("executor_node", executor_node)
-    g.add_node("tool_node", tool_node)
-    g.add_node("chapter_resolver", chapter_resolver_node)
-    g.add_node("synthesize_node", synthesize_node)
-    g.add_node("contract_verifier_node", contract_verifier_node)
-    g.add_node("corrective_action_node", corrective_action_node)
-    g.add_node("presentation_policy_node", presentation_policy_node)
+    from app.agent.trace import wrap_node as _tw
+
+    g.add_node("query_analysis", _tw("query_analysis", query_analysis_node))
+    g.add_node("intent_guard_node", _tw("intent_guard_node", intent_guard_node))
+    g.add_node("navigator_node", _tw("navigator_node", navigator_node))
+    g.add_node("planner_node", _tw("planner_node", planner_node))
+    g.add_node("executor_node", _tw("executor_node", executor_node))
+    g.add_node("tool_node", _tw("tool_node", tool_node))
+    g.add_node("chapter_resolver", _tw("chapter_resolver", chapter_resolver_node))
+    g.add_node("synthesize_node", _tw("synthesize_node", synthesize_node))
+    g.add_node("contract_verifier_node", _tw("contract_verifier_node", contract_verifier_node))
+    g.add_node("corrective_action_node", _tw("corrective_action_node", corrective_action_node))
+    g.add_node("presentation_policy_node", _tw("presentation_policy_node", presentation_policy_node))
 
     g.set_entry_point("query_analysis")
 

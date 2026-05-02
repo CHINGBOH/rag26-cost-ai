@@ -9,11 +9,11 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
   background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-  transition: background 0.3s ease, color 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* ── App Shell ─────────────────────────── */
@@ -34,71 +34,108 @@ body {
 .app-nav {
   display: flex;
   align-items: center;
-  gap: 32px;
-  padding: 0 32px;
-  height: 56px;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-default);
+  gap: 20px;
+  padding: 0 28px;
+  height: var(--nav-height, 64px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
   flex-shrink: 0;
+  /* Dark warm leather bar — clearly distinct from parchment content */
+  background: rgba(38, 20, 6, 0.94);
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+  /* Gold shimmer bottom border */
+  box-shadow:
+    0 1px 0 rgba(201, 169, 110, 0.40),
+    0 4px 24px rgba(0, 0, 0, 0.22);
+  transition: box-shadow 0.3s ease;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .app-nav { background: rgba(38, 20, 6, 0.98); }
 }
 
 .nav-brand {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+  text-decoration: none;
 }
 
 .nav-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: linear-gradient(135deg, var(--color-primary) 0%, #6366f1 100%);
-  color: #fff;
-  font-size: 13px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--gradient-gold, linear-gradient(135deg, #C9A96E, #E8D49A 45%, #C9A96E 70%, #9A7340));
+  color: #2C1400;
+  font-family: var(--font-serif, 'Noto Serif SC', Georgia, serif);
+  font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.5px;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 1px rgba(201,169,110,0.35), 0 2px 10px rgba(0,0,0,0.35);
+  transition: transform 0.22s var(--ease-expo, cubic-bezier(0.16,1,0.3,1)), box-shadow 0.22s ease;
+}
+
+.nav-brand:hover .nav-mark {
+  transform: scale(1.08) rotate(-3deg);
+  box-shadow: 0 0 0 1px rgba(201,169,110,0.55), 0 0 18px rgba(201,169,110,0.40);
 }
 
 .nav-title {
+  font-family: var(--font-serif, 'Noto Serif SC', Georgia, serif);
   font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: -0.3px;
+  font-weight: 500;
+  color: rgba(240, 215, 165, 0.90);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
 .nav-links {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+
+.nav-links::-webkit-scrollbar { display: none; }
 
 .nav-link {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  font-size: 14px;
-  color: var(--text-secondary);
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(220, 195, 150, 0.75);
   text-decoration: none;
-  transition: all 0.2s ease;
+  white-space: nowrap;
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
 }
 
 .nav-link:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+  color: rgba(240, 215, 165, 0.96);
+  background: rgba(201, 169, 110, 0.16);
 }
 
 .nav-link.active {
-  color: var(--color-primary);
-  background: var(--color-primary-light);
-  font-weight: 500;
+  color: rgba(32, 14, 2, 0.95);
+  background: linear-gradient(135deg, #C9A96E 0%, #E8D49A 50%, #C9A96E 100%);
+  font-weight: 600;
+  box-shadow: 0 1px 6px rgba(201,169,110,0.45), inset 0 1px 0 rgba(255,255,255,0.22);
 }
 
 .nav-icon {
-  font-size: 16px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .nav-actions {
@@ -106,12 +143,14 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 /* ── Scrollbar ─────────────────────────── */
 
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -119,33 +158,20 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-default);
+  background: rgba(139, 94, 43, 0.22);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: rgba(139, 94, 43, 0.42);
 }
 
-.theme-toggle-btn {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 16px;
-  transition: all 0.2s;
-  color: var(--text-secondary);
-}
+/* ── Global focus ring (keyboard-accessible) ── */
 
-.theme-toggle-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-  border-color: var(--border-highlight);
+:focus-visible {
+  outline: 2px solid var(--lux-gold-400, #C9A96E);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* ── Responsive ────────────────────────── */
@@ -154,58 +180,31 @@ body {
   .app-nav {
     padding: 0 12px;
     gap: 0;
-    height: 52px;
-    overflow: hidden;
+    height: var(--nav-height-md, 56px);
   }
 
-  .nav-brand {
-    flex-shrink: 0;
-    margin-right: 8px;
-  }
+  .nav-brand { flex-shrink: 0; margin-right: 6px; }
+  .nav-title { display: none; }
 
-  .nav-title {
-    display: none;
-  }
-
-  /* Scrollable nav strip on mobile */
   .nav-links {
     flex: 1;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
-    scroll-snap-type: x proximity;
-    scrollbar-width: none;
     gap: 2px;
-    /* prevent gap from collapsing flex items */
-    flex-wrap: nowrap;
-  }
-
-  .nav-links::-webkit-scrollbar {
-    display: none;
   }
 
   .nav-link {
     flex-shrink: 0;
-    scroll-snap-align: start;
-    padding: 8px 12px;
-    font-size: 13px;
-    min-height: 44px; /* touch target */
+    padding: 7px 11px;
+    font-size: 12px;
+    min-height: 44px;
   }
 
-  .nav-actions {
-    flex-shrink: 0;
-    margin-left: 4px;
-  }
+  .nav-actions { flex-shrink: 0; margin-left: 4px; }
 }
 
 @media (max-width: 480px) {
-  .app-nav {
-    padding: 0 8px;
-    height: 48px;
-  }
-
-  .nav-link {
-    padding: 6px 10px;
-    font-size: 12px;
-  }
+  .app-nav { padding: 0 8px; height: var(--nav-height-sm, 52px); }
+  .nav-link { padding: 6px 9px; font-size: 12px; }
 }

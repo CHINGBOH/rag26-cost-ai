@@ -19,6 +19,7 @@ import {
   LoopState,
   RuntimeInfo,
   PresentationPayload,
+  FollowupSuggestion,
 } from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
 
@@ -40,6 +41,7 @@ export interface ChatMessage {
   routeMode?: string;
   error?: string;
   presentation?: PresentationPayload | null;
+  followups?: FollowupSuggestion[];
 }
 
 export interface AgentConfig {
@@ -172,6 +174,8 @@ export function useAgent() {
           const finalRunStore = useRunStore.getState();
           const presentation =
             (payload?.presentation as PresentationPayload | null | undefined) ?? finalRunStore.presentation;
+          const followups =
+            (payload?.followup_suggestions as FollowupSuggestion[] | undefined) ?? finalRunStore.followups;
           const content =
             ((payload?.answer as string | undefined) || finalRunStore.streamingAnswer || '').trim()
             || buildPresentationFallbackText(presentation);
@@ -196,6 +200,7 @@ export function useAgent() {
             engine: (payload?.engine as string | undefined) ?? finalRunStore.runtimeInfo?.engine,
             routeMode: (payload?.route_mode as string | undefined) ?? finalRunStore.runtimeInfo?.routeMode,
             presentation,
+            followups,
           });
           finalized = true;
         };
@@ -221,6 +226,9 @@ export function useAgent() {
                 presentation:
                   (data.presentation as PresentationPayload | null | undefined)
                   ?? useRunStore.getState().presentation,
+                followups:
+                  (data.followup_suggestions as FollowupSuggestion[] | undefined)
+                  ?? useRunStore.getState().followups,
               });
             }
           } catch (e) {
@@ -297,6 +305,7 @@ export function useAgent() {
             iterations: partialRunStore.finalIterations,
             latency_ms: partialRunStore.finalLatencyMs,
             presentation: partialRunStore.presentation,
+            followups: partialRunStore.followups,
           });
         }
       } catch (error) {
@@ -319,6 +328,7 @@ export function useAgent() {
             engine: partialRunStore.runtimeInfo?.engine,
             routeMode: partialRunStore.runtimeInfo?.routeMode,
             presentation: partialRunStore.presentation,
+            followups: partialRunStore.followups,
           });
         } else {
           _addMessage({
@@ -334,6 +344,7 @@ export function useAgent() {
           iterations: partialRunStore.finalIterations,
           latency_ms: partialRunStore.finalLatencyMs,
           presentation: partialRunStore.presentation,
+          followups: partialRunStore.followups,
         });
       } finally {
         _setLoading(false);
@@ -407,6 +418,9 @@ function handleSSEEvent(type: string, data: Record<string, unknown>) {
       break;
     case 'presentation':
       rs.setPresentation(data as unknown as PresentationPayload);
+      break;
+    case 'followup_suggestions':
+      rs.setFollowups((data.suggestions as FollowupSuggestion[]) ?? []);
       break;
     case 'synthesizing':
       rs.setRuntimeInfo({
