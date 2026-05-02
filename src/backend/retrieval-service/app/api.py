@@ -2321,6 +2321,148 @@ async def agents_tasks(limit: int = 50):
     return {"tasks": tasks, "source": "ingest_jobs", "count": len(tasks)}
 
 
+@router.get("/api/v1/agent/runtime")
+async def agent_runtime_introspect(recent_runs: int = 10):
+    """Live introspection of the LangGraph agent runtime.
+
+    Returns the actual compiled graph topology (nodes + edges), the registered
+    tool list with descriptions, and recent run statistics from `agent_runs`
+    (if the table exists). The frontend renders this as a Mermaid flowchart so
+    the user can SEE how a question flows through the agent in real time —
+    replacing the static MD diagram that was getting stale.
+    """
+    out: dict = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "graph": {"nodes": [], "edges": [], "entry": None, "mermaid": ""},
+        "tools": [],
+        "tool_count": 0,
+        "recent_runs": [],
+    }
+
+    # 1. Graph topology — introspect the compiled LangGraph
+    try:
+        from app.agent.graph import get_agent_graph, REACT_TOOLS
+        compiled = get_agent_graph()
+        g = compiled.get_graph()
+        # langgraph Graph: nodes is dict[str, Node], edges is list[Edge]
+        nodes_raw = list(getattr(g, "nodes", {}).keys())
+        edges_raw = []
+        for e in getattr(g, "edges", []):
+            src = getattr(e, "source", None)
+            dst = getattr(e, "target", None)
+            cond = getattr(e, "conditional", False)
+            if src and dst:
+                edges_raw.append({"source": src, "target": dst, "conditional": bool(cond)})
+        out["graph"]["nodes"] = nodes_raw
+        out["graph"]["edges"] = edges_raw
+        out["graph"]["entry"] = "query_analysis"
+
+        # Build a mermaid flowchart string the UI can render directly.
+        def _safe(s: str) -> str:
+            return s.replace("__", "_").replace("-", "_")
+        lines = ["flowchart TD"]
+        # Decorate node labels by role
+        labels = {
+            "__start__": "🟢 START",
+            "__end__": "🏁 END",
+            "query_analysis": "📥 query_analysis<br/>意图识别",
+            "intent_guard_node": "🛡 intent_guard<br/>越权拦截",
+            "navigator_node": "🗺 navigator<br/>章节锁定",
+            "planner_node": "📋 planner<br/>规划步骤",
+            "executor_node": "🤖 executor<br/>ReAct 决策",
+            "tool_node": "🔧 tool_node<br/>调用工具",
+            "chapter_resolver": "📚 chapter_resolver<br/>章节回填",
+            "synthesize_node": "✍️ synthesize<br/>合成答案",
+            "contract_verifier_node": "✅ contract_verifier<br/>引用核验",
+            "corrective_action_node": "🔁 corrective_action<br/>纠错重跑",
+            "presentation_policy_node": "🎨 presentation<br/>展示策略",
+        }
+        for n in nodes_raw:
+            label = labels.get(n, n)
+            lines.append(f'    {_safe(n)}["{label}"]')
+        for e in edges_raw:
+            arrow = "-.->" if e["conditional"] else "-->"
+            lines.append(f'    {_safe(e["source"])} {arrow} {_safe(e["target"])}')
+        out["graph"]["mermaid"] = "\n".join(lines)
+
+        # 2. Tools registry — name + first line of docstring
+        tools_info = []
+        for t in REACT_TOOLS:
+            name = getattr(t, "name", None) or getattr(t, "__name__", "")
+            desc = getattr(t, "description", "") or (getattr(t, "__doc__", "") or "").strip()
+            short = (desc.split("\n")[0] if desc else "").strip()[:200]
+            # Categorize by name prefix for the UI
+            if name in ("vector_search", "keyword_search", "hybrid_search",
+                        "concept_search", "category_search", "graph_search",
+                        "topology_search", "text_search", "pdf_page_search",
+                        "rule_clause_search", "get_catalog_map"):
+                cat = "retrieval"
+            elif name in ("price_query", "price_trend"):
+                cat = "price"
+            elif name in ("list_tables", "describe_table", "sql_query",
+                          "aggregate_query", "list_documents", "fetch_chunk",
+                          "similar_chunks", "stats_overview"):
+                cat = "data"
+            elif name in ("concept_neighbors", "concept_path", "entity_cooccur",
+                          "upstream_downstream"):
+                cat = "graph"
+            elif name in ("expand_question", "suggest_followup",
+                          "find_knowledge_gaps", "proactive_explore"):
+                cat = "cognition"
+            elif name in ("forecast_series", "outlier_detect", "correlate",
+                          "cluster_records"):
+                cat = "stats"
+            elif name in ("calculator", "python_eval", "regex_extract",
+                          "unit_convert", "date_math", "compare_values",
+                          "number_stats", "chart_spec"):
+                cat = "compute"
+            else:
+                cat = "other"
+            tools_info.append({"name": name, "category": cat, "desc": short})
+        out["tools"] = tools_info
+        out["tool_count"] = len(tools_info)
+    except Exception as e:
+        logger.error("agent_runtime introspect failed: %s", e)
+        out["graph"]["error"] = str(e)[:200]
+
+    # 3. Recent runs — opportunistic; agent_runs may not exist
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        conn = _get_pg_conn()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT to_regclass('public.agent_runs') IS NOT NULL
+                """)
+                has_table = bool((cur.fetchone() or [False])[0])
+                if has_table:
+                    cur.execute("""
+                        SELECT run_id, query, status, duration_ms, tool_count,
+                               chunk_count, created_at
+                        FROM agent_runs
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    """, (max(1, min(recent_runs, 100)),))
+                    for r in cur.fetchall():
+                        rid, q, st, dur, tc, cc, ts = r
+                        out["recent_runs"].append({
+                            "run_id": str(rid) if rid else None,
+                            "query": (q or "")[:120],
+                            "status": st,
+                            "duration_ms": dur,
+                            "tool_count": tc,
+                            "chunk_count": cc,
+                            "created_at": ts.isoformat() if ts else None,
+                        })
+        finally:
+            _put_pg_conn(conn)
+    except Exception as e:
+        logger.debug("agent_runs probe skipped: %s", e)
+
+    return out
+
+
 # ── LLM Chat Proxy ────────────────────────────────────────────────────────────
 # Thin streaming proxy so the frontend SystemAssistant can reach DeepSeek
 # through the already-running retrieval-service, without needing Node.js.

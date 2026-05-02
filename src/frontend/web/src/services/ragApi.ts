@@ -318,6 +318,54 @@ export async function getLiveArchitecture(): Promise<LiveArchitecture | null> {
   }
 }
 
+// ──────────────────── Agent Runtime Introspection (#80) ────────────────────
+
+export interface AgentTool {
+  name: string;
+  category: string;
+  desc: string;
+}
+
+export interface AgentRuntime {
+  generated_at: string;
+  graph: {
+    nodes: string[];
+    edges: { source: string; target: string; conditional: boolean }[];
+    entry: string | null;
+    mermaid: string;
+    error?: string;
+  };
+  tools: AgentTool[];
+  tool_count: number;
+  recent_runs: Array<{
+    run_id: string | null;
+    query: string;
+    status: string | null;
+    duration_ms: number | null;
+    tool_count: number | null;
+    chunk_count: number | null;
+    created_at: string | null;
+  }>;
+}
+
+/**
+ * 实时获取 Agent 运行时拓扑（LangGraph 节点/边）+ 工具注册表 + 最近运行。
+ * 服务端基于已编译的 graph 实例反射，不依赖 MD 文档。
+ */
+export async function getAgentRuntime(): Promise<AgentRuntime | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/agent/runtime`);
+    if (!response.ok) {
+      throw new Error(`agent/runtime ${response.status}`);
+    }
+    const result = await response.json();
+    return (result?.data ?? result) as AgentRuntime;
+  } catch (error) {
+    console.error('getAgentRuntime error:', error);
+    return null;
+  }
+}
+
 /**
  * 获取管道统计
  */
