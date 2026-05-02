@@ -3,7 +3,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { checkHealth, HealthResponse } from '../services/agentApi';
+import { getLiveArchitecture, LiveArchitecture } from '../services/ragApi';
 import {
   pipelineUpload,
   getPipelineJobs,
@@ -18,8 +18,11 @@ const SERVICE_LABELS: Record<string, string> = {
   postgres: 'PostgreSQL',
   postgresql: 'PostgreSQL',
   qdrant: 'Qdrant 向量库',
+  elasticsearch: 'Elasticsearch',
+  neo4j: 'Neo4j 图库',
+  redis: 'Redis 缓存',
+  milvus: 'Milvus 向量库',
   cache: '缓存',
-  redis: 'Redis',
   vector: '向量索引',
   keyword: '全文索引',
 };
@@ -45,7 +48,8 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export const PipelinePage: React.FC = () => {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [arch, setArch] = useState<LiveArchitecture | null>(null);
+  const [archLoaded, setArchLoaded] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -59,9 +63,9 @@ export const PipelinePage: React.FC = () => {
 
   useEffect(() => {
     const fetchHealth = async () => {
-      try {
-        setHealth(await checkHealth());
-      } catch { /* ignore */ }
+      const a = await getLiveArchitecture();
+      setArch(a);
+      setArchLoaded(true);
     };
     fetchHealth();
     refreshJobs();
@@ -86,13 +90,27 @@ export const PipelinePage: React.FC = () => {
     }
   };
 
-  const services = health?.services
-    ? Object.entries(health.services).map(([k, v]) => ({
+  const services = arch?.stores
+    ? Object.entries(arch.stores).map(([k, v]) => ({
         key: k,
         label: SERVICE_LABELS[k] || k,
-        status: typeof v === 'string' ? v : 'unknown',
+        status:
+          v?.configured === false
+            ? 'unknown'
+            : v?.available
+              ? 'healthy'
+              : 'unhealthy',
+        configured: v?.configured !== false,
       }))
     : [];
+
+  const overall = arch
+    ? arch.summary.down > 0
+      ? 'down'
+      : arch.summary.degraded > 0
+        ? 'degraded'
+        : 'ok'
+    : 'unknown';
 
   return (
     <div className="pipeline-page">
@@ -101,24 +119,28 @@ export const PipelinePage: React.FC = () => {
       <div className="pipeline-grid">
         <section className="pipeline-card">
           <h2>知识库连通性</h2>
-          {health ? (
+          {arch ? (
             <div className="health-grid">
               {services.map((s) => (
                 <div key={s.key} className="health-item">
                   <StatusDot status={s.status} />
                   <span className="health-label">{s.label}</span>
-                  <span className="health-status">{s.status}</span>
+                  <span className="health-status">
+                    {s.configured ? s.status : '未配置'}
+                  </span>
                 </div>
               ))}
             </div>
+          ) : archLoaded ? (
+            <p className="loading-text">无法连接到检索服务</p>
           ) : (
             <p className="loading-text">加载中…</p>
           )}
-          {health && (
+          {arch && (
             <div className="health-footer">
-              整体 <strong>{health.status}</strong>
+              整体 <strong>{overall}</strong>
               <span className="health-time">
-                更新于 {fmtTime(health.timestamp)}
+                更新于 {fmtTime(arch.generated_at)}
               </span>
             </div>
           )}
