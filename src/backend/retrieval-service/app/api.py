@@ -2739,17 +2739,23 @@ class GuideAgentRequest(BaseModel):
     history: list = []
 
 
-_GUIDE_SYSTEM = """您是「RAG智库系统」的导览助手，专门解答本系统的架构、检索流程、工具用途等技术问题。
+_GUIDE_SYSTEM = """您是「RAG智库系统」的导览助手，专门解答本系统的架构、检索流程、工具用途等技术问题，并能对系统当前运行情况做实时诊断。
+
+可用工具（请按顺序优先使用，组合调用以提高准确性）：
+工具1 query_guide_kb：查询架构 / 检索流程 / 工具说明 / 配置含义等"概念类"问题。架构解释类问题第一时间调它。
+工具2 introspect_runtime：实时读取系统当前的健康、配置、最近错误。当用户问"现在状态如何""xxx 在跑吗""为什么这么慢"时调它。**只读，不会改任何东西**。
+工具3 search_pdf_originals：当 query_guide_kb 查不到、且用户问的是业务文档（消耗量标准、信息价、定额等）时，**穿透到 PDF/OCR 原文**做关键词查找，把 chunk 一同返回。务必告诉用户"主 KB 未命中，已穿透到原文"。
 
 核心规则（强制执行，不得违反）：
-第一、每次回答前必须调用 query_guide_kb 工具查询系统内部知识库，再根据查询结果作答。
-第二、只根据 query_guide_kb 返回的内容作答，不补充资料以外的信息。
-第三、若工具返回内容为空，直接告知用户知识库中暂无此内容。
-第四、禁止使用任何 Markdown 格式符号，包括 #、*、**、-、---、>、`。列举用"第一、第二、第三"替代。
-第五、当用户询问架构、模块、流程、数据流、系统结构等可视化内容时，必须在回答中输出 Mermaid 图表代码块（```mermaid 开头，``` 结尾），不得用纯文字替代。
+第一、回答前至少调用一个工具，禁止凭空作答。
+第二、只根据工具返回内容作答，不补充资料以外的信息；如多工具结果冲突，明确说明。
+第三、若所有工具均无结果，直接告知"知识库与原文均无此内容"。
+第四、禁止使用任何 Markdown 符号（#、*、**、-、---、>、`）。列举用"第一、第二、第三"。
+第五、当用户询问架构、模块、流程、数据流、系统结构等可视化内容时，必须输出 Mermaid 代码块（```mermaid 开头，``` 结尾）。
+第六、当用户问"现在""当前""实时""状态""跑没跑"时，**必须**调用 introspect_runtime，不得拿 query_guide_kb 的静态描述糊弄。
 
 Mermaid 图表规范：
-架构或模块关系用 graph TB 或 graph LR；数据流或请求流用 flowchart TD；时序交互用 sequenceDiagram。
+架构或模块关系用 graph TB 或 graph LR；数据流用 flowchart TD；时序交互用 sequenceDiagram。
 节点文字用中文，连线用 -->，子图用 subgraph。图表紧凑，不超过 15 个节点。
 
 回答风格：
@@ -2780,7 +2786,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
 
     @_lc_tool
     def query_guide_kb(question: str, top_k: int = 5) -> str:
-        """查询RAG智库系统内部技术文档知识库，返回与问题相关的架构说明、工具介绍、检索流程等资料。每次回答前必须调用此工具。"""
+        """查询RAG智库系统内部技术文档知识库（rag_system_kb），返回与问题相关的架构说明、工具介绍、检索流程等资料。架构、配置、流程类问题第一时间调用此工具。"""
         try:
             with _httpx.Client(timeout=15, trust_env=False) as client:
                 emb = client.post(f"{_tei_url}/embed", json={"inputs": [question]})
@@ -2802,6 +2808,139 @@ async def guide_agent_stream(req: GuideAgentRequest):
         except Exception as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+    @_lc_tool
+    def introspect_runtime(aspect: str = "all") -> str:
+        """实时读取系统当前运行状态。只读，不修改任何配置。
+        参数 aspect 取值：
+          - "all"     返回健康+核心配置+最近写入概况（默认）
+          - "health"  仅返回各服务健康状况（critical/optional 区分）
+          - "config"  返回当前向量后端、关键词后端、模型、检索阈值
+          - "stats"   返回库内 chunk/price/conversation 计数
+        当用户问"现在""当前""xxx 在跑吗""为什么慢"时调用此工具。"""
+        report: dict[str, Any] = {"aspect": aspect}
+        try:
+            if aspect in ("all", "health"):
+                async def _get_health():
+                    async with _httpx.AsyncClient(timeout=3.0, trust_env=False) as c:
+                        r = await c.get("http://localhost:8002/api/v1/health/detail")
+                        return r.json() if r.status_code == 200 else {"error": r.status_code}
+                try:
+                    report["health"] = asyncio.run(_get_health())
+                except RuntimeError:
+                    # already in event loop — get via direct call (tool runs sync)
+                    loop = asyncio.new_event_loop()
+                    try:
+                        report["health"] = loop.run_until_complete(_get_health())
+                    finally:
+                        loop.close()
+            if aspect in ("all", "config"):
+                from config.settings import AppConfig as _AC
+                try:
+                    cfg = _AC()
+                    report["config"] = {
+                        "vector_store": {
+                            "type": cfg.vector_store.type,
+                            "uri": cfg.vector_store.uri,
+                            "collection": cfg.vector_store.collection_name,
+                            "dim": cfg.vector_store.vector_size,
+                        },
+                        "keyword_store": {
+                            "type": cfg.keyword_store.type,
+                            "hosts": cfg.keyword_store.hosts,
+                            "index": cfg.keyword_store.index_name,
+                        },
+                        "embedding": getattr(cfg.models, "embedding", None) and {
+                            "name": cfg.models.embedding.name,
+                        },
+                        "env": {
+                            "VECTOR_STORE__TYPE": os.environ.get("VECTOR_STORE__TYPE", "qdrant"),
+                            "KEYWORD_BACKEND": os.environ.get("KEYWORD_BACKEND", "es"),
+                        },
+                    }
+                except Exception as e:
+                    report["config"] = {"error": str(e)[:200]}
+            if aspect in ("all", "stats"):
+                try:
+                    from app.agent.tools import _get_pg_conn, _put_pg_conn
+                    c = _get_pg_conn()
+                    try:
+                        with c.cursor() as cur:
+                            cur.execute("SELECT COUNT(*) FROM text_chunks")
+                            tc = cur.fetchone()[0]
+                            cur.execute("SELECT COUNT(*) FROM price_records")
+                            pr = cur.fetchone()[0]
+                            cur.execute("SELECT COUNT(*) FROM document_registry")
+                            dr = cur.fetchone()[0]
+                            cur.execute(
+                                "SELECT COUNT(*) FROM conversation_turns WHERE source='guide'"
+                            )
+                            gconv = cur.fetchone()[0]
+                            cur.execute(
+                                "SELECT COUNT(*) FROM conversation_turns WHERE source='agent'"
+                            )
+                            aconv = cur.fetchone()[0]
+                        report["stats"] = {
+                            "text_chunks": tc,
+                            "price_records": pr,
+                            "documents": dr,
+                            "guide_conversations": gconv,
+                            "agent_conversations": aconv,
+                        }
+                    finally:
+                        _put_pg_conn(c)
+                except Exception as e:
+                    report["stats"] = {"error": str(e)[:200]}
+            return json.dumps(report, ensure_ascii=False, default=str)
+        except Exception as exc:
+            return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
+
+    @_lc_tool
+    def search_pdf_originals(keyword: str, top_k: int = 3) -> str:
+        """穿透到 PDF/OCR 原文文本做关键词查找，**只在主 KB 未命中**且用户问业务文档（消耗量标准、信息价、定额）时使用。
+        返回命中的文档+所在 chunk 文字。"""
+        try:
+            from app.agent.tools import _get_pg_conn, _put_pg_conn
+            kw = keyword.strip()
+            if len(kw) < 2:
+                return "关键词太短，请提供至少 2 个字。"
+            results: list[dict] = []
+            c = _get_pg_conn()
+            try:
+                with c.cursor() as cur:
+                    # ILIKE on text_chunks → JOIN doc registry for filename
+                    cur.execute(
+                        """
+                        SELECT tc.chunk_id, tc.doc_id, tc.page_number,
+                               LEFT(tc.content, 600) AS preview,
+                               dr.file_name
+                          FROM text_chunks tc
+                          LEFT JOIN document_registry dr ON dr.doc_id = tc.doc_id
+                         WHERE tc.content ILIKE %s
+                         ORDER BY length(tc.content) DESC
+                         LIMIT %s
+                        """,
+                        (f"%{kw}%", max(1, min(int(top_k or 3), 10))),
+                    )
+                    rows = cur.fetchall() or []
+                    for r in rows:
+                        results.append({
+                            "chunk_id": r[0],
+                            "doc_id": r[1],
+                            "page": r[2],
+                            "file_name": r[4] or "(未命名)",
+                            "preview": (r[3] or "").replace("\n", " ")[:600],
+                        })
+            finally:
+                _put_pg_conn(c)
+            if not results:
+                return f"原文中也未找到关键词「{kw}」。"
+            return json.dumps(
+                {"keyword": kw, "hits": results, "note": "已穿透到原文，请引用 file_name + page"},
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
+
     async def event_gen():
         yield _sse_event("progress", {"stage": "thinking", "message": "正在理解问题..."})
         await asyncio.sleep(0)
@@ -2816,35 +2955,44 @@ async def guide_agent_stream(req: GuideAgentRequest):
                 conv.append(_AI(content=content))
         conv.append(_Human(content=req.query.strip()))
 
-        # Step 1: LLM decides how to call query_guide_kb (model-controlled tool use)
+        # Step 1: LLM decides which tools to call (multi-tool, model-controlled)
         yield _sse_event("progress", {"stage": "tool_call", "message": "正在查询知识库..."})
         await asyncio.sleep(0)
+        _all_tools = [query_guide_kb, introspect_runtime, search_pdf_originals]
+        _tool_map = {t.name: t for t in _all_tools}
         try:
             ai_msg, _ = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: invoke_llm_with_tools(
-                    conv, [query_guide_kb], tool_choice="required", llm_config=_llm_config
+                    conv, _all_tools, tool_choice="required", llm_config=_llm_config
                 ),
             )
         except Exception as exc:
             yield _sse_event("error", {"message": f"工具调用失败: {exc}"})
             return
 
-        # Step 2: Execute the tool calls the LLM made
+        # Step 2: Execute every tool call the LLM made (route by tool name)
         tool_calls = getattr(ai_msg, "tool_calls", []) or []
         extra_msgs: list = [ai_msg]
+        invoked: list[str] = []
         for tc in tool_calls:
             tc_id = tc.get("id", "")
+            tc_name = tc.get("name", "query_guide_kb")
             tc_args = tc.get("args", {})
+            invoked.append(tc_name)
+            tool_obj = _tool_map.get(tc_name, query_guide_kb)
             try:
                 result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda a=tc_args: query_guide_kb.invoke(a)
+                    None, lambda t=tool_obj, a=tc_args: t.invoke(a)
                 )
             except Exception as exc:
                 result = json.dumps({"error": str(exc)}, ensure_ascii=False)
             extra_msgs.append(_Tool(content=result, tool_call_id=tc_id))
 
         # Step 3: Stream synthesis grounded on tool results
+        if invoked:
+            yield _sse_event("progress", {"stage": "tools_done", "message": f"已调用工具: {', '.join(invoked)}", "tools": invoked})
+            await asyncio.sleep(0)
         yield _sse_event("progress", {"stage": "synthesis", "message": "正在生成回答..."})
         await asyncio.sleep(0)
         accumulated = ""

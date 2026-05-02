@@ -79,11 +79,13 @@ const AssistantMessage: React.FC<{ content: string; streaming?: boolean }> = ({ 
 };
 
 // SSE async generator for the guide agent stream endpoint
+type GuideStreamEvent = { type: 'token'; delta: string } | { type: 'tools'; tools: string[] };
+
 async function* sendGuideStream(
   query: string,
   history: Array<{ role: string; content: string }>,
   signal: AbortSignal,
-): AsyncGenerator<string, void, unknown> {
+): AsyncGenerator<GuideStreamEvent, void, unknown> {
   const resp = await fetch('/api/v1/guide-agent/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -111,7 +113,9 @@ async function* sendGuideStream(
         try {
           const obj = JSON.parse(line.slice(6).trim());
           if (currentEvent === 'token' && obj.delta) {
-            yield obj.delta as string;
+            yield { type: 'token', delta: obj.delta as string };
+          } else if (currentEvent === 'progress' && obj.stage === 'tools_done' && Array.isArray(obj.tools)) {
+            yield { type: 'tools', tools: obj.tools as string[] };
           } else if (currentEvent === 'error') {
             throw new Error(obj.message ?? 'guide agent error');
           } else if (currentEvent === 'done') {
@@ -133,6 +137,7 @@ interface Msg {
   role: 'user' | 'assistant';
   content: string;
   streaming?: boolean;
+  tools?: string[];
 }
 
 export const SystemAssistant: React.FC = () => {
@@ -273,9 +278,18 @@ export const SystemAssistant: React.FC = () => {
     let accumulated = '';
 
     try {
-      for await (const delta of sendGuideStream(text, historySnapshot, abort.signal)) {
+      for await (const ev of sendGuideStream(text, historySnapshot, abort.signal)) {
         if (abort.signal.aborted || !mountedRef.current) break;
-        accumulated += delta;
+        if (ev.type === 'tools') {
+          setMessages(prev => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.streaming) next[next.length - 1] = { ...last, tools: ev.tools };
+            return next;
+          });
+          continue;
+        }
+        accumulated += ev.delta;
         setMessages(prev => {
           const next = [...prev];
           const last = next[next.length - 1];
@@ -400,6 +414,18 @@ export const SystemAssistant: React.FC = () => {
                       ? <span className="sa-cursor">▍</span>
                       : <AssistantMessage content={m.content} streaming={m.streaming} />}
                 </div>
+                {m.role === 'assistant' && m.tools && m.tools.length > 0 && (
+                  <div className="sa-msg-tools" style={{ marginTop: 4, fontSize: 11, opacity: 0.7 }}>
+                    🛠 {m.tools.map(t => {
+                      const label = ({
+                        introspect_runtime: '运行时探查',
+                        search_pdf_originals: 'PDF 原文',
+                        query_guide_kb: '系统知识库',
+                      } as Record<string,string>)[t] ?? t;
+                      return label;
+                    }).join(' · ')}
+                  </div>
+                )}
               </div>
             ))}
             <div ref={bottomRef} />
