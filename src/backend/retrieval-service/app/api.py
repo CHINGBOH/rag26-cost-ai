@@ -602,6 +602,27 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "data_gaps": data_gaps,
                     },
                 )
+                # Server-side conversation logging
+                try:
+                    import asyncpg as _apg
+                    _db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+                    _conn = await _apg.connect(_db_url)
+                    try:
+                        _turn_idx = int(elapsed_ms // 1 + 1)  # use unique ts-based index
+                        await _conn.execute(
+                            """INSERT INTO conversation_turns
+                               (session_id, turn_index, user_content, assistant_content,
+                                message_id, source, status, latency_ms, ts)
+                               VALUES ($1, (SELECT COALESCE(MAX(turn_index),0)+1 FROM conversation_turns WHERE session_id=$1),
+                               $2, $3, $4, 'agent', 'completed', $5, $6)
+                            """,
+                            session_id, request.query, final_answer or "",
+                            str(uuid.uuid4()), elapsed_ms, asyncio.get_event_loop().time(),
+                        )
+                    finally:
+                        await _conn.close()
+                except Exception as _log_err:
+                    logger.debug(f"[conv_log] skipped: {_log_err}")
                 break
 
             # kind == "chunk"
@@ -819,7 +840,18 @@ async def agent_query_stream(request: AgentStreamRequest):
 class FeedbackRequest(BaseModel):
     session_id: str
     message_id: str
-    rating: int  # +1 or -1
+    rating: int  # +1 or -1 (kept for backward compat)
+    # Extended rating fields (1-5 scale)
+    overall_rating: Optional[int] = None
+    rating_relevance: Optional[int] = None
+    rating_accuracy: Optional[int] = None
+    rating_completeness: Optional[int] = None
+    # Text review fields
+    praise: Optional[str] = None
+    criticism: Optional[str] = None
+    suggestion: Optional[str] = None
+    tags: Optional[list] = None
+    # Legacy fields
     comment: Optional[str] = None
     query: Optional[str] = None
     answer_summary: Optional[str] = None
@@ -835,6 +867,14 @@ async def submit_feedback(request: FeedbackRequest):
         "session_id": request.session_id,
         "message_id": request.message_id,
         "rating": request.rating,
+        "overall_rating": request.overall_rating,
+        "rating_relevance": request.rating_relevance,
+        "rating_accuracy": request.rating_accuracy,
+        "rating_completeness": request.rating_completeness,
+        "praise": request.praise,
+        "criticism": request.criticism,
+        "suggestion": request.suggestion,
+        "tags": request.tags,
         "comment": request.comment,
         "query": request.query,
         "answer_summary": request.answer_summary,
@@ -852,22 +892,36 @@ async def submit_feedback(request: FeedbackRequest):
         logger.error(f"Feedback JSONL write error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save feedback")
 
-    # Also persist to PostgreSQL for durable learning loop
+    # Also persist to PostgreSQL with upsert on (session_id, message_id)
     try:
         import asyncpg
-        db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rag_db")
+        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
         conn = await asyncpg.connect(db_url)
         try:
             await conn.execute(
-                """INSERT INTO rag_feedback (ts, session_id, message_id, rating, comment, query, answer_summary)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                """INSERT INTO rag_feedback
+                   (ts, session_id, message_id, rating, comment, query, answer_summary,
+                    overall_rating, rating_relevance, rating_accuracy, rating_completeness,
+                    praise, criticism, suggestion, tags)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                   ON CONFLICT (session_id, message_id) DO UPDATE SET
+                     rating=EXCLUDED.rating, overall_rating=EXCLUDED.overall_rating,
+                     rating_relevance=EXCLUDED.rating_relevance,
+                     rating_accuracy=EXCLUDED.rating_accuracy,
+                     rating_completeness=EXCLUDED.rating_completeness,
+                     praise=EXCLUDED.praise, criticism=EXCLUDED.criticism,
+                     suggestion=EXCLUDED.suggestion, tags=EXCLUDED.tags,
+                     comment=EXCLUDED.comment, answer_summary=EXCLUDED.answer_summary
+                """,
                 record["ts"], request.session_id, request.message_id,
                 request.rating, request.comment, request.query, request.answer_summary,
+                request.overall_rating, request.rating_relevance, request.rating_accuracy,
+                request.rating_completeness, request.praise, request.criticism,
+                request.suggestion, request.tags,
             )
         finally:
             await conn.close()
     except Exception as e:
-        # DB write is best-effort; JSONL write already succeeded
         logger.warning(f"Feedback DB write skipped: {e}")
 
     return {"status": "ok", "message_id": request.message_id}
@@ -1090,6 +1144,76 @@ async def learning_gaps(limit: int = 30):
         if len(gaps) >= limit:
             break
     return {"gaps": gaps}
+
+
+@router.get("/api/v1/learning/conversations")
+async def learning_conversations(limit: int = 50, source: Optional[str] = None):
+    """Recent conversation turns from DB, newest first. source=agent|guide to filter."""
+    try:
+        import asyncpg
+        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+        conn = await asyncpg.connect(db_url)
+        try:
+            if source:
+                rows = await conn.fetch(
+                    "SELECT * FROM conversation_turns WHERE source=$1 ORDER BY ts DESC LIMIT $2",
+                    source, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM conversation_turns ORDER BY ts DESC LIMIT $1", limit
+                )
+        finally:
+            await conn.close()
+        turns = [dict(r) for r in rows]
+        return {"turns": turns, "total": len(turns)}
+    except Exception as e:
+        logger.warning(f"conversations fetch error: {e}")
+        return {"turns": [], "total": 0, "error": str(e)}
+
+
+@router.get("/api/v1/learning/feedback-stats")
+async def learning_feedback_stats(limit: int = 100):
+    """Feedback records with detailed ratings + trend data for dashboard."""
+    try:
+        import asyncpg
+        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+        conn = await asyncpg.connect(db_url)
+        try:
+            rows = await conn.fetch(
+                """SELECT ts, session_id, message_id, rating, overall_rating,
+                          rating_relevance, rating_accuracy, rating_completeness,
+                          praise, criticism, suggestion, tags, query, answer_summary
+                   FROM rag_feedback ORDER BY ts DESC LIMIT $1""",
+                limit,
+            )
+            # Trend: daily good-rate (last 7 days buckets)
+            trend_rows = await conn.fetch(
+                """SELECT DATE_TRUNC('day', created_at AT TIME ZONE 'Asia/Shanghai') AS day,
+                          COUNT(*) FILTER (WHERE rating > 0) AS positive,
+                          COUNT(*) AS total
+                   FROM rag_feedback
+                   WHERE created_at >= NOW() - INTERVAL '7 days'
+                   GROUP BY 1 ORDER BY 1"""
+            )
+        finally:
+            await conn.close()
+        records = [dict(r) for r in rows]
+        trend = [{"day": str(r["day"])[:10], "positive": r["positive"], "total": r["total"]} for r in trend_rows]
+        pos = sum(1 for r in records if r.get("rating", 0) > 0)
+        neg = sum(1 for r in records if r.get("rating", 0) < 0)
+        avg_overall = None
+        rated = [r["overall_rating"] for r in records if r.get("overall_rating")]
+        if rated:
+            avg_overall = round(sum(rated) / len(rated), 2)
+        return {
+            "records": records,
+            "summary": {"positive": pos, "negative": neg, "total": len(records), "avg_overall_rating": avg_overall},
+            "trend": trend,
+        }
+    except Exception as e:
+        logger.warning(f"feedback-stats error: {e}")
+        return {"records": [], "summary": {}, "trend": [], "error": str(e)}
 
 
 # ── Ops Metrics (in-memory request counter) ───────────────────────────────────
@@ -2301,6 +2425,25 @@ async def guide_agent_stream(req: GuideAgentRequest):
             return
 
         yield _sse_event("done", {"answer": accumulated})
+        # Server-side conversation logging for guide agent
+        try:
+            import asyncpg as _apg_g
+            _db_url_g = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+            _conn_g = await _apg_g.connect(_db_url_g)
+            try:
+                await _conn_g.execute(
+                    """INSERT INTO conversation_turns
+                       (session_id, turn_index, user_content, assistant_content, source, status, ts)
+                       VALUES ($1, (SELECT COALESCE(MAX(turn_index),0)+1 FROM conversation_turns WHERE session_id=$1),
+                       $2, $3, 'guide', 'completed', $4)
+                    """,
+                    "guide-" + str(abs(hash(req.query)) % 100000),
+                    req.query, accumulated, asyncio.get_event_loop().time(),
+                )
+            finally:
+                await _conn_g.close()
+        except Exception as _gl_err:
+            logger.debug(f"[conv_log_guide] skipped: {_gl_err}")
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 

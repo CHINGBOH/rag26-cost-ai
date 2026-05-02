@@ -13,6 +13,7 @@ import {
   PresentationBlock,
 } from '../stores/useRunStore';
 import { submitFeedback } from '../services/metricsApi';
+import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
 import { evaluate } from 'mathjs';
 import {
   RadarChart,
@@ -906,6 +907,7 @@ function getDefaultEngine(route: ConfigState['llmRoute']): string {
 export const AgentChat: React.FC = () => {
   const { messages, isLoading, sendMessage, clearMessages, cancelStream, sessionId } = useAgent();
   const [input, setInput] = useState('');
+  const [pendingInput, setPendingInput] = useState<string | null>(null);
   const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -914,8 +916,34 @@ export const AgentChat: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Auto-fire queued message when stream finishes
+  useEffect(() => {
+    if (!isLoading && pendingInput !== null) {
+      const text = pendingInput;
+      setPendingInput(null);
+      const agentConfig: AgentConfig = {
+        maxIterations: config.maxIterations,
+        scoreThreshold: config.scoreThreshold,
+        topK: config.topK,
+        searchMode: config.searchMode,
+        docTypes: config.docTypes,
+        llmRoute: config.llmRoute,
+        llmProvider: config.llmRoute === 'auto' ? undefined : config.llmRoute,
+        llmModel: config.llmModel,
+        llmEngine: config.llmEngine,
+      };
+      sendMessage(text, agentConfig);
+      inputRef.current?.focus();
+    }
+  }, [isLoading]);
+
   const handleSend = () => {
-    if (!input.trim() || isLoading) return;
+    if (!input.trim()) return;
+    if (isLoading) {
+      setPendingInput(input.trim());
+      setInput('');
+      return;
+    }
     const agentConfig: AgentConfig = {
       maxIterations: config.maxIterations,
       scoreThreshold: config.scoreThreshold,
@@ -1111,9 +1139,8 @@ export const AgentChat: React.FC = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="请输入您的问题…"
+                placeholder={pendingInput ? `排队中：${pendingInput.slice(0, 30)}…` : '请输入您的问题…'}
                 rows={1}
-                disabled={isLoading}
               />
               {isLoading ? (
                 <button className="cancel-btn" onClick={cancelStream}>停止</button>
@@ -1132,7 +1159,9 @@ export const AgentChat: React.FC = () => {
             </div>
           </div>
           <div className="input-hints">
-            <span className="hint-text">Enter 发送 · Shift+Enter 换行</span>
+            <span className="hint-text">
+              {pendingInput ? `⏳ 排队中 — 流式结束后自动发送` : 'Enter 发送 · 流式中自动排队'}
+            </span>
             <div className="input-meta-actions">
               {input.length > 0 && <span className="char-count">{input.length}</span>}
               {messages.length > 0 && (
@@ -1187,9 +1216,11 @@ const MessageBubble: React.FC<{
 }> = ({ message, sessionId, onFollowupClick }) => {
   const [showDetail, setShowDetail] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [pendingRating, setPendingRating] = useState<1 | -1 | null>(null);
 
-  const sendFeedback = async (rating: number) => {
-    if (!sessionId || feedbackSent !== null) return;
+  const sendFeedback = async (rating: number, detail?: FeedbackDetail) => {
+    if (!sessionId) return;
     try {
       await submitFeedback({
         session_id: sessionId,
@@ -1197,11 +1228,32 @@ const MessageBubble: React.FC<{
         rating,
         query: undefined,
         answer_summary: message.content.slice(0, 200),
+        ...(detail ?? {}),
       });
       setFeedbackSent(rating);
     } catch (e) {
       console.error('Feedback error', e);
     }
+  };
+
+  const handleThumb = (rating: 1 | -1) => {
+    if (feedbackSent !== null) return;
+    sendFeedback(rating);
+    setPendingRating(rating);
+    setShowFeedbackModal(true);
+  };
+
+  const handleModalSubmit = (detail: FeedbackDetail) => {
+    if (!sessionId || pendingRating === null) return;
+    submitFeedback({
+      session_id: sessionId,
+      message_id: message.id,
+      rating: pendingRating,
+      answer_summary: message.content.slice(0, 200),
+      ...detail,
+    }).catch(console.error);
+    setShowFeedbackModal(false);
+    setPendingRating(null);
   };
 
   if (message.error) {
@@ -1258,7 +1310,7 @@ const MessageBubble: React.FC<{
             <div className="feedback-btns">
               <button
                 className={`feedback-btn ${feedbackSent === 1 ? 'active' : ''}`}
-                onClick={() => sendFeedback(1)}
+                onClick={() => handleThumb(1)}
                 title="有帮助"
                 disabled={feedbackSent !== null}
               >
@@ -1266,13 +1318,30 @@ const MessageBubble: React.FC<{
               </button>
               <button
                 className={`feedback-btn ${feedbackSent === -1 ? 'active' : ''}`}
-                onClick={() => sendFeedback(-1)}
+                onClick={() => handleThumb(-1)}
                 title="没帮助"
                 disabled={feedbackSent !== null}
               >
                 👎
               </button>
+              {feedbackSent !== null && (
+                <button
+                  className="feedback-btn detail-review"
+                  onClick={() => { setPendingRating(feedbackSent as 1 | -1); setShowFeedbackModal(true); }}
+                  title="详细点评"
+                >
+                  点评
+                </button>
+              )}
             </div>
+
+            {showFeedbackModal && pendingRating !== null && (
+              <FeedbackModal
+                initialRating={pendingRating}
+                onSubmit={handleModalSubmit}
+                onClose={() => setShowFeedbackModal(false)}
+              />
+            )}
 
             {message.chunks && message.chunks.length > 0 && (
               <button className="detail-toggle" onClick={() => setShowDetail(!showDetail)}>

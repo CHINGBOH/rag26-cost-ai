@@ -13,15 +13,29 @@ import {
   getLearningRuns,
   getLearningGaps,
   getLearningBlindspots,
+  getConversations,
+  getFeedbackStats,
   LearningSummary,
   LearningRun,
   LearningGap,
   BlindspotCluster,
+  ConversationTurn,
+  FeedbackStats,
 } from '../services/metricsApi';
 import './LearningPage.css';
 import { fmtDateTime } from '../utils/dateUtils';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
 
 type QualityFilter = 'all' | 'good' | 'weak' | 'failure';
+type MainTab = 'runs' | 'conversations' | 'feedback';
 
 const QUALITY_ZH: Record<string, string> = {
   good: '优质', weak: '弱', failure: '失败',
@@ -36,21 +50,28 @@ export const LearningPage: React.FC = () => {
   const [runs, setRuns] = useState<LearningRun[]>([]);
   const [gaps, setGaps] = useState<LearningGap[]>([]);
   const [blindspots, setBlindspots] = useState<BlindspotCluster[]>([]);
+  const [conversations, setConversations] = useState<ConversationTurn[]>([]);
+  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const [filter, setFilter] = useState<QualityFilter>('all');
+  const [mainTab, setMainTab] = useState<MainTab>('runs');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
-    const [s, r, g, b] = await Promise.all([
+    const [s, r, g, b, convs, fb] = await Promise.all([
       getLearningSummary(),
       getLearningRuns(50, filter === 'all' ? undefined : filter),
       getLearningGaps(20),
       getLearningBlindspots(2),
+      getConversations(50),
+      getFeedbackStats(100),
     ]);
     setSummary(s);
     setRuns(r);
     setGaps(g);
     setBlindspots(b?.clusters || []);
+    setConversations(convs);
+    setFeedbackStats(fb);
     setLoading(false);
   };
 
@@ -228,7 +249,17 @@ export const LearningPage: React.FC = () => {
         </section>
       </div>
 
+      {/* 主 Tab 导航 */}
+      <div className="learn-main-tabs">
+        {([['runs', '运行记录'], ['conversations', '对话记录'], ['feedback', '反馈点评']] as [MainTab, string][]).map(([t, label]) => (
+          <button key={t} className={mainTab === t ? 'active' : ''} onClick={() => setMainTab(t)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* 运行明细 */}
+      {mainTab === 'runs' && (
       <section className="learn-card learn-runs-card">
         <div className="learn-card-head">
           <h3>最近 agent 运行</h3>
@@ -277,6 +308,117 @@ export const LearningPage: React.FC = () => {
           </table>
         )}
       </section>
+      )}
+
+      {/* 对话记录 */}
+      {mainTab === 'conversations' && (
+      <section className="learn-card learn-runs-card">
+        <div className="learn-card-head">
+          <h3>最近对话记录 <span className="muted">({conversations.length})</span></h3>
+          <span className="muted small">来源：agent 问答 + 导览助手</span>
+        </div>
+        {conversations.length === 0 ? (
+          <p className="empty">暂无对话记录。数据库中尚未储存任何会话轮次。</p>
+        ) : (
+          <table className="learn-runs-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>来源</th>
+                <th>用户提问</th>
+                <th>助手回答</th>
+                <th>延迟 ms</th>
+              </tr>
+            </thead>
+            <tbody>
+              {conversations.map((c, i) => (
+                <tr key={i}>
+                  <td className="ts-cell">{fmtDateTime(c.ts)}</td>
+                  <td><span className="badge q-good">{c.source}</span></td>
+                  <td className="q-cell" title={c.user_content}>{c.user_content}</td>
+                  <td className="q-cell" title={c.assistant_content}>{(c.assistant_content || '').slice(0, 80)}{c.assistant_content?.length > 80 ? '…' : ''}</td>
+                  <td className="num">{c.latency_ms ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+      )}
+
+      {/* 反馈点评 */}
+      {mainTab === 'feedback' && (
+      <section className="learn-card learn-runs-card">
+        <div className="learn-card-head">
+          <h3>用户反馈点评 <span className="muted">({feedbackStats?.summary?.total ?? 0})</span></h3>
+          <div className="muted small">
+            👍 {feedbackStats?.summary?.positive ?? 0} · 👎 {feedbackStats?.summary?.negative ?? 0}
+            {feedbackStats?.summary?.avg_overall_rating != null && ` · 平均总分 ${feedbackStats.summary.avg_overall_rating}`}
+          </div>
+        </div>
+
+        {/* 趋势图 */}
+        {(feedbackStats?.trend?.length ?? 0) > 0 && (
+          <div className="fb-trend-chart">
+            <div className="learn-card-head" style={{ paddingBottom: 8 }}>
+              <h4 className="muted small">近 7 日好评趋势</h4>
+            </div>
+            <ResponsiveContainer width="100%" height={160}>
+              <LineChart data={feedbackStats!.trend} margin={{ top: 4, right: 16, bottom: 0, left: -20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#888' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#888' }} />
+                <Tooltip
+                  contentStyle={{ background: '#1a1208', border: '1px solid rgba(212,168,39,0.3)', borderRadius: 6 }}
+                  labelStyle={{ color: '#d4a827' }}
+                  itemStyle={{ color: '#ccc' }}
+                />
+                <Line type="monotone" dataKey="positive" name="好评" stroke="#d4a827" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="total" name="总计" stroke="#888" dot={false} strokeDasharray="4 2" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {/* 反馈列表 */}
+        {(feedbackStats?.records?.length ?? 0) === 0 ? (
+          <p className="empty">暂无反馈记录。在问答页点击 👍/👎 并填写点评即可。</p>
+        ) : (
+          <table className="learn-runs-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>评价</th>
+                <th>总分</th>
+                <th>相关</th>
+                <th>准确</th>
+                <th>完整</th>
+                <th>标签</th>
+                <th>好评</th>
+                <th>差评</th>
+                <th>建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              {feedbackStats!.records.map((r, i) => (
+                <tr key={i}>
+                  <td className="ts-cell">{fmtDateTime(r.ts)}</td>
+                  <td>{r.rating > 0 ? '👍' : '👎'}</td>
+                  <td className="num">{r.overall_rating ?? '—'}</td>
+                  <td className="num">{r.rating_relevance ?? '—'}</td>
+                  <td className="num">{r.rating_accuracy ?? '—'}</td>
+                  <td className="num">{r.rating_completeness ?? '—'}</td>
+                  <td className="tools-cell">{r.tags?.join(', ') ?? '—'}</td>
+                  <td className="q-cell">{r.praise ?? '—'}</td>
+                  <td className="q-cell">{r.criticism ?? '—'}</td>
+                  <td className="q-cell">{r.suggestion ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+      )}
     </div>
   );
 };

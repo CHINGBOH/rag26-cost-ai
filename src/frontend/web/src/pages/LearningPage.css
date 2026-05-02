@@ -72,3 +72,48 @@
 .learn-runs-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .learn-runs-table .tools-cell { font-family: 'JetBrains Mono', Menlo, Consolas, monospace; font-size: 11px; color: var(--color-text-muted); }
 .learn-runs-table code { background: var(--color-surface-2); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+/* ── Main tab nav ─────────────────────────────────────────────────────────── */
+.learn-main-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0;
+}
+.learn-main-tabs button {
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+.learn-main-tabs button:hover { color: #d4a827; }
+.learn-main-tabs button.active {
+  color: #d4a827;
+  border-bottom-color: #d4a827;
+}
+
+/* ── Feedback trend chart ─────────────────────────────────────────────────── */
+.fb-trend-chart {
+  margin-bottom: 18px;
+  padding: 10px 0 4px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ── Feedback meta tag ───────────────────────────────────────────────────── */
+.feedback-btn.detail-review {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: rgba(212,168,39,0.08);
+  border: 1px solid rgba(212,168,39,0.25);
+  color: #d4a827;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.feedback-btn.detail-review:hover { background: rgba(212,168,39,0.18); }

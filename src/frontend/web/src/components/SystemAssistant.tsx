@@ -140,6 +140,7 @@ export const SystemAssistant: React.FC = () => {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [pendingInput, setPendingInput] = useState<string | null>(null);
   const [iconLarge, setIconLarge] = useState(false);
   const [panelSize, setPanelSize] = useState<{ w: number; h: number } | null>(null);
 
@@ -168,6 +169,15 @@ export const SystemAssistant: React.FC = () => {
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
+
+  // Auto-fire queued message when streaming finishes
+  useEffect(() => {
+    if (!isStreaming && pendingInput !== null) {
+      const text = pendingInput;
+      setPendingInput(null);
+      send(text);
+    }
+  }, [isStreaming]);
 
   // Resize handle — panel is anchored bottom-right, so drag top-left corner to resize
   const onResizeStart = useCallback((e: React.MouseEvent) => {
@@ -209,10 +219,10 @@ export const SystemAssistant: React.FC = () => {
     setMessages([]);
   }, [stopStream]);
 
-  const send = useCallback(async () => {
-    const text = input.trim();
+  const send = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || isStreaming) return;
-    setInput('');
+    if (!overrideText) setInput('');
 
     // Capture history BEFORE mutating state — these are the prior completed turns
     const historySnapshot = messages
@@ -275,7 +285,14 @@ export const SystemAssistant: React.FC = () => {
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (isStreaming) {
+        if (input.trim()) {
+          setPendingInput(input.trim());
+          setInput('');
+        }
+      } else {
+        send();
+      }
     }
   };
 
@@ -369,18 +386,24 @@ export const SystemAssistant: React.FC = () => {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="问我关于系统的任何问题… (Enter 发送)"
+              placeholder={pendingInput ? `排队中：${pendingInput.slice(0, 20)}…` : '问我关于系统的任何问题…'}
               rows={2}
-              disabled={isStreaming}
               aria-label="输入问题"
             />
             <button
               className={`sa-send${isStreaming ? ' sa-send--stop' : ''}`}
-              onClick={isStreaming ? stopStream : send}
+              onClick={() => {
+                if (isStreaming) {
+                  if (input.trim()) { setPendingInput(input.trim()); setInput(''); }
+                  else stopStream();
+                } else {
+                  send();
+                }
+              }}
               disabled={!isStreaming && !input.trim()}
-              aria-label={isStreaming ? '停止' : '发送'}
+              aria-label={isStreaming ? '排队' : '发送'}
             >
-              {isStreaming ? '停止' : '发送'}
+              {isStreaming ? (input.trim() ? '排队' : '停止') : '发送'}
             </button>
           </div>
         </div>

@@ -40,14 +40,65 @@ export async function getLlmMetrics(): Promise<LlmMetricsResponse> {
   }
 }
 
-export async function submitFeedback(data: {
+export interface FeedbackDetail {
   session_id: string;
   message_id: string;
   rating: number;
   comment?: string;
   query?: string;
   answer_summary?: string;
-}): Promise<{ status: string; message_id: string }> {
+  overall_rating?: number;
+  rating_relevance?: number;
+  rating_accuracy?: number;
+  rating_completeness?: number;
+  praise?: string;
+  criticism?: string;
+  suggestion?: string;
+  tags?: string[];
+}
+
+export interface ConversationTurn {
+  id: number;
+  session_id: string;
+  turn_index: number;
+  user_content: string;
+  assistant_content: string;
+  source: string;
+  status: string;
+  latency_ms: number | null;
+  ts: string;
+}
+
+export interface FeedbackRecord {
+  ts: string;
+  session_id: string;
+  message_id: string;
+  rating: number;
+  overall_rating: number | null;
+  rating_relevance: number | null;
+  rating_accuracy: number | null;
+  rating_completeness: number | null;
+  praise: string | null;
+  criticism: string | null;
+  suggestion: string | null;
+  tags: string[] | null;
+  query: string | null;
+  answer_summary: string | null;
+}
+
+export interface FeedbackStats {
+  records: FeedbackRecord[];
+  summary: {
+    positive: number;
+    negative: number;
+    total: number;
+    avg_overall_rating: number | null;
+  };
+  trend: Array<{ day: string; positive: number; total: number }>;
+  error?: string;
+}
+
+export async function submitFeedback(data: FeedbackDetail): Promise<{ status: string; message_id: string }> {
   const res = await fetch(`${API_BASE}/api/v1/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -329,5 +380,25 @@ export async function getPipelineJob(id: string): Promise<PipelineJob | null> {
   try {
     const r = await fetch(`${API_BASE}/api/v1/pipeline/job/${id}`);
     return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ── Learning Loop: conversations + feedback stats ─────────────────────────────
+
+export async function getConversations(limit = 50, source?: string): Promise<ConversationTurn[]> {
+  try {
+    const qs = source ? `?limit=${limit}&source=${source}` : `?limit=${limit}`;
+    const r = await fetch(`${API_BASE}/api/v1/learning/conversations${qs}`);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return d.turns || [];
+  } catch { return []; }
+}
+
+export async function getFeedbackStats(limit = 100): Promise<FeedbackStats | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/feedback-stats?limit=${limit}`);
+    if (!r.ok) return null;
+    return r.json();
   } catch { return null; }
 }
