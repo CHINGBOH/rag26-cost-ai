@@ -1346,8 +1346,56 @@ def verify_tool_contract(state: dict) -> ContractResult:
     return ContractResult(node="tool_node", passed=True, violations=[])
 
 
+_CITATION_RE = re.compile(r"《([^《》]{1,80})》")
+
+
+def _normalize_source_name(name: str) -> str:
+    """Normalize doc filename / cited title for cross-comparison."""
+    if not name:
+        return ""
+    s = str(name).strip().strip("《》")
+    for ext in (".pdf", ".PDF", ".xlsx", ".XLSX", ".docx", ".DOCX", ".md"):
+        if s.endswith(ext):
+            s = s[: -len(ext)]
+    return s
+
+
+def _detect_cross_source_hallucination(answer: str, chunks: list[dict]) -> list[str]:
+    """Return cited source names that do NOT appear in retrieved chunks (Source Constraint, #45).
+
+    Only flags structural sources like '第二册电气设备安装工程' or '《市政工程...》' that are
+    unique to a specific volume. Generic markers like book/page references are ignored.
+    """
+    if not answer or not chunks:
+        return []
+    cited = {
+        _normalize_source_name(m)
+        for m in _CITATION_RE.findall(answer)
+        if 2 < len(m) <= 60
+    }
+    if not cited:
+        return []
+    available: set[str] = set()
+    for c in chunks:
+        for key in ("doc_filename", "source", "file_name"):
+            v = c.get(key)
+            if v:
+                available.add(_normalize_source_name(v))
+        meta = c.get("metadata") or {}
+        for key in ("doc_filename", "source", "file_name", "book"):
+            v = meta.get(key)
+            if v:
+                available.add(_normalize_source_name(v))
+    violations: list[str] = []
+    for c in cited:
+        # substring match in either direction (cited='第二册电气...' vs file='第二册电气...安装工程定额')
+        if not any(c in a or a in c for a in available if a):
+            violations.append(c)
+    return violations
+
+
 def verify_synthesize_contract(state: dict) -> ContractResult:
-    """C4: synthesize_node post-conditions — answer quality checks."""
+    """C4: synthesize_node post-conditions — answer quality + Source Constraint (#45)."""
     eval_ = state.get("evaluation") or {}
     answer = state.get("final_answer", "")
     qt = state.get("query_type", "")
@@ -1365,6 +1413,15 @@ def verify_synthesize_contract(state: dict) -> ContractResult:
         cv = _compute_price_cv_from_chunks(chunks)
         if cv is not None and cv > 0.15:
             violations.append(("source_conflict", f"price CV={cv:.3f} exceeds 0.15 threshold"))
+
+    # Source Constraint (#45): block cross-volume hallucination.
+    if answer and chunks:
+        bogus = _detect_cross_source_hallucination(answer, chunks)
+        if bogus:
+            violations.append(
+                ("citation_hallucination",
+                 f"cited sources not in retrieved chunks: {', '.join(bogus[:3])}")
+            )
 
     return ContractResult(
         node="synthesize_node",
@@ -2032,7 +2089,19 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         display = doc_name.replace(".pdf", "").replace(".xlsx", "").replace(".docx", "")
         display = display.strip("《》")
         ref_label = f"《{display}》P{page}" if doc_name else f"来源[{i}]"
-        chunks_text += f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}\n内容：{content}\n"
+        # #46 Contextual enrichment: prepend parent-section summary if present in metadata
+        meta = c.get("metadata") or {}
+        parent_summary = (meta.get("parent_summary") or "").strip()
+        parent_section = (meta.get("parent_section") or "").strip()
+        parent_block = ""
+        if parent_summary:
+            label = f"父节{parent_section}" if parent_section else "父节"
+            parent_block = f"\n[{label}前置说明]：{parent_summary[:240]}\n"
+        chunks_text += (
+            f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}"
+            f"{parent_block}"
+            f"\n内容：{content}\n"
+        )
 
     first_ref = ""
     if chunks:
@@ -2082,7 +2151,9 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         f"1. 严格基于上述检索结果回答，每处数值后必须用【文件名 P页码】格式标注来源，如 【{first_ref}】；\n"
         f"   每条价格数据至少标注一次来源，禁止用\"来源为各期价格文件\"等模糊表述代替具体引用\n"
         f"2. 数值（金额、比例、系数）必须来自检索结果原文，不得编造\n"
-        f"3. {query_type_hint}\n"
+        f"3. 【强制】只能引用上述证据中出现过的文件名，禁止引用任何未在证据列表中出现的册名/规范/定额；\n"
+        f"   若证据不足以回答，宁可声明信息不足，也不得编造来源。\n"
+        f"4. {query_type_hint}\n"
         f"{fallback_hint}\n"
         f"{trend_average_hint}\n"
         f"{catalog_only_hint}"

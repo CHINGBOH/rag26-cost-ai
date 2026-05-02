@@ -496,6 +496,14 @@ def process_file(stem: str, dry_run: bool = False) -> dict:
         for ln in last_lines:
             print(f"    {ln}")
 
+    # 8. Backfill parent_summary into metadata (#46 contextual enrichment)
+    try:
+        print(f"  Backfilling parent_summary ...")
+        from tools.backfill_parent_summary import main as _ps_main
+        _ps_main()
+    except Exception as e:
+        print(f"  [WARNING] parent_summary backfill failed: {e}")
+
     elapsed = time.time() - t0
     print(f"  Done in {elapsed:.1f}s")
     return {

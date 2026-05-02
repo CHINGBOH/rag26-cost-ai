@@ -1667,7 +1667,7 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10, path_constrain
     with conn.cursor() as cur:
         cur.execute(
             f"""
-                SELECT id, doc_id, page_number, content
+                SELECT id, doc_id, page_number, content, file_name, path, metadata
                 FROM text_chunks
                 WHERE content ILIKE %s
                 {path_clause}
@@ -1687,7 +1687,10 @@ def _query_text_chunks_literal(conn, query: str, top_k: int = 10, path_constrain
                 "source_db": "literal_text",
                 "content": row[3] or "",
                 "score": 0.72,
-                "metadata": {},
+                "doc_filename": row[4] or "",
+                "file_name": row[4] or "",
+                "path": row[5] or "",
+                "metadata": dict(row[6] or {}),
             },
             RETRIEVAL_PATH_PDF_PAGE,
             evidence_kind="pdf_page_literal",
@@ -3484,7 +3487,8 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
             with conn.cursor() as cur:
                 cur.execute(f"""
                     SELECT id, doc_id, page_number, content,
-                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score
+                           ts_rank(to_tsvector('{ts_cfg}', content), plainto_tsquery('{ts_cfg}', %s)) AS score,
+                           file_name, path, metadata
                     FROM text_chunks
                     WHERE to_tsvector('{ts_cfg}', content) @@ plainto_tsquery('{ts_cfg}', %s)
                     {path_filter_sql}
@@ -3504,7 +3508,10 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                                     "source_db": "pg_fulltext",
                                     "content": row[3] or "",
                                     "score": round(float(row[4] or 0), 4),
-                                    "metadata": {},
+                                    "doc_filename": row[5] or "",
+                                    "file_name": row[5] or "",
+                                    "path": row[6] or "",
+                                    "metadata": dict(row[7] or {}),
                                 },
                                 RETRIEVAL_PATH_DATABASE,
                                 evidence_kind="fulltext_chunk",
