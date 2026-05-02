@@ -9,6 +9,7 @@ import { LLMProvider, VectorDB, GraphDB, DataPipeline } from '@rag/shared';
 import './Infrastructure.css';
 import { fmtDate } from '../../utils/dateUtils';
 import { LiveArchitecturePanel } from './LiveArchitecturePanel';
+import { LiveTopologyView } from './LiveTopologyView';
 
 export const InfrastructurePanel: React.FC = () => {
   const {
@@ -26,6 +27,7 @@ export const InfrastructurePanel: React.FC = () => {
   return (
     <div className="infrastructure-panel">
       {/* 实时活架构 — 真四库连通性 (#81/#87) */}
+      <LiveTopologyView />
       <LiveArchitecturePanel />
 
       {/* LLM 提供者 */}
