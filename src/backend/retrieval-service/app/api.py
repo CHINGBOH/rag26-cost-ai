@@ -2842,10 +2842,11 @@ _GUIDE_SYSTEM = """您是「RAG智库系统」的导览助手，专门解答本�
 
 可用工具（请按顺序优先使用，组合调用以提高准确性）：
 工具1 query_guide_kb：查询架构 / 检索流程 / 工具说明 / 配置含义等"概念类"问题。架构解释类问题第一时间调它。
-工具2 introspect_runtime：实时读取系统当前的健康、配置、最近错误。当用户问"现在状态如何""xxx 在跑吗""为什么这么慢"时调它。**只读，不会改任何东西**。
-工具3 search_pdf_originals：当 query_guide_kb 查不到、且用户问的是业务文档（消耗量标准、信息价、定额等）时，**穿透到 PDF/OCR 原文**做关键词查找，把 chunk 一同返回。务必告诉用户"主 KB 未命中，已穿透到原文"。
-工具4 search_ocr_files：当 search_pdf_originals 也没命中时，作为最终兜底，直接扫 OCR 输出 JSON 全文。返回文件名 + 页码 + 上下文片段。
-工具5 adjust_rag_config：调整 RAG 运行时配置（top_k / score_threshold / 检索后端等）。**默认 dry_run，仅预览不生效**；用户明确说"应用""执行""apply"时才传 apply=true。每次调用都会写入审计表 runtime_config_audit。仅当用户明确请求"调高 top_k""换检索后端"等操作时才使用，绝不自作主张。
+工具2 search_self_docs：查询**本项目仓库的源代码文档**（README、AGENTS.md、docs/、.agent/agents/、.kimi/ 等真实 .md 文件）。当 query_guide_kb 没命中、或用户问"代码在哪""目录结构""哪个端口""怎么启动""Agent 怎么定义"等具体落地问题时，**直接用此工具**，因为它索引的是真实仓库文件，最权威。
+工具3 introspect_runtime：实时读取系统当前的健康、配置、最近错误。当用户问"现在状态如何""xxx 在跑吗""为什么这么慢"时调它。**只读，不会改任何东西**。
+工具4 search_pdf_originals：当 query_guide_kb / search_self_docs 都查不到、且用户问的是业务文档（消耗量标准、信息价、定额等）时，**穿透到 PDF/OCR 原文**做关键词查找，把 chunk 一同返回。务必告诉用户"主 KB 未命中，已穿透到原文"。
+工具5 search_ocr_files：当 search_pdf_originals 也没命中时，作为最终兜底，直接扫 OCR 输出 JSON 全文。返回文件名 + 页码 + 上下文片段。
+工具6 adjust_rag_config：调整 RAG 运行时配置（top_k / score_threshold / 检索后端等）。**默认 dry_run，仅预览不生效**；用户明确说"应用""执行""apply"时才传 apply=true。每次调用都会写入审计表 runtime_config_audit。仅当用户明确请求"调高 top_k""换检索后端"等操作时才使用，绝不自作主张。
 
 核心规则（强制执行，不得违反）：
 第一、回答前至少调用一个工具，禁止凭空作答。
@@ -2884,6 +2885,39 @@ async def guide_agent_stream(req: GuideAgentRequest):
     _qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     # Use env-configured model (deepseek-chat by default) — deepseek-reasoner does not support tool_choice
     _llm_config: dict[str, Any] = {}
+
+    @_lc_tool
+    def search_self_docs(question: str, top_k: int = 5) -> str:
+        """查询本 RAG 项目的源代码文档（README / AGENTS.md / docs/ / .agent/agents/ / .kimi/）。
+        当 query_guide_kb 在 rag_system_kb 中没找到时，**优先**用此工具，因为这是直接索引仓库 .md 的内容，最权威。
+        适合：项目代码结构、文件位置、命令、Agent 配置、架构规则等问题。"""
+        try:
+            with _httpx.Client(timeout=15, trust_env=False) as client:
+                emb = client.post(f"{_tei_url}/embed", json={"inputs": [question]})
+                emb.raise_for_status()
+                vec = emb.json()[0]
+            with _httpx.Client(timeout=15, trust_env=False) as client:
+                hits_resp = client.post(
+                    f"{_qdrant_url}/collections/rag_self_docs/points/search",
+                    json={"vector": vec, "limit": top_k, "with_payload": True, "score_threshold": 0.25},
+                )
+                hits_resp.raise_for_status()
+                hits = hits_resp.json().get("result", [])
+            if not hits:
+                return "项目源代码文档中未找到相关内容。"
+            return json.dumps(
+                [
+                    {
+                        "path": h["payload"].get("path", ""),
+                        "title": h["payload"].get("title", ""),
+                        "content": h["payload"].get("content", "")[:1200],
+                    }
+                    for h in hits
+                ],
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
 
     @_lc_tool
     def query_guide_kb(question: str, top_k: int = 5) -> str:
@@ -3212,7 +3246,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
         # Step 1: LLM decides which tools to call (multi-tool, model-controlled)
         yield _sse_event("progress", {"stage": "tool_call", "message": "正在查询知识库..."})
         await asyncio.sleep(0)
-        _all_tools = [query_guide_kb, introspect_runtime, search_pdf_originals, search_ocr_files, adjust_rag_config]
+        _all_tools = [query_guide_kb, search_self_docs, introspect_runtime, search_pdf_originals, search_ocr_files, adjust_rag_config]
         _tool_map = {t.name: t for t in _all_tools}
         try:
             ai_msg, _ = await asyncio.get_event_loop().run_in_executor(
