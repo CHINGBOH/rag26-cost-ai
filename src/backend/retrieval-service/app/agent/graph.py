@@ -2692,7 +2692,10 @@ def _parse_plan(content: str) -> list[str]:
 
 
 _QUESTION_STRIP_RE = re.compile(
-    r"(是什么|有哪些|怎么算|如何|是否|多少|的是|吗|呢|？|\?|请问|请|告诉我|帮我|查一下|计算规则|适用范围|说明|规定|规范)"
+    r"(是什么|有哪些|怎么算|怎么套|怎样|如何套用|如何执行|如何计算|如何|是否|多少|的是"
+    r"|吗|呢|？|\?|请问|请|告诉我|帮我|查一下|计算规则|适用范围|说明|规定|规范"
+    r"|套用定额|套定额|执行定额|计取定额|计算定额|适用定额|采用定额|使用定额"
+    r"|套用|执行|计取|采用|使用)"
 )
 
 def _extract_navigator_keywords(query: str) -> list[str]:
@@ -2701,13 +2704,22 @@ def _extract_navigator_keywords(query: str) -> list[str]:
     Returns a list of candidate strings to try in order, from most specific to broadest.
     """
     cleaned = _QUESTION_STRIP_RE.sub("", query).strip()
-    parts = [p.strip() for p in re.split(r"[中的，,\s]+", cleaned) if p.strip()]
+    parts = [p.strip() for p in re.split(r"[中的，,\s、。]+", cleaned) if p.strip()]
     candidates = [
         p for p in parts
         if 2 < len(p) <= 20
         and not re.fullmatch(r"\d+\.?\d*", p)   # skip pure numbers like "10." or "01."
         and not re.fullmatch(r"[a-zA-Z0-9]+", p)  # skip pure ASCII sequences
     ]
+    # Sliding-prefix fallback: when extraction yields a single long token (no splits hit),
+    # also try shorter prefixes so partial chapter titles can still hit BM25.
+    extra: list[str] = []
+    for c in candidates:
+        if len(c) >= 8:
+            for n in (8, 6, 5, 4):
+                if n < len(c):
+                    extra.append(c[:n])
+    candidates.extend(extra)
     if not candidates:
         return [query[:20]]
     # Try all candidates; longer/digit-bearing ones tend to be more specific section titles
@@ -2715,7 +2727,14 @@ def _extract_navigator_keywords(query: str) -> list[str]:
     # Also include original cleaned text as last resort
     if cleaned not in candidates and 2 < len(cleaned) <= 30:
         candidates.append(cleaned)
-    return candidates or [query[:20]]
+    # De-dup preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out or [query[:20]]
 
 
 def navigator_node(state: RAGAgentState) -> dict:
