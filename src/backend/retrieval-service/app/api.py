@@ -898,7 +898,7 @@ async def submit_feedback(request: FeedbackRequest):
         db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
         conn = await asyncpg.connect(db_url)
         try:
-            await conn.execute(
+            fb_id = await conn.fetchval(
                 """INSERT INTO rag_feedback
                    (ts, session_id, message_id, rating, comment, query, answer_summary,
                     overall_rating, rating_relevance, rating_accuracy, rating_completeness,
@@ -912,6 +912,7 @@ async def submit_feedback(request: FeedbackRequest):
                      praise=EXCLUDED.praise, criticism=EXCLUDED.criticism,
                      suggestion=EXCLUDED.suggestion, tags=EXCLUDED.tags,
                      comment=EXCLUDED.comment, answer_summary=EXCLUDED.answer_summary
+                   RETURNING id
                 """,
                 record["ts"], request.session_id, request.message_id,
                 request.rating, request.comment, request.query, request.answer_summary,
@@ -919,6 +920,67 @@ async def submit_feedback(request: FeedbackRequest):
                 request.rating_completeness, request.praise, request.criticism,
                 request.suggestion, request.tags,
             )
+
+            # ── #94-A I2 反馈可达性钩子 ──────────────────────────────────
+            # 任何负面反馈（rating == -1 或 overall_rating <= 2）都自动写入
+            # 一条 improvement_events 桩条目（applied_at 留空，等待人工/自动处理）。
+            # 这样保证 I2 覆盖率非零，同时不假装事件已处理。
+            is_negative = (
+                (request.rating is not None and request.rating <= -1)
+                or (request.overall_rating is not None and request.overall_rating <= 2)
+            )
+            if fb_id and is_negative:
+                # 朴素启发：query 含价格/数字 → R5_tool_priority；含"如何/怎么"路径词 → R2；
+                # 含"什么/定义" → R1；否则 R3（plan few-shot）。后续人工可改。
+                q = (request.query or "").lower()
+                has_price = any(t in q for t in ["价", "元", "费", "cost", "price", "%", "万"])
+                has_path = any(t in q for t in ["如何", "怎么", "步骤", "流程", "how"])
+                has_def = any(t in q for t in ["什么是", "定义", "what is", "解释"])
+                if has_price:
+                    route = "R5_tool_priority"
+                elif has_path:
+                    route = "R2_path_default"
+                elif has_def:
+                    route = "R1_navigator_dict"
+                else:
+                    route = "R3_planner_examples"
+
+                payload = {
+                    "rating": request.rating,
+                    "overall_rating": request.overall_rating,
+                    "criticism": request.criticism,
+                    "suggestion": request.suggestion,
+                    "tags": request.tags,
+                    "query_preview": (request.query or "")[:200],
+                }
+                rationale = (
+                    request.criticism or request.suggestion
+                    or request.comment or "auto-pending-review"
+                )[:500]
+                try:
+                    # 去重：同一 feedback id 只挂一条 stub，避免 upsert 重复写入
+                    existing = await conn.fetchval(
+                        "SELECT id FROM improvement_events WHERE source_feedback_id = $1 LIMIT 1",
+                        fb_id,
+                    )
+                    if existing:
+                        logger.info("I2 hook: feedback id=%s already linked to event id=%s",
+                                    fb_id, existing)
+                    else:
+                        await conn.execute(
+                            """INSERT INTO improvement_events
+                               (source, actor, source_feedback_id, affected_route,
+                                patch_payload, rationale, reversible_by)
+                               VALUES ('auto', 'feedback_hook', $1, $2, $3::jsonb, $4, 'rollback_event')
+                            """,
+                            fb_id, route, json.dumps(payload, ensure_ascii=False), rationale,
+                        )
+                        logger.info(
+                            "I2 hook: improvement_event stub created for feedback id=%s route=%s",
+                            fb_id, route,
+                        )
+                except Exception as e:
+                    logger.warning(f"I2 hook insert skipped: {e}")
         finally:
             await conn.close()
     except Exception as e:
