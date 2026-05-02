@@ -2861,6 +2861,83 @@ async def learning_improvement_events(limit: int = 50):
     return {"count": len(items), "items": items}
 
 
+@router.post("/api/v1/learning/radar/{radar_id}/review")
+async def learning_radar_review(radar_id: int, payload: dict):
+    """#94-B 雷达条目人工评审。
+
+    body: { "decision": "adopt" | "dismiss" | "reviewing",
+            "reviewer": "name", "note": "...",
+            "affected_route": "R1_navigator_dict" | ... (adopt 必填) }
+
+    - dismiss/reviewing: 仅更新 tech_radar.status
+    - adopt: 同时写一条 source='human' 的 improvement_events
+      （source_radar_id 关联），让 I4 human 列+1 + I6 写回回路 +1
+    """
+    decision = (payload.get("decision") or "").lower()
+    if decision not in {"adopt", "dismiss", "reviewing"}:
+        raise HTTPException(status_code=400,
+                            detail="decision must be adopt|dismiss|reviewing")
+    reviewer = (payload.get("reviewer") or "anonymous")[:200]
+    note = (payload.get("note") or "")[:500]
+    route = payload.get("affected_route")
+    valid_routes = {"R1_navigator_dict", "R2_path_default", "R3_planner_examples",
+                    "R4_rerank_weights", "R5_tool_priority"}
+    if decision == "adopt":
+        if route not in valid_routes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"affected_route must be one of {sorted(valid_routes)}",
+            )
+
+    status_map = {"adopt": "adopted", "dismiss": "dismissed", "reviewing": "reviewing"}
+    new_status = status_map[decision]
+
+    import asyncpg
+    db_url = os.environ.get(
+        "DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db",
+    )
+    conn = await asyncpg.connect(db_url)
+    try:
+        existing = await conn.fetchrow(
+            "SELECT id, title, source FROM tech_radar WHERE id = $1", radar_id,
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"radar id={radar_id} not found")
+
+        await conn.execute(
+            """UPDATE tech_radar
+               SET status = $1, reviewer = $2, decision_note = $3
+               WHERE id = $4""",
+            new_status, reviewer, note, radar_id,
+        )
+
+        event_id = None
+        if decision == "adopt":
+            event_id = await conn.fetchval(
+                """INSERT INTO improvement_events
+                   (source, actor, source_radar_id, affected_route,
+                    patch_payload, rationale, reversible_by, applied_at)
+                   VALUES ('human', $1, $2, $3, $4::jsonb, $5, 'rollback_event', NULL)
+                   RETURNING id""",
+                reviewer, radar_id, route,
+                json.dumps({
+                    "radar_title": existing["title"],
+                    "radar_source": existing["source"],
+                    "review_note": note,
+                }, ensure_ascii=False),
+                note or f"Adopted from radar: {existing['title'][:200]}",
+            )
+
+        return {
+            "status": "ok",
+            "radar_id": radar_id,
+            "new_status": new_status,
+            "improvement_event_id": event_id,
+        }
+    finally:
+        await conn.close()
+
+
 @router.get("/api/v1/agents/tasks")
 async def agents_tasks(limit: int = 50):
     """Real task queue — derived from ingest_jobs (the only real task pipeline)."""
