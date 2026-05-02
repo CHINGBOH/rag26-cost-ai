@@ -6,6 +6,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+// .env 必须在 telemetry 之前 load，因为 OTEL 启动读 OTEL_EXPORTER_OTLP_ENDPOINT
+
 // 手动加载根目录 .env 文件
 function loadEnv() {
   const envPath = path.resolve(process.cwd(), '..', '..', '..', '.env');
@@ -25,6 +27,9 @@ function loadEnv() {
   }
 }
 loadEnv();
+
+// 启动 OpenTelemetry SDK（opt-in via OTEL_EXPORTER_OTLP_ENDPOINT）
+import './telemetry';
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
