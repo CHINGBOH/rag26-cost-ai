@@ -1657,20 +1657,24 @@ def _query_fee_comparison_text_chunks(conn, query: str, top_k: int = 10) -> list
     return results[:top_k]
 
 
-def _query_text_chunks_literal(conn, query: str, top_k: int = 10) -> list[dict]:
+def _query_text_chunks_literal(conn, query: str, top_k: int = 10, path_constraint: str = "") -> list[dict]:
     if not query.strip():
         return []
 
+    path_clause = "AND path LIKE %s" if path_constraint else ""
+    path_params: tuple = (path_constraint,) if path_constraint else ()
+
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
                 SELECT id, doc_id, page_number, content
                 FROM text_chunks
                 WHERE content ILIKE %s
+                {path_clause}
                 ORDER BY length(content)
                 LIMIT %s
             """,
-            (f"%{query.strip()}%", top_k),
+            (f"%{query.strip()}%", *path_params, top_k),
         )
         rows = cur.fetchall()
 
@@ -3396,7 +3400,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
                     observability["structured_hits"] = int(observability["structured_hits"]) + 1
                     results.append(chunk)
 
-        for chunk in _query_text_chunks_literal(conn, query, int(cfg["literal_top_k"])):
+        for chunk in _query_text_chunks_literal(conn, query, int(cfg["literal_top_k"]), path_constraint=path_constraint):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 observability["literal_hits"] = int(observability["literal_hits"]) + 1
@@ -3574,7 +3578,7 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
                     seen_ids.add(chunk["chunk_id"])
                     results.append(chunk)
 
-        for chunk in _query_text_chunks_literal(conn, query, top_k):
+        for chunk in _query_text_chunks_literal(conn, query, top_k, path_constraint=path_constraint):
             if chunk["chunk_id"] not in seen_ids:
                 seen_ids.add(chunk["chunk_id"])
                 results.append(chunk)
