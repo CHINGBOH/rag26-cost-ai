@@ -131,9 +131,27 @@ When comparing existing code, prefer this LangGraph-style mental model over a na
 
 ## What this repo is
 
-Polyglot microservices RAG system ("四库" = Qdrant + PostgreSQL + Neo4j + Elasticsearch). PyPI name `rag-retrieval`.
+Polyglot microservices RAG system. PyPI name `rag-retrieval`.
 
 Languages: Python 3.10 (FastAPI), Node.js + TypeScript (Fastify + XState v5), Go 1.21 (Gin), React 18 (Vite).
+
+### 实跑数据库拓扑（自动生成，勿手改）
+
+<!-- AUTO:ARCHITECTURE:START -->
+_最后同步: `2026-05-02T18:42:21.142403Z` · 健康度: **6/6**_
+
+| 存储 | 角色 | 状态 | 关键指标 |
+|------|------|------|----------|
+| **postgresql** | 结构化数据 + 中文全文兜底 (zhparser) | 🟢 在线 | v16.13 · chunks=7887 · ext=pgvector |
+| **qdrant** | 向量库 (生产) | 🟢 在线 | collections=3 |
+| **elasticsearch** | 全文 BM25 + IK 中文分词 | 🟢 在线 | docs=7887 · nodes=1 · cluster=green |
+| **milvus** | 向量库 (备选, 可热切) | 🟡 待命 | rows=7887 · collections=1 |
+| **neo4j** | 知识图谱 | 🟢 在线 | - |
+| **redis** | 缓存 + 会话 | 🟢 在线 | v7.2.13 |
+<!-- AUTO:ARCHITECTURE:END -->
+
+> 本段由 `scripts/sync_arch_docs.py` 从 `/api/v1/architecture/live` 反射生成。
+> 任何对此处的手工修改都会在下次 codegen 时被覆盖。
 
 ## Monorepo boundaries & entrypoints
 
