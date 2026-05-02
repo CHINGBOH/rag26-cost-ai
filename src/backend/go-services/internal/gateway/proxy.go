@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // createReverseProxy builds a reverse proxy for the given target URL.
@@ -21,6 +22,9 @@ func createReverseProxy(targetURL string) *httputil.ReverseProxy {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// Wrap default transport so outbound spans get created and traceparent
+	// header is injected for downstream service correlation.
+	proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 // HealthCheckHandler aggregates health status from all configured downstream services.
@@ -59,6 +60,7 @@ func SetupRouter(cfg *GatewayConfig) *gin.Engine {
 
 	router := gin.New()
 	router.Use(gin.Recovery())
+	router.Use(otelgin.Middleware("go-gateway"))
 	router.Use(RequestIDMiddleware())
 	router.Use(CORSMiddleware())
 	router.Use(LoggingMiddleware())
