@@ -2889,6 +2889,13 @@ async def learning_radar_review(radar_id: int, payload: dict):
                 detail=f"affected_route must be one of {sorted(valid_routes)}",
             )
 
+    # #94-C R1: 收 navigator 字典扩展词
+    extra_keywords = payload.get("extra_keywords") or []
+    if not isinstance(extra_keywords, list):
+        extra_keywords = []
+    extra_keywords = [str(k).strip() for k in extra_keywords if str(k).strip()][:20]
+    trigger = (payload.get("trigger") or "").strip()[:50]
+
     status_map = {"adopt": "adopted", "dismiss": "dismissed", "reviewing": "reviewing"}
     new_status = status_map[decision]
 
@@ -2917,16 +2924,35 @@ async def learning_radar_review(radar_id: int, payload: dict):
                 """INSERT INTO improvement_events
                    (source, actor, source_radar_id, affected_route,
                     patch_payload, rationale, reversible_by, applied_at)
-                   VALUES ('human', $1, $2, $3, $4::jsonb, $5, 'rollback_event', NULL)
+                   VALUES ('human', $1, $2, $3, $4::jsonb, $5, 'rollback_event', NOW())
                    RETURNING id""",
                 reviewer, radar_id, route,
                 json.dumps({
                     "radar_title": existing["title"],
                     "radar_source": existing["source"],
                     "review_note": note,
+                    "trigger": trigger,
+                    "extra_keywords": extra_keywords,
                 }, ensure_ascii=False),
                 note or f"Adopted from radar: {existing['title'][:200]}",
             )
+            # 触发 architect->{route} 边遍历
+            edge_map = {
+                "R1_navigator_dict": "architect->navigator_dict",
+                "R2_path_default": "architect->path_default",
+                "R3_planner_examples": "architect->planner_few",
+                "R4_rerank_weights": "architect->rerank_w",
+                "R5_tool_priority": "architect->tool_priority",
+            }
+            edge_id = edge_map.get(route)
+            if edge_id:
+                await conn.execute(
+                    """UPDATE topology_edge_log
+                       SET last_traversed_at = NOW(),
+                           traversal_count = traversal_count + 1
+                       WHERE edge_id = $1""",
+                    edge_id,
+                )
 
         return {
             "status": "ok",

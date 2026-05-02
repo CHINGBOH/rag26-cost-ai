@@ -2791,6 +2791,17 @@ def _extract_navigator_keywords(query: str) -> list[str]:
                 if n < len(c):
                     extra.append(c[:n])
     candidates.extend(extra)
+
+    # ── #94-C R1 回写：合并已 adopt 的 navigator 字典扩展词 ──────────
+    # 从 improvement_events 读取最近 30 天 affected_route=R1 + applied
+    # 的事件，把 patch_payload.extra_keywords 加进候选列表。
+    try:
+        for kw in _load_r1_extra_keywords(query):
+            if kw and kw not in candidates:
+                candidates.append(kw)
+    except Exception as e:  # 容错：DB 不可达不应阻断 navigator
+        logger.debug(f"[navigator] R1 augment skipped: {e}")
+
     if not candidates:
         return [query[:20]]
     # Try all candidates; longer/digit-bearing ones tend to be more specific section titles
@@ -2806,6 +2817,63 @@ def _extract_navigator_keywords(query: str) -> list[str]:
             seen.add(c)
             out.append(c)
     return out or [query[:20]]
+
+
+# ── R1 学习字典缓存 ─────────────────────────────────────────────────
+_R1_CACHE: dict = {"ts": 0.0, "items": []}  # items: list[(query_substring, [kws])]
+_R1_CACHE_TTL = 60.0  # 秒
+
+
+def _load_r1_extra_keywords(query: str) -> list[str]:
+    """读取已 adopt 的 R1 navigator 字典扩展词，按 query 触发条件命中后返回。
+
+    每条 patch_payload 形如：
+      {"trigger": "电线", "extra_keywords": ["电线电缆工程", "电气设备安装"]}
+    或：
+      {"extra_keywords": ["...", "..."]}  # 无 trigger 视为通用
+    """
+    import time as _t
+    now = _t.time()
+    if now - _R1_CACHE["ts"] > _R1_CACHE_TTL:
+        items: list[tuple[str, list[str]]] = []
+        try:
+            from app.agent.tools import _get_pg_conn, _put_pg_conn
+            conn = _get_pg_conn()
+            try:
+                with conn.cursor() as c:
+                    c.execute(
+                        """SELECT patch_payload
+                           FROM improvement_events
+                           WHERE affected_route = 'R1_navigator_dict'
+                             AND ts > NOW() - interval '30 days'
+                             AND reverted_at IS NULL""",
+                    )
+                    rows = c.fetchall()
+                for (payload,) in rows:
+                    if not isinstance(payload, dict):
+                        continue
+                    kws = payload.get("extra_keywords") or []
+                    if not isinstance(kws, list):
+                        continue
+                    kws = [str(k).strip() for k in kws if str(k).strip()]
+                    if not kws:
+                        continue
+                    trigger = payload.get("trigger") or ""
+                    items.append((str(trigger).strip(), kws))
+            finally:
+                _put_pg_conn(conn)
+        except Exception as e:
+            logger.debug(f"[navigator] R1 cache reload failed: {e}")
+            items = _R1_CACHE.get("items", [])
+        _R1_CACHE["ts"] = now
+        _R1_CACHE["items"] = items
+
+    out: list[str] = []
+    q = query.lower()
+    for trigger, kws in _R1_CACHE.get("items", []):
+        if not trigger or trigger.lower() in q:
+            out.extend(kws)
+    return out
 
 
 def navigator_node(state: RAGAgentState) -> dict:
