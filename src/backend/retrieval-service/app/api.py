@@ -11,7 +11,7 @@ import time
 import json
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
-from datetime import datetime
+from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage
 
 from domain_models.retrieval import RetrievalRequest, RetrievalConfig
@@ -2559,6 +2559,244 @@ async def agents_registry_detail(agent_id: str):
         "size_bytes": stat.st_size,
         "modified_ts": stat.st_mtime,
     }
+
+
+@router.get("/api/v1/learning/topology")
+async def learning_topology():
+    """#94 拓扑健康自检 — 返回 I1-I6 状态供 /learning 前端展示。
+
+    服务化版本 of scripts/topology_health.py。轻量、无外部依赖。
+    """
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    EXPECTED_EDGES = {
+        "query->analyzer", "analyzer->navigator", "navigator->retriever",
+        "retriever->tool", "tool->verifier", "verifier->synthesize",
+        "synthesize->user", "user->feedback", "feedback->learner",
+        "learner->architect",
+        "architect->navigator_dict", "architect->path_default",
+        "architect->planner_few", "architect->rerank_w",
+        "architect->tool_priority", "external->architect",
+    }
+    EXPECTED_ROUTES = {
+        "R1_navigator_dict", "R2_path_default", "R3_planner_examples",
+        "R4_rerank_weights", "R5_tool_priority",
+    }
+
+    invariants: list[dict] = []
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as c:
+            # I1 全连通
+            c.execute("SELECT count(*), array_agg(edge_id) FROM topology_edge_log")
+            edge_count, edge_ids = c.fetchone()
+            edge_ids = set(edge_ids or [])
+            missing = sorted(EXPECTED_EDGES - edge_ids)
+            invariants.append({
+                "code": "I1", "name": "Closed Loop",
+                "status": "FAIL" if missing else "OK",
+                "metric": {"edges": edge_count, "expected": len(EXPECTED_EDGES),
+                           "missing": missing},
+                "note": f"骨架 {edge_count}/{len(EXPECTED_EDGES)} 边" + (
+                    f"，缺 {len(missing)} 条" if missing else "完整"),
+            })
+
+            # I2 反馈可达
+            c.execute("SELECT count(*) FROM rag_feedback "
+                      "WHERE rating = -1 AND created_at > NOW() - interval '90 days'")
+            neg = c.fetchone()[0]
+            c.execute("SELECT count(*) FROM improvement_events "
+                      "WHERE source_feedback_id IS NOT NULL "
+                      "AND ts > NOW() - interval '90 days'")
+            linked = c.fetchone()[0]
+            cov = (linked / neg) if neg else 1.0
+            i2_status = "OK" if (neg == 0 or cov >= 0.5) else (
+                "WARN" if cov >= 0.1 else "FAIL")
+            invariants.append({
+                "code": "I2", "name": "Feedback Reachability",
+                "status": i2_status,
+                "metric": {"negative_90d": neg, "linked_events": linked,
+                           "coverage": round(cov, 3)},
+                "note": f"差评 → 改进事件覆盖 {cov*100:.0f}%",
+            })
+
+            # I3 无悬挂证据
+            c.execute("""
+                SELECT count(*),
+                  count(*) FILTER (WHERE file_name IS NOT NULL AND file_name <> ''),
+                  count(*) FILTER (WHERE path IS NOT NULL AND path <> ''),
+                  count(*) FILTER (WHERE metadata IS NOT NULL)
+                FROM text_chunks
+            """)
+            total, wf, wp, wm = c.fetchone()
+            if total == 0:
+                i3_metric = {"total": 0}
+                i3_status = "WARN"; i3_note = "text_chunks 为空"
+            else:
+                worst = min(wf/total, wp/total, wm/total)
+                i3_metric = {"total": total,
+                             "file_rate": round(wf/total, 4),
+                             "path_rate": round(wp/total, 4),
+                             "meta_rate": round(wm/total, 4)}
+                i3_status = "OK" if worst >= 0.99 else (
+                    "WARN" if worst >= 0.90 else "FAIL")
+                i3_note = f"三字段最低非空率 {worst*100:.2f}%"
+            invariants.append({"code": "I3", "name": "No Dangling Evidence",
+                               "status": i3_status, "metric": i3_metric, "note": i3_note})
+
+            # I4 双轨可分
+            c.execute("""
+                SELECT count(*),
+                  count(*) FILTER (WHERE source IS NOT NULL AND actor IS NOT NULL
+                                   AND reversible_by IS NOT NULL),
+                  count(*) FILTER (WHERE source = 'auto'),
+                  count(*) FILTER (WHERE source = 'human'),
+                  count(*) FILTER (WHERE source = 'external')
+                FROM improvement_events
+            """)
+            tot, valid, a, h, e = c.fetchone()
+            if tot == 0:
+                i4_status = "WARN"; i4_note = "无改进事件——闭环未启动"
+            elif valid == tot:
+                i4_status = "OK"; i4_note = f"全部 {tot} 条事件三字段齐备"
+            else:
+                i4_status = "FAIL"
+                i4_note = f"{tot - valid} 条事件缺 source/actor/reversible_by"
+            invariants.append({
+                "code": "I4", "name": "Auditable Two-Track",
+                "status": i4_status,
+                "metric": {"total": tot, "valid": valid,
+                           "auto": a, "human": h, "external": e},
+                "note": i4_note,
+            })
+
+            # I5 外部信号入口
+            c.execute("""
+                SELECT count(*), count(DISTINCT source), max(fetched_at)
+                FROM tech_radar
+                WHERE fetched_at > NOW() - interval '7 days'
+            """)
+            recent, sources, last_at = c.fetchone()
+            if recent == 0:
+                i5_status = "FAIL"; i5_note = "雷达 7 天无新条目"
+            elif sources < 2:
+                i5_status = "WARN"; i5_note = f"来源仅 {sources}，目标 ≥3"
+            else:
+                i5_status = "OK"; i5_note = f"7 天 {recent} 条 / {sources} 源"
+            invariants.append({
+                "code": "I5", "name": "External Signal Port",
+                "status": i5_status,
+                "metric": {"recent_7d": recent, "sources": sources,
+                           "last_fetched_at": last_at.isoformat() if last_at else None},
+                "note": i5_note,
+            })
+
+            # I6 形态无关
+            c.execute("SELECT affected_route, count(*) FROM improvement_events "
+                      "GROUP BY affected_route")
+            routes = {row[0]: row[1] for row in c.fetchall()}
+            used = set(routes.keys()) & EXPECTED_ROUTES
+            missing_r = EXPECTED_ROUTES - set(routes.keys())
+            if edge_count != len(EXPECTED_EDGES):
+                i6_status = "FAIL"; i6_note = f"拓扑边数 {edge_count} ≠ {len(EXPECTED_EDGES)}"
+            elif not used:
+                i6_status = "WARN"; i6_note = "5 条回写回路均未启用"
+            elif len(missing_r) >= 3:
+                i6_status = "WARN"
+                i6_note = f"{len(missing_r)} 条回写回路从未使用"
+            else:
+                i6_status = "OK"; i6_note = f"拓扑稳定 + {len(used)}/5 回写已启用"
+            invariants.append({
+                "code": "I6", "name": "Shape-Invariant",
+                "status": i6_status,
+                "metric": {"topology_edges": edge_count,
+                           "expected_edges": len(EXPECTED_EDGES),
+                           "routes_used": sorted(used),
+                           "routes_missing": sorted(missing_r),
+                           "events_per_route": routes},
+                "note": i6_note,
+            })
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+    summary = {
+        "ok": sum(1 for x in invariants if x["status"] == "OK"),
+        "warn": sum(1 for x in invariants if x["status"] == "WARN"),
+        "fail": sum(1 for x in invariants if x["status"] == "FAIL"),
+    }
+    overall = "FAIL" if summary["fail"] else ("WARN" if summary["warn"] else "OK")
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "overall": overall,
+        "summary": summary,
+        "invariants": invariants,
+    }
+
+
+@router.get("/api/v1/learning/radar")
+async def learning_radar(limit: int = 30, status: str | None = None):
+    """#94 外部技术雷达列表。"""
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as c:
+            sql = ("SELECT id, source, external_id, title, summary, url, "
+                   "published_at, fetched_at, score, tags, status "
+                   "FROM tech_radar")
+            params: tuple = ()
+            if status:
+                sql += " WHERE status = %s"
+                params = (status,)
+            sql += " ORDER BY score DESC, fetched_at DESC LIMIT %s"
+            params = params + (max(1, min(limit, 200)),)
+            c.execute(sql, params)
+            rows = c.fetchall()
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+    items = [{
+        "id": r[0], "source": r[1], "external_id": r[2], "title": r[3],
+        "summary": r[4], "url": r[5],
+        "published_at": r[6].isoformat() if r[6] else None,
+        "fetched_at": r[7].isoformat() if r[7] else None,
+        "score": r[8], "tags": r[9] or [], "status": r[10],
+    } for r in rows]
+    return {"count": len(items), "items": items}
+
+
+@router.get("/api/v1/learning/improvement-events")
+async def learning_improvement_events(limit: int = 50):
+    """#94 改进事件列表。"""
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as c:
+            c.execute(
+                """
+                SELECT id, source, actor, source_feedback_id, source_radar_id,
+                       affected_route, rationale, applied_at, reverted_at, ts
+                FROM improvement_events
+                ORDER BY ts DESC LIMIT %s
+                """,
+                (max(1, min(limit, 200)),),
+            )
+            rows = c.fetchall()
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+    items = [{
+        "id": r[0], "source": r[1], "actor": r[2],
+        "source_feedback_id": r[3], "source_radar_id": r[4],
+        "affected_route": r[5], "rationale": r[6],
+        "applied_at": r[7].isoformat() if r[7] else None,
+        "reverted_at": r[8].isoformat() if r[8] else None,
+        "ts": r[9].isoformat() if r[9] else None,
+    } for r in rows]
+    return {"count": len(items), "items": items}
 
 
 @router.get("/api/v1/agents/tasks")
