@@ -14,6 +14,7 @@ import type { ChatMessage } from '../hooks/useAgent';
 import './LibraryPage.css';
 import { QUICK_QUESTIONS } from '../config/kb-config';
 import { SystemAssistant } from '../components/SystemAssistant';
+import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
 
 /* ── Fixed config — never exposed to user ────────────── */
 const LIBRARY_CONFIG: AgentConfig = {
@@ -171,18 +172,35 @@ const LibraryBubble: React.FC<{
 }> = ({ message, sessionId, onFollowup }) => {
   const [showSources, setShowSources] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState<number | null>(null);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [pendingRating, setPendingRating] = useState<1 | -1 | null>(null);
 
-  const sendFeedback = async (rating: number) => {
-    if (!sessionId || feedbackSent !== null) return;
+  const sendFeedback = async (rating: number, detail?: FeedbackDetail) => {
+    if (!sessionId) return;
     try {
       await submitFeedback({
         session_id: sessionId,
         message_id: message.id,
         rating,
         answer_summary: message.content.slice(0, 200),
+        ...(detail ?? {}),
       });
       setFeedbackSent(rating);
     } catch { /* silent */ }
+  };
+
+  const handleThumb = (rating: 1 | -1) => {
+    if (feedbackSent !== null) return;
+    sendFeedback(rating);
+    setPendingRating(rating);
+    setShowFeedbackModal(true);
+  };
+
+  const handleModalSubmit = (detail: FeedbackDetail) => {
+    if (!sessionId || pendingRating === null) return;
+    sendFeedback(pendingRating, detail);
+    setShowFeedbackModal(false);
+    setPendingRating(null);
   };
 
   /* Error state */
@@ -255,15 +273,29 @@ const LibraryBubble: React.FC<{
         <div className="lib-feedback">
           <button
             className={`lib-fb-btn ${feedbackSent === 1 ? 'lib-fb-btn--active' : ''}`}
-            onClick={() => sendFeedback(1)}
+            onClick={() => handleThumb(1)}
             disabled={feedbackSent !== null}
           >👍 有帮助</button>
           <button
             className={`lib-fb-btn ${feedbackSent === -1 ? 'lib-fb-btn--active' : ''}`}
-            onClick={() => sendFeedback(-1)}
+            onClick={() => handleThumb(-1)}
             disabled={feedbackSent !== null}
           >👎 没帮助</button>
+          {feedbackSent !== null && (
+            <button
+              className="lib-fb-btn"
+              onClick={() => { setPendingRating(feedbackSent as 1 | -1); setShowFeedbackModal(true); }}
+            >📝 详细点评</button>
+          )}
         </div>
+
+        {showFeedbackModal && pendingRating !== null && (
+          <FeedbackModal
+            initialRating={pendingRating}
+            onSubmit={handleModalSubmit}
+            onClose={() => setShowFeedbackModal(false)}
+          />
+        )}
       </div>
     </div>
   );

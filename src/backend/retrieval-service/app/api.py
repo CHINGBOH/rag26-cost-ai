@@ -612,12 +612,12 @@ async def agent_query_stream(request: AgentStreamRequest):
                         await _conn.execute(
                             """INSERT INTO conversation_turns
                                (session_id, turn_index, user_content, assistant_content,
-                                message_id, source, status, latency_ms, ts)
+                                message_id, source, status, latency_ms)
                                VALUES ($1, (SELECT COALESCE(MAX(turn_index),0)+1 FROM conversation_turns WHERE session_id=$1),
-                               $2, $3, $4, 'agent', 'completed', $5, $6)
+                               $2, $3, $4, 'agent', 'completed', $5)
                             """,
                             session_id, request.query, final_answer or "",
-                            str(uuid.uuid4()), elapsed_ms, asyncio.get_event_loop().time(),
+                            str(uuid.uuid4()), elapsed_ms,
                         )
                     finally:
                         await _conn.close()
@@ -2433,12 +2433,12 @@ async def guide_agent_stream(req: GuideAgentRequest):
             try:
                 await _conn_g.execute(
                     """INSERT INTO conversation_turns
-                       (session_id, turn_index, user_content, assistant_content, source, status, ts)
+                       (session_id, turn_index, user_content, assistant_content, source, status)
                        VALUES ($1, (SELECT COALESCE(MAX(turn_index),0)+1 FROM conversation_turns WHERE session_id=$1),
-                       $2, $3, 'guide', 'completed', $4)
+                       $2, $3, 'guide', 'completed')
                     """,
                     "guide-" + str(abs(hash(req.query)) % 100000),
-                    req.query, accumulated, asyncio.get_event_loop().time(),
+                    req.query, accumulated,
                 )
             finally:
                 await _conn_g.close()
