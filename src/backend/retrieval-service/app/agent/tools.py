@@ -4280,6 +4280,53 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 )
             )
         chunks.sort(key=lambda chunk: chunk["metadata"].get("year_month", ""))
+
+        # ── Comparability guard ──────────────────────────────────────────────
+        # If primary rows and fallback rows mix different specifications,
+        # cross-month % change is meaningless ("apples-to-oranges").  Emit a
+        # synthetic warning chunk so the synthesizer can refuse the bogus delta.
+        primary_specs = {(r[3] or "").strip() for r in rows if r[3]}
+        all_specs: set[str] = set(primary_specs)
+        for fb in fallback_chunks:
+            md = fb.get("metadata") or {}
+            spec = (md.get("specification") or "").strip()
+            if spec:
+                all_specs.add(spec)
+            elif fallback_chunks:  # fallback aggregate uses material_name → marker
+                all_specs.add("__fallback_aggregate__")
+        spec_mismatch = (
+            len(chunks) >= 2
+            and (
+                len(all_specs) > 1
+                or "__fallback_aggregate__" in all_specs
+            )
+        )
+        if spec_mismatch:
+            warning = {
+                "chunk_id": f"price_trend_warning_{material_name}",
+                "doc_id": "price_trend",
+                "page_number": 1,
+                "source_db": "price_records",
+                "content": (
+                    f"⚠️ 数据可比性提示：检索到的 {material_name} 跨月样本规格不一致，"
+                    f"涉及规格 {sorted(all_specs)[:5]}。不同规格的电线/电缆价格差异极大，"
+                    f"直接计算环比变化幅度会产生误导性结论。"
+                    f"建议：(1) 指定具体规格再查询，或 (2) 仅展示分月均价并明确说明样本规格差异。"
+                ),
+                "score": 0.99,
+                "metadata": {
+                    "evidence_kind": "comparability_warning",
+                    "specs_seen": sorted(all_specs)[:10],
+                    "year_month": "*",
+                },
+                "retrieval_path": RETRIEVAL_PATH_DATABASE,
+            }
+            chunks.insert(0, warning)
+            logger.info(
+                f"[price_trend] spec_mismatch warning emitted material='{material_name}' "
+                f"specs={sorted(all_specs)[:5]}"
+            )
+
         logger.info(
             f"[price_trend] material='{material_name}' "
             f"range=[{start_month},{end_month}] points={len(chunks)}"
