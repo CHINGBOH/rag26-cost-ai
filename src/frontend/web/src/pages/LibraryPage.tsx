@@ -54,6 +54,7 @@ function chunkLabel(chunk: AgentChunk): string {
 export const LibraryPage: React.FC = () => {
   const { messages, isLoading, sendMessage, clearMessages, sessionId } = useAgent();
   const [input, setInput] = useState('');
+  const [pendingInput, setPendingInput] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,8 +62,23 @@ export const LibraryPage: React.FC = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Auto-fire queued question when stream finishes
+  useEffect(() => {
+    if (!isLoading && pendingInput !== null) {
+      const text = pendingInput;
+      setPendingInput(null);
+      sendMessage(text, LIBRARY_CONFIG);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [isLoading]);
+
   const ask = (q: string) => {
-    if (!q.trim() || isLoading) return;
+    if (!q.trim()) return;
+    if (isLoading) {
+      setPendingInput(q.trim());
+      setInput('');
+      return;
+    }
     sendMessage(q, LIBRARY_CONFIG);
     setInput('');
     setTimeout(() => inputRef.current?.focus(), 0);
@@ -111,16 +127,15 @@ export const LibraryPage: React.FC = () => {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="请问馆员想查什么资料……"
+          placeholder={pendingInput ? `排队中：${pendingInput.slice(0, 30)}…` : '请问馆员想查什么资料……'}
           rows={1}
-          disabled={isLoading}
         />
         <button
           className="lib-send-btn"
           onClick={() => ask(input)}
-          disabled={!input.trim() || isLoading}
+          disabled={!input.trim()}
         >
-          发送
+          {isLoading && input.trim() ? '排队' : '发送'}
         </button>
       </div>
 
