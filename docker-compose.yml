@@ -74,6 +74,32 @@ services:
     networks:
       - rag-network
 
+  elasticsearch:
+    build:
+      context: ./infrastructure/docker
+      dockerfile: Dockerfile.elasticsearch
+    image: rag-elasticsearch:8.12-ik
+    container_name: rag-elasticsearch
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - cluster.name=rag-cluster
+      - node.name=rag-node
+      - ES_JAVA_OPTS=-Xms1g -Xmx2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health | grep -E 'green|yellow' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - rag-network
+
   # ---------------------------------------------------------------------------
   # Application Services
   # ---------------------------------------------------------------------------
@@ -250,3 +276,4 @@ networks:
 volumes:
   postgres_data:
   qdrant_storage:
+  es_data:

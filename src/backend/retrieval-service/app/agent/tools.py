@@ -2744,6 +2744,60 @@ def keyword_search(query: str, top_k: int = 10) -> str:
     if not query.strip():
         return json.dumps([])
 
+    # ── ES backend (BM25 + IK 分词) — drop-in replacement when KEYWORD_BACKEND=es ──
+    es_results: list = []
+    try:
+        from infrastructure import elasticsearch_store as _es
+
+        if _es.is_enabled():
+            es_results = _es.search(query, top_k=top_k)
+            if es_results:
+                tagged = [
+                    _with_retrieval_path(
+                        {**r, "score": round(float(r.get("score") or 0), 4)},
+                        RETRIEVAL_PATH_DATABASE,
+                        evidence_kind="fulltext_chunk",
+                        route_stage="primary",
+                    )
+                    for r in es_results
+                ]
+                logger.info("[keyword_search] ES backend returned %d hits", len(tagged))
+                # Continue to structured tables enrichment below using PG
+                conn = None
+                try:
+                    conn = _get_pg_conn()
+                    seen = {r.get("chunk_id") for r in tagged}
+                    for chunk in _query_fee_formula_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_fee_comparison_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_appendix_standard_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    for chunk in _query_fill_requirement_text_chunks(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                    if _should_include_structured_tables(query):
+                        tagged.extend(_query_structured_tables(query, top_k))
+                    for chunk in _query_text_chunks_literal(conn, query, top_k):
+                        if chunk["chunk_id"] not in seen:
+                            tagged.append(chunk)
+                            seen.add(chunk["chunk_id"])
+                finally:
+                    if conn is not None:
+                        _put_pg_conn(conn)
+                return json.dumps(tagged, ensure_ascii=False)
+            # if ES enabled but returned 0 hits, fall through to PG (defensive)
+            logger.info("[keyword_search] ES returned 0 hits, falling back to PG")
+    except Exception as _es_exc:
+        logger.warning("[keyword_search] ES backend error, falling back to PG: %s", _es_exc)
+
     conn = None
     try:
         conn = _get_pg_conn()
