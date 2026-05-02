@@ -267,6 +267,57 @@ export async function checkPipelineHealth(): Promise<PipelineHealth> {
   }
 }
 
+// ──────────────────────── Live Architecture (#87 / #81) ────────────────────────
+
+export interface LiveStoreInfo {
+  role?: string;
+  available?: boolean;
+  configured?: boolean;
+  error?: string;
+  note?: string;
+  // PG
+  version?: string;
+  chunk_count?: number;
+  extensions?: Record<string, boolean>;
+  // Qdrant
+  collections?: string[];
+  collection_count?: number;
+  // ES
+  cluster_status?: string;
+  nodes?: number;
+  index?: string;
+  index_exists?: boolean;
+  doc_count?: number;
+  // Neo4j / generic HTTP
+  status_code?: number;
+  reason?: string;
+}
+
+export interface LiveArchitecture {
+  generated_at: string;
+  stores: Record<string, LiveStoreInfo>;
+  summary: { total: number; available: number; degraded: number; down: number };
+}
+
+/**
+ * 实时获取活架构（真四库连通性）— 替代硬编码 MD 拓扑。
+ * 每次刷新会真探测每个底层数据库并返回当前可用状态、版本与计数。
+ */
+export async function getLiveArchitecture(): Promise<LiveArchitecture | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/architecture/live`);
+    if (!response.ok) {
+      throw new Error(`architecture/live ${response.status}`);
+    }
+    const result = await response.json();
+    // /api/v1 endpoints may wrap in { status, data }; fall back to root.
+    return (result?.data ?? result) as LiveArchitecture;
+  } catch (error) {
+    console.error('getLiveArchitecture error:', error);
+    return null;
+  }
+}
+
 /**
  * 获取管道统计
  */

@@ -8,6 +8,7 @@ import { MetricCard, StatusBadge } from '../charts';
 import { LLMProvider, VectorDB, GraphDB, DataPipeline } from '@rag/shared';
 import './Infrastructure.css';
 import { fmtDate } from '../../utils/dateUtils';
+import { LiveArchitecturePanel } from './LiveArchitecturePanel';
 
 export const InfrastructurePanel: React.FC = () => {
   const {
@@ -24,6 +25,9 @@ export const InfrastructurePanel: React.FC = () => {
 
   return (
     <div className="infrastructure-panel">
+      {/* 实时活架构 — 真四库连通性 (#81/#87) */}
+      <LiveArchitecturePanel />
+
       {/* LLM 提供者 */}
       <section className="infra-section">
         <h3 className="section-title">🤖 LLM 服务</h3>

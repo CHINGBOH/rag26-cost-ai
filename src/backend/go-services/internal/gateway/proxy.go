@@ -123,6 +123,7 @@ func getRouteMapping() map[string]string {
 		"/api/v1/learning":        "retrieval",
 		"/api/v1/ops":             "retrieval",
 		"/api/v1/pipeline":        "retrieval",
+		"/api/v1/architecture":    "retrieval",
 		"/api/v1/collections":     "retrieval",
 		"/api/generate":     "llm",
 		"/api/chat":         "llm",

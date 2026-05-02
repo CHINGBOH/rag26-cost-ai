@@ -2075,8 +2075,147 @@ async def pipeline_health():
                 optional=True)
     await probe("neo4j",  os.environ.get("NEO4J_HTTP_URL", "http://localhost:7474"),
                 optional=True)
+    await probe("elasticsearch",
+                os.environ.get("ES_URL", "http://localhost:9200") + "/_cluster/health",
+                optional=True)
 
     return health
+
+
+@router.get("/api/v1/architecture/live")
+async def architecture_live():
+    """Live architecture reflection — replaces hardcoded MD topology.
+
+    Probes every backing store actually configured for the retrieval-service
+    and returns a single JSON snapshot the dashboard can render. Each entry
+    reports availability, version (where cheap), and a meaningful counter
+    (collections / doc count / row count) so the UI can show "is it real".
+    """
+    import httpx
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    snapshot: dict = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "stores": {},
+        "summary": {"total": 0, "available": 0, "degraded": 0, "down": 0},
+    }
+    transport = httpx.AsyncHTTPTransport(proxy=None)
+
+    # ── PostgreSQL ──
+    try:
+        c = _get_pg_conn()
+        try:
+            with c.cursor() as cur:
+                cur.execute("SHOW server_version")
+                version = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM text_chunks")
+                chunks = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')"
+                )
+                has_vector = bool(cur.fetchone()[0])
+            snapshot["stores"]["postgresql"] = {
+                "role": "structured + fulltext fallback",
+                "available": True,
+                "version": version.split()[0] if version else None,
+                "chunk_count": int(chunks),
+                "extensions": {"pgvector": has_vector},
+            }
+        finally:
+            _put_pg_conn(c)
+    except Exception as e:
+        snapshot["stores"]["postgresql"] = {"available": False, "error": str(e)[:200]}
+
+    # ── Qdrant ──
+    try:
+        async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
+            url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+            r = await client.get(f"{url}/collections")
+            r.raise_for_status()
+            cols = r.json().get("result", {}).get("collections", [])
+            snapshot["stores"]["qdrant"] = {
+                "role": "vector store",
+                "available": True,
+                "collections": [c.get("name") for c in cols],
+                "collection_count": len(cols),
+            }
+    except Exception as e:
+        snapshot["stores"]["qdrant"] = {"available": False, "error": str(e)[:200]}
+
+    # ── Elasticsearch ──
+    try:
+        from infrastructure import elasticsearch_store as _es
+
+        es_h = _es.health()
+        snapshot["stores"]["elasticsearch"] = {
+            "role": "fulltext (BM25 + IK 分词)",
+            **es_h,
+        }
+    except Exception as e:
+        snapshot["stores"]["elasticsearch"] = {"available": False, "error": str(e)[:200]}
+
+    # ── Neo4j ──
+    try:
+        async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
+            url = os.environ.get("NEO4J_HTTP_URL", "http://localhost:7474")
+            r = await client.get(url)
+            ok = r.status_code in (200, 401)
+            snapshot["stores"]["neo4j"] = {
+                "role": "graph (knowledge graph)",
+                "available": ok,
+                "status_code": r.status_code,
+            }
+    except Exception as e:
+        snapshot["stores"]["neo4j"] = {"available": False, "error": str(e)[:200]}
+
+    # ── Redis (cache) ──
+    try:
+        import redis as _redis
+        r = _redis.Redis.from_url(
+            os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+            socket_timeout=2,
+        )
+        info = r.info(section="server")
+        snapshot["stores"]["redis"] = {
+            "role": "cache",
+            "available": True,
+            "version": info.get("redis_version"),
+        }
+    except Exception as e:
+        snapshot["stores"]["redis"] = {"available": False, "error": str(e)[:200]}
+
+    # ── Milvus (probe but not required yet — #49) ──
+    milvus_url = os.environ.get("MILVUS_URL")
+    if milvus_url:
+        try:
+            async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
+                r = await client.get(f"{milvus_url}/health")
+                snapshot["stores"]["milvus"] = {
+                    "role": "vector store (planned)",
+                    "available": r.status_code == 200,
+                    "status_code": r.status_code,
+                }
+        except Exception as e:
+            snapshot["stores"]["milvus"] = {"available": False, "error": str(e)[:200]}
+    else:
+        snapshot["stores"]["milvus"] = {
+            "role": "vector store (planned)",
+            "available": False,
+            "configured": False,
+            "note": "MILVUS_URL not set — see #49",
+        }
+
+    # Aggregate summary
+    for s in snapshot["stores"].values():
+        snapshot["summary"]["total"] += 1
+        if s.get("available"):
+            snapshot["summary"]["available"] += 1
+        elif s.get("configured", True) is False:
+            snapshot["summary"]["degraded"] += 1
+        else:
+            snapshot["summary"]["down"] += 1
+
+    return snapshot
 
 
 # ────────────────────────── Agent registry & task queue (#74) ──────────────────────────
