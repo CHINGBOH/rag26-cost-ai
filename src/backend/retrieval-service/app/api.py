@@ -827,7 +827,7 @@ class FeedbackRequest(BaseModel):
 
 @router.post("/api/v1/feedback")
 async def submit_feedback(request: FeedbackRequest):
-    """Store user feedback to JSONL file until conversations table exists."""
+    """Store user feedback to JSONL file and PostgreSQL rag_feedback table."""
     import time
     import os
     record = {
@@ -839,14 +839,38 @@ async def submit_feedback(request: FeedbackRequest):
         "query": request.query,
         "answer_summary": request.answer_summary,
     }
-    feedback_path = os.environ.get("FEEDBACK_LOG_PATH", "/tmp/rag_feedback.jsonl")
+    _feedback_default = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
+    )
+    feedback_path = os.environ.get("FEEDBACK_LOG_PATH", _feedback_default)
+    os.makedirs(os.path.dirname(os.path.abspath(feedback_path)), exist_ok=True)
     try:
         with open(feedback_path, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        return {"status": "ok", "message_id": request.message_id}
     except Exception as e:
-        logger.error(f"Feedback write error: {e}")
+        logger.error(f"Feedback JSONL write error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save feedback")
+
+    # Also persist to PostgreSQL for durable learning loop
+    try:
+        import asyncpg
+        db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rag_db")
+        conn = await asyncpg.connect(db_url)
+        try:
+            await conn.execute(
+                """INSERT INTO rag_feedback (ts, session_id, message_id, rating, comment, query, answer_summary)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                record["ts"], request.session_id, request.message_id,
+                request.rating, request.comment, request.query, request.answer_summary,
+            )
+        finally:
+            await conn.close()
+    except Exception as e:
+        # DB write is best-effort; JSONL write already succeeded
+        logger.warning(f"Feedback DB write skipped: {e}")
+
+    return {"status": "ok", "message_id": request.message_id}
 
 
 # ── Health Detail & Metrics ───────────────────────────────────────────────────
@@ -956,7 +980,11 @@ async def metrics_llm():
 import os as _os_learn
 
 _LEARN_DIR = _os_learn.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
-_FEEDBACK_PATH = _os_learn.environ.get("FEEDBACK_LOG_PATH", "/tmp/rag_feedback.jsonl")
+_feedback_default_learn = _os_learn.path.join(
+    _os_learn.path.dirname(_os_learn.path.abspath(__file__)),
+    "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
+)
+_FEEDBACK_PATH = _os_learn.environ.get("FEEDBACK_LOG_PATH", _feedback_default_learn)
 
 
 def _read_jsonl(path: str, limit: int = 500) -> list[dict]:
@@ -2275,3 +2303,83 @@ async def guide_agent_stream(req: GuideAgentRequest):
         yield _sse_event("done", {"answer": accumulated})
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+# ── Knowledge Base Info Routes ────────────────────────────────────────────────
+
+@router.get("/api/v1/collections")
+async def list_collections():
+    """List all Qdrant collections with basic stats."""
+    import httpx
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            resp = await client.get(f"{qdrant_url}/collections")
+            resp.raise_for_status()
+            data = resp.json()
+            collections = data.get("result", {}).get("collections", [])
+            result = []
+            for col in collections:
+                name = col.get("name", "")
+                try:
+                    info_resp = await client.get(f"{qdrant_url}/collections/{name}")
+                    info = info_resp.json().get("result", {})
+                    vectors_count = info.get("vectors_count", 0)
+                    status = info.get("status", "unknown")
+                except Exception:
+                    vectors_count = None
+                    status = "unknown"
+                result.append({
+                    "name": name,
+                    "vectors_count": vectors_count,
+                    "status": status,
+                })
+            return {"collections": result, "total": len(result)}
+    except Exception as e:
+        logger.error(f"list_collections error: {e}")
+        raise HTTPException(status_code=503, detail=f"Qdrant unavailable: {e}")
+
+
+@router.get("/api/v1/documents")
+async def list_documents(collection: str = "rag_documents", limit: int = 20, offset: int = 0):
+    """List recent documents from a Qdrant collection with metadata preview."""
+    import httpx
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    try:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            scroll_body = {
+                "limit": min(limit, 100),
+                "offset": offset,
+                "with_payload": True,
+                "with_vector": False,
+            }
+            resp = await client.post(
+                f"{qdrant_url}/collections/{collection}/points/scroll",
+                json=scroll_body,
+            )
+            if resp.status_code == 404:
+                return {"documents": [], "total": 0, "collection": collection, "note": "collection not found"}
+            resp.raise_for_status()
+            data = resp.json().get("result", {})
+            points = data.get("points", [])
+            documents = []
+            for pt in points:
+                payload = pt.get("payload", {})
+                documents.append({
+                    "id": pt.get("id"),
+                    "source": payload.get("source") or payload.get("file_name") or payload.get("doc_id", ""),
+                    "chunk_index": payload.get("chunk_index"),
+                    "text_preview": (payload.get("text") or payload.get("content") or "")[:200],
+                    "metadata": {k: v for k, v in payload.items()
+                                 if k not in ("text", "content", "embedding")},
+                })
+            return {
+                "documents": documents,
+                "collection": collection,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(documents),
+            }
+    except Exception as e:
+        logger.error(f"list_documents error: {e}")
+        raise HTTPException(status_code=503, detail=f"Qdrant unavailable: {e}")
