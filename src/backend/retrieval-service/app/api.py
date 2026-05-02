@@ -958,6 +958,8 @@ async def health_detail():
          "OCR 服务（按需）"),
         ("qdrant",        "http://localhost:6333/healthz", True,
          "向量库"),
+        ("milvus",        "http://localhost:9091/healthz", False,
+         "向量库 Milvus（可选，与 qdrant 二选一或 A/B）"),
         ("elasticsearch", "http://localhost:9200/_cluster/health", True,
          "全文检索（IK 分词）"),
         ("neo4j",         "http://localhost:7474/",         False,
@@ -2315,26 +2317,46 @@ async def architecture_live():
     except Exception as e:
         snapshot["stores"]["redis"] = {"available": False, "error": str(e)[:200]}
 
-    # ── Milvus (probe but not required yet — #49) ──
-    milvus_url = os.environ.get("MILVUS_URL")
-    if milvus_url:
-        try:
-            async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
-                r = await client.get(f"{milvus_url}/health")
-                snapshot["stores"]["milvus"] = {
-                    "role": "vector store (planned)",
-                    "available": r.status_code == 200,
-                    "status_code": r.status_code,
-                }
-        except Exception as e:
-            snapshot["stores"]["milvus"] = {"available": False, "error": str(e)[:200]}
-    else:
+    # ── Milvus (#49 — real probe + collection stats) ──
+    milvus_url = os.environ.get("MILVUS_URL", "http://localhost:19530")
+    milvus_health = os.environ.get("MILVUS_HEALTH_URL", "http://localhost:9091/healthz")
+    try:
+        async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
+            r = await client.get(milvus_health)
+            ok = r.status_code == 200
+        collections: list[str] = []
+        row_count: int | None = None
+        version: str | None = None
+        if ok:
+            try:
+                from pymilvus import MilvusClient as _MC
+                _mc = _MC(uri=milvus_url)
+                collections = list(_mc.list_collections() or [])
+                if "document_chunks" in collections:
+                    stats = _mc.get_collection_stats("document_chunks") or {}
+                    row_count = int(stats.get("row_count") or 0)
+                # version lookup (best-effort; not all builds expose)
+                try:
+                    desc = _mc.describe_collection("document_chunks") if collections else None
+                    version = (desc or {}).get("version")
+                except Exception:
+                    version = None
+            except Exception as e:
+                collections = []
+                row_count = None
+                version = f"stats error: {str(e)[:120]}"
         snapshot["stores"]["milvus"] = {
-            "role": "vector store (planned)",
-            "available": False,
-            "configured": False,
-            "note": "MILVUS_URL not set — see #49",
+            "role": "vector store (alt backend, switchable)",
+            "available": ok,
+            "status_code": r.status_code if ok else None,
+            "collections": collections,
+            "collection_count": len(collections),
+            "row_count": row_count,
+            "version": version,
+            "active": os.environ.get("VECTOR_STORE__TYPE", "qdrant") == "milvus",
         }
+    except Exception as e:
+        snapshot["stores"]["milvus"] = {"available": False, "error": str(e)[:200]}
 
     # Aggregate summary
     for s in snapshot["stores"].values():
