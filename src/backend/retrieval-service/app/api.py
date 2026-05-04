@@ -4826,7 +4826,7 @@ async def _calculate_health_score(cursor) -> int:
     cursor.execute(
         """
         SELECT COUNT(*) FROM improvement_events 
-        WHERE approved_at IS NULL AND rejected_at IS NULL
+        WHERE applied_at IS NULL AND reverted_at IS NULL
         """
     )
     pending_count = cursor.fetchone()[0]

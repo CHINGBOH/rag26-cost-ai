@@ -1,0 +1,353 @@
+{
+  "timestamp": 1777921175.817757,
+  "total_checks": 54,
+  "passed": 38,
+  "failed": 16,
+  "warnings": [
+    "Missing required environment variables: DATABASE_URL, REDIS_URL, LOG_LEVEL",
+    "No monitoring services (Prometheus/Grafana/Loki/Jaeger) configured in docker-compose",
+    "Only 0/5 training materials present"
+  ],
+  "results": {
+    "Database Migrations": [
+      {
+        "name": "Init: 01_init_database.sql",
+        "passed": true,
+        "details": "File size: 9903 bytes",
+        "timestamp": 1777921175.2065973
+      },
+      {
+        "name": "Init: 02_chinese_fts.sql",
+        "passed": true,
+        "details": "File size: 4233 bytes",
+        "timestamp": 1777921175.2066379
+      },
+      {
+        "name": "Init: 03_ingest_jobs.sql",
+        "passed": true,
+        "details": "File size: 2466 bytes",
+        "timestamp": 1777921175.2066731
+      },
+      {
+        "name": "Init: 04_blindspots.sql",
+        "passed": true,
+        "details": "File size: 1014 bytes",
+        "timestamp": 1777921175.2067044
+      },
+      {
+        "name": "Migration: 001_pgvector_single_db.sql",
+        "passed": true,
+        "details": "File size: 2809 bytes",
+        "timestamp": 1777921175.2067368
+      },
+      {
+        "name": "Migration: 001_chinese_fts.sql",
+        "passed": true,
+        "details": "File size: 9078 bytes",
+        "timestamp": 1777921175.206768
+      },
+      {
+        "name": "Migration: 002_full_schema.sql",
+        "passed": true,
+        "details": "File size: 10737 bytes",
+        "timestamp": 1777921175.2067983
+      },
+      {
+        "name": "Migration: 003_add_rag_feedback.sql",
+        "passed": true,
+        "details": "File size: 779 bytes",
+        "timestamp": 1777921175.2068307
+      },
+      {
+        "name": "Migration: 004_conversation_turns.sql",
+        "passed": true,
+        "details": "File size: 2339 bytes",
+        "timestamp": 1777921175.2068598
+      },
+      {
+        "name": "Migration: 008_learning_runs.sql",
+        "passed": true,
+        "details": "File size: 1006 bytes",
+        "timestamp": 1777921175.2068923
+      },
+      {
+        "name": "Migration: 202605_learning_signals.sql",
+        "passed": true,
+        "details": "File size: 6960 bytes",
+        "timestamp": 1777921175.206921
+      },
+      {
+        "name": "SQL Syntax: 001_chinese_fts.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2071412
+      },
+      {
+        "name": "SQL Syntax: 001_pgvector_single_db.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2072127
+      },
+      {
+        "name": "SQL Syntax: 002_full_schema.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2072945
+      },
+      {
+        "name": "SQL Syntax: 003_add_rag_feedback.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2073421
+      },
+      {
+        "name": "SQL Syntax: 004_conversation_turns.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2073886
+      },
+      {
+        "name": "SQL Syntax: 008_learning_runs.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2074327
+      },
+      {
+        "name": "SQL Syntax: 202605_learning_signals.sql",
+        "passed": true,
+        "details": "Valid SQL structure",
+        "timestamp": 1777921175.2074919
+      },
+      {
+        "name": "Total Valid Migration Files",
+        "passed": true,
+        "details": "7 migration files validated",
+        "timestamp": 1777921175.20751
+      }
+    ],
+    "Environment Config": [
+      {
+        "name": ".env file exists",
+        "passed": true,
+        "details": "Configuration file found",
+        "timestamp": 1777921175.2075756
+      },
+      {
+        "name": ".env.example template exists",
+        "passed": true,
+        "details": "Template file found",
+        "timestamp": 1777921175.2076027
+      },
+      {
+        "name": "Required: DATABASE_URL",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2076974
+      },
+      {
+        "name": "Required: REDIS_URL",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2077243
+      },
+      {
+        "name": "Required: QDRANT_HOST",
+        "passed": true,
+        "details": "Set in environment or .env",
+        "timestamp": 1777921175.2077422
+      },
+      {
+        "name": "Required: QDRANT_PORT",
+        "passed": true,
+        "details": "Set in environment or .env",
+        "timestamp": 1777921175.2077565
+      },
+      {
+        "name": "Required: LOG_LEVEL",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2077694
+      },
+      {
+        "name": "Optional: SENTRY_DSN",
+        "passed": false,
+        "details": "Not configured (optional)",
+        "timestamp": 1777921175.207783
+      },
+      {
+        "name": "Optional: SLACK_WEBHOOK",
+        "passed": false,
+        "details": "Not configured (optional)",
+        "timestamp": 1777921175.2077966
+      },
+      {
+        "name": "Optional: DATADOG_API_KEY",
+        "passed": false,
+        "details": "Not configured (optional)",
+        "timestamp": 1777921175.2078094
+      },
+      {
+        "name": "Optional Variables Coverage",
+        "passed": true,
+        "details": "0/3 optional vars configured",
+        "timestamp": 1777921175.2078211
+      }
+    ],
+    "Performance Baseline": [
+      {
+        "name": "Baseline file exists",
+        "passed": true,
+        "details": "Size: 1229 bytes",
+        "timestamp": 1777921175.2079017
+      },
+      {
+        "name": "Baseline Metrics Coverage",
+        "passed": false,
+        "details": "0/5 baseline metrics recorded",
+        "timestamp": 1777921175.2079551
+      }
+    ],
+    "Monitoring Config": [
+      {
+        "name": "Logging configuration file",
+        "passed": false,
+        "details": "logging.yaml not found",
+        "timestamp": 1777921175.2080297
+      },
+      {
+        "name": "Script: scripts/monitor.sh",
+        "passed": false,
+        "details": "Not found or not executable",
+        "timestamp": 1777921175.2080657
+      },
+      {
+        "name": "Script: scripts/health_check.sh",
+        "passed": true,
+        "details": "Found and executable",
+        "timestamp": 1777921175.2080975
+      }
+    ],
+    "Disaster Recovery": [
+      {
+        "name": "Backup Strategy",
+        "passed": true,
+        "details": "Documentation found",
+        "timestamp": 1777921175.2082365
+      },
+      {
+        "name": "Recovery Procedures",
+        "passed": true,
+        "details": "Documentation found",
+        "timestamp": 1777921175.2082644
+      },
+      {
+        "name": "Incident Response",
+        "passed": true,
+        "details": "Documentation found",
+        "timestamp": 1777921175.2082899
+      },
+      {
+        "name": "Backup: scripts/backup_database.sh",
+        "passed": true,
+        "details": "Script found",
+        "timestamp": 1777921175.2083156
+      },
+      {
+        "name": "Backup: scripts/backup_config.sh",
+        "passed": false,
+        "details": "Script missing",
+        "timestamp": 1777921175.2083406
+      }
+    ],
+    "Training Materials": [
+      {
+        "name": "Architecture Overview",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2083986
+      },
+      {
+        "name": "API Documentation",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2084236
+      },
+      {
+        "name": "Troubleshooting Guide",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.2084475
+      },
+      {
+        "name": "Runbooks",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.20847
+      },
+      {
+        "name": "On-Call Guide",
+        "passed": false,
+        "details": "Missing",
+        "timestamp": 1777921175.208492
+      },
+      {
+        "name": "Coverage",
+        "passed": false,
+        "details": "0/5",
+        "timestamp": 1777921175.2085066
+      }
+    ],
+    "Rollback Plan": [
+      {
+        "name": "Plan documentation",
+        "passed": true,
+        "details": "rollback-plan.md found",
+        "timestamp": 1777921175.2085717
+      },
+      {
+        "name": "Plan Completeness",
+        "passed": true,
+        "details": "4/4 sections documented",
+        "timestamp": 1777921175.2086422
+      },
+      {
+        "name": "Rollback script",
+        "passed": true,
+        "details": "Executable script found",
+        "timestamp": 1777921175.2086797
+      }
+    ],
+    "Pre-Deployment": [
+      {
+        "name": "Code Compilation",
+        "passed": true,
+        "details": "Verification passed",
+        "timestamp": 1777921175.8173268
+      },
+      {
+        "name": "Import Validation",
+        "passed": true,
+        "details": "Verification passed",
+        "timestamp": 1777921175.817392
+      },
+      {
+        "name": "Configuration Files",
+        "passed": true,
+        "details": "Verification passed",
+        "timestamp": 1777921175.817414
+      },
+      {
+        "name": "Database Connection",
+        "passed": true,
+        "details": "Verification passed",
+        "timestamp": 1777921175.81743
+      },
+      {
+        "name": "External Services",
+        "passed": true,
+        "details": "Verification passed",
+        "timestamp": 1777921175.8174446
+      }
+    ]
+  }
+}
