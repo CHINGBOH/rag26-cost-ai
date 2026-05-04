@@ -1,0 +1,261 @@
+/* 问题列表样式 */
+.problems-panel {
+  display: flex;
+  gap: 20px;
+  height: calc(100vh - 200px);
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.problems-list {
+  flex: 0 0 35%;
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  overflow-y: auto;
+  border-right: 1px solid #eee;
+}
+
+.problems-list h3 {
+  margin-top: 0;
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+
+.problem-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.problem-item {
+  padding: 12px;
+  border-left: 4px solid #3498db;
+  background: #f9f9f9;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.problem-item:hover,
+.problem-item.selected {
+  background: #f0f0f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.problem-item.selected {
+  background: #e3f2fd;
+  border-left-color: #1976d2;
+}
+
+.problem-item .header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  align-items: center;
+}
+
+.problem-item .severity {
+  font-size: 14px;
+  min-width: 20px;
+}
+
+.problem-item .category {
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 2px;
+  font-size: 11px;
+  color: #666;
+}
+
+.problem-item .route {
+  color: #999;
+  font-size: 11px;
+  flex: 1;
+}
+
+.problem-item .description {
+  font-size: 12px;
+  color: #666;
+  margin: 4px 0;
+  line-height: 1.4;
+}
+
+.problem-item .confidence {
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
+}
+
+/* 详情面板 */
+.problem-detail {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.problem-detail .loading {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.analysis-section,
+.strategies-section {
+  margin-bottom: 24px;
+}
+
+.analysis-section h3,
+.strategies-section h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 16px;
+  color: #333;
+}
+
+.root-cause {
+  background: #f9f9f9;
+  padding: 12px;
+  border-radius: 4px;
+  border-left: 3px solid #2ecc71;
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+
+.confidence {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.confidence strong {
+  color: #333;
+}
+
+.evidence {
+  background: #f5f5f5;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.evidence h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.evidence-group {
+  margin-bottom: 8px;
+}
+
+.evidence-group strong {
+  font-size: 12px;
+  color: #666;
+}
+
+.evidence-group ul {
+  margin: 4px 0 0 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+
+.evidence-group li {
+  font-size: 12px;
+  color: #666;
+  margin: 2px 0;
+}
+
+.strategies-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.strategy-card {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 12px;
+  background: #f9f9f9;
+  transition: all 0.2s;
+}
+
+.strategy-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: #fff;
+}
+
+.strategy-card.auto_apply {
+  border-left: 3px solid #2ecc71;
+}
+
+.strategy-card.pending_review {
+  border-left: 3px solid #f39c12;
+}
+
+.strategy-card.manual_only {
+  border-left: 3px solid #e74c3c;
+}
+
+.strategy-card .header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: center;
+}
+
+.strategy-card .action {
+  font-weight: bold;
+  font-size: 13px;
+  color: #333;
+}
+
+.strategy-card .risk {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.strategy-card .description {
+  font-size: 12px;
+  color: #666;
+  margin: 8px 0;
+  line-height: 1.4;
+}
+
+.strategy-card .footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #999;
+}
+
+.strategy-card .decision {
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-weight: bold;
+  font-size: 11px;
+}
+
+.strategy-card .decision.auto_apply {
+  background: #e8f5e9;
+  color: #2ecc71;
+}
+
+.strategy-card .decision.pending_review {
+  background: #fff3e0;
+  color: #f39c12;
+}
+
+.strategy-card .decision.manual_only {
+  background: #ffebee;
+  color: #e74c3c;
+}
+
+.empty {
+  text-align: center;
+  color: #999;
+  padding: 20px;
+}

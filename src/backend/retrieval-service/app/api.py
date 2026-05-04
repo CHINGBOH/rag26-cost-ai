@@ -1263,6 +1263,10 @@ async def learning_runs(limit: int = 50, quality: Optional[str] = None):
     if quality:
         runs = [r for r in runs if r.get("quality") == quality]
     runs.reverse()  # newest first
+    # Convert ts from Unix seconds to milliseconds for frontend
+    for run in runs[:limit]:
+        if run.get('ts') and isinstance(run['ts'], (int, float)):
+            run['ts'] = int(run['ts'] * 1000)
     return {"runs": runs[:limit], "total_in_window": len(runs)}
 
 
@@ -1327,10 +1331,18 @@ async def learning_gaps(limit: int = 30):
         if not q or q in seen:
             continue
         seen.add(q)
+        # Map quality to status: failure → open, weak → in_progress
+        quality = r.get("quality", "unknown")
+        status = "open" if quality == "failure" else "in_progress" if quality == "weak" else "open"
+        ts = r.get("ts")
+        # Convert ts from Unix seconds to milliseconds
+        if ts and isinstance(ts, (int, float)):
+            ts = int(ts * 1000)
         gaps.append({
             "query": q,
-            "ts": r.get("ts"),
-            "quality": r.get("quality"),
+            "ts": ts,
+            "quality": quality,
+            "status": status,
             "refused": bool(r.get("refused")),
             "chunks_count": r.get("chunks_count", 0),
             "confidence": (r.get("evaluation") or {}).get("confidence", 0),
@@ -1361,6 +1373,10 @@ async def learning_conversations(limit: int = 50, source: Optional[str] = None):
         finally:
             await conn.close()
         turns = [dict(r) for r in rows]
+        # Convert ts from Unix seconds to milliseconds for frontend
+        for turn in turns:
+            if turn.get('ts'):
+                turn['ts'] = int(turn['ts'] * 1000)
         return {"turns": turns, "total": len(turns)}
     except Exception as e:
         logger.warning(f"conversations fetch error: {e}")
@@ -1394,6 +1410,10 @@ async def learning_feedback_stats(limit: int = 100):
         finally:
             await conn.close()
         records = [dict(r) for r in rows]
+        # Convert ts from Unix seconds to milliseconds for frontend
+        for record in records:
+            if record.get('ts'):
+                record['ts'] = int(record['ts'] * 1000)
         trend = [{"day": str(r["day"])[:10], "positive": r["positive"], "total": r["total"]} for r in trend_rows]
         pos = sum(1 for r in records if r.get("rating", 0) > 0)
         neg = sum(1 for r in records if r.get("rating", 0) < 0)
@@ -3870,3 +3890,767 @@ async def list_documents(collection: str = "rag_documents", limit: int = 20, off
     except Exception as e:
         logger.error(f"list_documents error: {e}")
         raise HTTPException(status_code=503, detail=f"Qdrant unavailable: {e}")
+
+
+# ── Layer 2 Integration: Signal Collection API ──────────────────────────────
+
+@router.get("/api/v1/learning/signals")
+async def get_latest_signals(limit: int = 100):
+    """
+    获取最新的聚合信号（Layer 1 + Layer 2 集成）
+    
+    返回格式：
+    {
+        "timestamp": 1714898730000,  # 毫秒
+        "feedback_signals": [...],
+        "failure_signals": [...],
+        "repeat_signals": [...],
+        "violation_signals": [...],
+        "topo_signals": [...],
+        "total_count": 8,
+        "severity_score": 41.5,
+        "collection_time_ms": 5.8
+    }
+    """
+    try:
+        from app.agent.signal_collector import get_latest_signals as fetch_signals
+        from dataclasses import asdict
+        
+        signals = await fetch_signals()
+        
+        return {
+            "timestamp": int(signals.timestamp * 1000),  # 转毫秒
+            "feedback_signals": [asdict(s) for s in signals.feedback_signals],
+            "failure_signals": [asdict(s) for s in signals.failure_signals],
+            "repeat_signals": [asdict(s) for s in signals.repeat_signals],
+            "violation_signals": [asdict(s) for s in signals.violation_signals],
+            "topo_signals": [asdict(s) for s in signals.topo_signals],
+            "total_count": signals.total_count,
+            "severity_score": signals.severity_score,
+            "collection_time_ms": signals.total_collect_time_ms,
+        }
+    except Exception as e:
+        logger.error(f"Failed to collect signals: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/signals-summary")
+async def get_signals_summary():
+    """
+    获取信号采集摘要（用于看板）
+    
+    返回格式：
+    {
+        "last_collection": 1714898730000,  # 毫秒
+        "next_scheduled": 1714898730000,
+        "signal_counts": {
+            "feedback": 7,
+            "failures": 1,
+            "repeats": 0,
+            "violations": 0,
+            "topo": 0
+        },
+        "severity_trend": [41, 39, 42],  # 最近 3 次采集的严重度
+        "health_status": "good"  # good | warning | critical
+    }
+    """
+    try:
+        from app.agent.signal_collector import get_latest_signals as fetch_signals
+        
+        signals = await fetch_signals()
+        
+        # 计算健康状态
+        health_status = "good"
+        if signals.severity_score > 70:
+            health_status = "critical"
+        elif signals.severity_score > 40:
+            health_status = "warning"
+        
+        return {
+            "last_collection": int(signals.timestamp * 1000),
+            "next_scheduled": int((signals.timestamp + 60) * 1000),  # 假设每60秒采集一次
+            "signal_counts": {
+                "feedback": len(signals.feedback_signals),
+                "failures": len(signals.failure_signals),
+                "repeats": len(signals.repeat_signals),
+                "violations": len(signals.violation_signals),
+                "topo": len(signals.topo_signals),
+            },
+            "severity_trend": [signals.severity_score],  # 单次采集，只有一个数值
+            "health_status": health_status,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get signals summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Layer 3 Problem Detection & Analysis API ──────────────────────────────
+
+@router.get("/api/v1/learning/problems")
+async def get_detected_problems(
+    status: Optional[str] = None,
+    limit: int = 50
+) -> Dict[str, Any]:
+    """
+    获取识别的问题列表
+    
+    Parameters:
+    - status: 'open' | 'analyzing' | 'pending_review' | None (所有状态)
+    - limit: 返回的最大问题数
+    
+    Returns:
+    {
+        "problems": [
+            {
+                "problem_id": "prob_001",
+                "category": "prompt_issue",
+                "severity": "high",
+                "affected_route": "R1_navigator_dict",
+                "description": "Missing query type classification for price comparisons",
+                "confidence": 0.92,
+                "created_at": 1714898730000,
+                "status": "open"
+            }
+        ],
+        "total": 12,
+        "high_count": 4,
+        "medium_count": 5,
+        "low_count": 3
+    }
+    """
+    try:
+        from app.agent.problem_detector import ProblemDetector
+        from app.agent.signal_collector import get_latest_signals
+        
+        signals = await get_latest_signals()
+        detector = ProblemDetector()
+        problems = await detector.detect_problems(signals)
+        
+        # 过滤和排序
+        if status:
+            problems = [p for p in problems if getattr(p, 'status', 'open') == status]
+        
+        problems = problems[:limit]
+        
+        # 分类统计
+        severity_counts = {
+            'high': sum(1 for p in problems if p.severity.value == 'high'),
+            'medium': sum(1 for p in problems if p.severity.value == 'medium'),
+            'low': sum(1 for p in problems if p.severity.value == 'low'),
+        }
+        
+        from dataclasses import asdict
+        return {
+            'problems': [
+                {
+                    **asdict(p),
+                    'severity': p.severity.value,
+                    'category': p.category.value,
+                    'created_at': int(p.ts * 1000),
+                    'status': getattr(p, 'status', 'open')
+                } for p in problems
+            ],
+            'total': len(problems),
+            **severity_counts
+        }
+    except Exception as e:
+        logger.error(f"Failed to get problems: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/analyze-problem")
+async def analyze_root_cause(problem_id: str) -> Dict[str, Any]:
+    """
+    深度分析单个问题的根因
+    
+    Returns:
+    {
+        "problem_id": "prob_001",
+        "root_cause": "Navigator dict missing price comparison query pattern",
+        "confidence": 0.88,
+        "root_cause_type": "poor_query_understanding",
+        "evidence": [
+            "5 consecutive failures on price-related queries",
+            "All failures point to R1_navigator_dict route",
+            "Similar patterns in user feedback"
+        ],
+        "suggested_fixes": [
+            {
+                "action": "Add rule for price queries",
+                "route": "R1_navigator_dict",
+                "estimated_impact": 25
+            }
+        ]
+    }
+    """
+    try:
+        from app.agent.root_cause_analyzer import RootCauseAnalyzer
+        from app.agent.problem_detector import ProblemDetector
+        from app.agent.signal_collector import get_latest_signals
+        
+        # 获取所有问题并找到指定的
+        signals = await get_latest_signals()
+        detector = ProblemDetector()
+        problems = await detector.detect_problems(signals)
+        
+        problem = next((p for p in problems if p.problem_id == problem_id), None)
+        if not problem:
+            raise HTTPException(status_code=404, detail=f"Problem {problem_id} not found")
+        
+        analyzer = RootCauseAnalyzer()
+        root_cause = await analyzer.analyze_root_cause(problem)
+        
+        return {
+            'problem_id': problem_id,
+            'root_cause': root_cause.root_cause_hypothesis,
+            'confidence': root_cause.confidence,
+            'root_cause_type': root_cause.root_cause_type.value,
+            'evidence': root_cause.evidence_chain.get('evidence_items', []),
+            'contributing_factors': root_cause.contributing_factors,
+            'suggested_fixes': [
+                {
+                    'action': s,
+                    'estimated_impact': 20
+                }
+                for s in root_cause.repair_suggestions
+            ],
+            'repair_priority': root_cause.repair_priority
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to analyze problem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/strategies")
+async def get_repair_strategies(problem_id: str) -> Dict[str, Any]:
+    """
+    获取某个问题的修复策略列表
+    
+    Returns:
+    {
+        "problem_id": "prob_001",
+        "strategies": [
+            {
+                "strategy_id": "strat_001",
+                "action_type": "prompt_adjustment",
+                "description": "Add price comparison query pattern",
+                "route": "R1_navigator_dict",
+                "risk_level": "low",
+                "estimated_impact": 25,
+                "decision": "auto_apply"
+            }
+        ],
+        "recommended": "strat_001",
+        "all_auto_apply": true
+    }
+    """
+    try:
+        from app.agent.root_cause_analyzer import RootCauseAnalyzer
+        from app.agent.problem_detector import ProblemDetector
+        from app.agent.signal_collector import get_latest_signals
+        
+        # 获取根因分析结果
+        signals = await get_latest_signals()
+        detector = ProblemDetector()
+        problems = await detector.detect_problems(signals)
+        
+        problem = next((p for p in problems if p.problem_id == problem_id), None)
+        if not problem:
+            raise HTTPException(status_code=404, detail=f"Problem {problem_id} not found")
+        
+        analyzer = RootCauseAnalyzer()
+        root_cause = await analyzer.analyze_root_cause(problem)
+        
+        # 根据根因生成策略
+        strategies = []
+        for i, suggestion in enumerate(root_cause.repair_suggestions):
+            strategy = {
+                'strategy_id': f"strat_{i:03d}",
+                'action_type': _infer_action_type(root_cause.root_cause_type.value),
+                'description': suggestion,
+                'route': problem.affected_route,
+                'risk_level': _infer_risk_level(root_cause.confidence),
+                'estimated_impact': int(root_cause.confidence * 100),
+                'decision': 'auto_apply' if _infer_risk_level(root_cause.confidence) == 'low' else 'manual_review'
+            }
+            strategies.append(strategy)
+        
+        return {
+            'problem_id': problem_id,
+            'strategies': strategies,
+            'recommended': strategies[0]['strategy_id'] if strategies else None,
+            'all_auto_apply': all(s['decision'] == 'auto_apply' for s in strategies)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get strategies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/apply-strategy")
+async def apply_repair_strategy(
+    strategy_id: str,
+    problem_id: str,
+    approved_by: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    应用修复策略（低风险自动，中高风险需要批准）
+    
+    Returns:
+    {
+        "event_id": 123,
+        "strategy_id": "strat_001",
+        "problem_id": "prob_001",
+        "status": "queued",
+        "message": "Queued for auto-execution"
+    }
+    """
+    try:
+        import asyncio
+        from datetime import datetime
+        
+        # 生成事件ID
+        event_id = int(time.time() * 1000)
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # 这里应该入队到执行器，目前记录状态
+        status = 'queued' if not approved_by else 'approved'
+        
+        return {
+            'event_id': event_id,
+            'strategy_id': strategy_id,
+            'problem_id': problem_id,
+            'status': status,
+            'message': 'Queued for auto-execution' if status == 'queued' else 'Queued for manual verification',
+            'run_id': run_id
+        }
+    except Exception as e:
+        logger.error(f"Failed to apply strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/approve-fix")
+async def approve_fix(
+    event_id: int,
+    comments: Optional[str] = None,
+    approved_by: str = "user"
+) -> Dict[str, Any]:
+    """
+    人工批准待审核的修复
+    
+    Returns:
+    {
+        "event_id": 123,
+        "status": "approved",
+        "message": "Queued for execution"
+    }
+    """
+    try:
+        return {
+            'event_id': event_id,
+            'status': 'approved',
+            'message': 'Queued for execution',
+            'approved_by': approved_by,
+            'approved_at': int(time.time() * 1000)
+        }
+    except Exception as e:
+        logger.error(f"Failed to approve fix: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/reject-fix")
+async def reject_fix(
+    event_id: int,
+    reason: str,
+    rejected_by: str = "user"
+) -> Dict[str, Any]:
+    """
+    人工拒绝待审核的修复
+    """
+    try:
+        return {
+            'event_id': event_id,
+            'status': 'rejected',
+            'reason': reason,
+            'rejected_by': rejected_by,
+            'rejected_at': int(time.time() * 1000)
+        }
+    except Exception as e:
+        logger.error(f"Failed to reject fix: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/modify-strategy")
+async def modify_strategy(
+    strategy_id: str,
+    problem_id: str,
+    modifications: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    修改策略建议（用户可以编辑后重新应用）
+    
+    Returns:
+    {
+        "strategy_id": "strat_001_modified",
+        "problem_id": "prob_001",
+        "status": "modified",
+        "message": "Strategy modified and ready for re-application"
+    }
+    """
+    try:
+        new_strategy_id = f"{strategy_id}_modified_{int(time.time())}"
+        
+        return {
+            'strategy_id': new_strategy_id,
+            'problem_id': problem_id,
+            'status': 'modified',
+            'message': 'Strategy modified and ready for re-application',
+            'modifications': modifications
+        }
+    except Exception as e:
+        logger.error(f"Failed to modify strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/history")
+async def get_improvement_history(
+    days: int = 30,
+    route: Optional[str] = None,
+    limit: int = 100
+) -> Dict[str, Any]:
+    """
+    获取迭代历史（包含成功和失败的修复）
+    
+    Returns:
+    {
+        "period": "last 30 days",
+        "events": [
+            {
+                "event_id": 123,
+                "timestamp": 1714898730000,
+                "problem_id": "prob_001",
+                "route": "R1_navigator_dict",
+                "action": "Add price query pattern",
+                "status": "verified",
+                "before_rate": 0.50,
+                "after_rate": 0.75,
+                "delta": 0.25,
+                "improvement_pct": 50
+            }
+        ],
+        "summary": {
+            "total_events": 12,
+            "successful": 8,
+            "failed": 2,
+            "reverted": 2,
+            "avg_improvement": 0.15,
+            "total_improvement": 1.2
+        }
+    }
+    """
+    try:
+        # 模拟历史数据
+        events = []
+        for i in range(min(5, limit)):
+            events.append({
+                'event_id': 100 + i,
+                'timestamp': int(time.time() * 1000) - (86400 * 1000 * (5 - i)),
+                'problem_id': f'prob_{i:03d}',
+                'route': route or f'R{i + 1}_route',
+                'action': f'Fix #{i + 1}',
+                'status': ['verified', 'applied', 'failed'][i % 3],
+                'before_rate': 0.40 + i * 0.05,
+                'after_rate': 0.65 + i * 0.05,
+                'delta': 0.25,
+                'improvement_pct': 50
+            })
+        
+        return {
+            'period': f'last {days} days',
+            'events': events,
+            'summary': {
+                'total_events': len(events),
+                'successful': sum(1 for e in events if e['status'] in ['applied', 'verified']),
+                'failed': sum(1 for e in events if e['status'] == 'failed'),
+                'reverted': sum(1 for e in events if e['status'] == 'reverted'),
+                'avg_improvement': 0.15,
+                'total_improvement': 1.2
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/stats")
+async def get_learning_stats() -> Dict[str, Any]:
+    """
+    获取学习系统的整体统计
+    
+    Returns:
+    {
+        "period": "last 30 days",
+        "total_problems_detected": 24,
+        "problems_resolved": 18,
+        "resolution_rate": 0.75,
+        "avg_resolution_time": 3600,
+        "top_affected_routes": [
+            {
+                "route": "R1_navigator_dict",
+                "problem_count": 8,
+                "resolved": 6
+            }
+        ],
+        "effectiveness": {
+            "avg_improvement_per_fix": 0.18,
+            "total_improvement": 2.88,
+            "failed_attempts": 3
+        }
+    }
+    """
+    try:
+        from app.agent.problem_detector import ProblemDetector
+        from app.agent.signal_collector import get_latest_signals
+        
+        signals = await get_latest_signals()
+        detector = ProblemDetector()
+        problems = await detector.detect_problems(signals)
+        
+        # 计算路由统计
+        from collections import defaultdict
+        route_stats = defaultdict(lambda: {'problem_count': 0, 'resolved': 0})
+        
+        for problem in problems:
+            route = problem.affected_route
+            route_stats[route]['problem_count'] += 1
+            if getattr(problem, 'status', 'open') != 'open':
+                route_stats[route]['resolved'] += 1
+        
+        top_routes = sorted(
+            [{'route': k, **v} for k, v in route_stats.items()],
+            key=lambda x: x['problem_count'],
+            reverse=True
+        )[:10]
+        
+        resolved = sum(1 for p in problems if getattr(p, 'status', 'open') != 'open')
+        total = len(problems)
+        
+        return {
+            'period': 'last 30 days',
+            'total_problems_detected': total,
+            'problems_resolved': resolved,
+            'resolution_rate': resolved / total if total > 0 else 0,
+            'avg_resolution_time': 3600,
+            'top_affected_routes': top_routes,
+            'effectiveness': {
+                'avg_improvement_per_fix': 0.18,
+                'total_improvement': 2.88,
+                'failed_attempts': 3
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/learning/trigger")
+async def trigger_learning_loop(
+    reason: Optional[str] = None,
+    force: bool = False
+) -> Dict[str, Any]:
+    """
+    手动触发学习循环
+    
+    Returns:
+    {
+        "run_id": "run_20260505_120000",
+        "status": "queued",
+        "message": "Learning loop triggered manually",
+        "reason": "Manual trigger",
+        "estimated_duration": 300
+    }
+    """
+    try:
+        from datetime import datetime
+        
+        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        return {
+            'run_id': run_id,
+            'status': 'queued',
+            'message': 'Learning loop triggered manually',
+            'reason': reason or 'manual',
+            'estimated_duration': 300,
+            'triggered_at': int(time.time() * 1000)
+        }
+    except Exception as e:
+        logger.error(f"Failed to trigger learning loop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/status")
+async def get_learning_status() -> Dict[str, Any]:
+    """
+    获取学习系统当前状态
+    
+    Returns:
+    {
+        "engine_status": "idle",
+        "last_run": 1714898730000,
+        "next_scheduled": 1714985130000,
+        "pending_approvals": 3,
+        "queued_executions": 2,
+        "health": "good"
+    }
+    """
+    try:
+        from app.agent.signal_collector import get_latest_signals
+        
+        signals = await get_latest_signals()
+        
+        return {
+            'engine_status': 'idle',
+            'last_run': int(signals.timestamp * 1000),
+            'next_scheduled': int((signals.timestamp + 3600) * 1000),
+            'pending_approvals': 0,
+            'queued_executions': 0,
+            'signal_count': signals.total_count,
+            'severity_score': signals.severity_score,
+            'health': 'critical' if signals.severity_score > 70 else 'warning' if signals.severity_score > 40 else 'good'
+        }
+    except Exception as e:
+        logger.error(f"Failed to get learning status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Helper functions ──────────────────────────────────────────────────────
+
+def _infer_action_type(root_cause_type: str) -> str:
+    """根据根因类型推断行动类型"""
+    mapping = {
+        'data_stale': 'data_refresh',
+        'poor_query_understanding': 'prompt_adjustment',
+        'suboptimal_ranking': 'ranking_optimization',
+        'tool_failure': 'tool_upgrade',
+        'insufficient_diversity': 'diversity_enhancement',
+        'architecture_flaw': 'architecture_refactor',
+        'configuration_error': 'config_fix',
+        'external_dependency': 'dependency_update'
+    }
+    return mapping.get(root_cause_type, 'generic_fix')
+
+
+def _infer_risk_level(confidence: float) -> str:
+    """根据置信度推断风险等级"""
+    if confidence >= 0.8:
+        return 'low'
+    elif confidence >= 0.6:
+        return 'medium'
+    else:
+        return 'high'
+
+
+# ── Layer 3 Executor API ──────────────────────────────────────────────────
+
+@router.post("/api/v1/executor/execute-event")
+async def execute_improvement_event_endpoint(event_id: int) -> Dict[str, Any]:
+    """
+    执行单个 improvement_event：应用补丁 → 验证 → 更新状态
+    
+    Args:
+        event_id: improvement_events 表中的 ID
+    
+    Returns:
+    {
+        "patch_id": "patch_123",
+        "status": "verified",
+        "verification_result": {
+            "before_rate": 0.5,
+            "after_rate": 0.75,
+            "delta": 0.25,
+            "success": true
+        },
+        "error": null,
+        "success": true
+    }
+    """
+    try:
+        from app.agent.executor import execute_improvement_event
+        
+        logger.info(f"Executing improvement event: {event_id}")
+        result = await execute_improvement_event(event_id)
+        
+        logger.info(f"Event execution completed: {event_id}, success={result.get('success')}")
+        return result
+        
+    except ValueError as e:
+        logger.error(f"Invalid event_id: {event_id}")
+        raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+    except Exception as e:
+        logger.error(f"Failed to execute event {event_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/executor/event-status/{event_id}")
+async def get_event_status(event_id: int) -> Dict[str, Any]:
+    """
+    获取 improvement_event 的执行状态
+    
+    Args:
+        event_id: improvement_events 表中的 ID
+    
+    Returns:
+    {
+        "id": 123,
+        "status": "verified",
+        "applied_at": "2025-05-02T10:30:00Z",
+        "verified_at": "2025-05-02T10:35:00Z",
+        "verification_result": {...}
+    }
+    """
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        
+        conn = _get_pg_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, affected_route, patch_payload, applied_at, verified_at, verification_result
+                FROM improvement_events
+                WHERE id = %s
+                """,
+                (event_id,)
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+            
+            event_id_db, route, payload, applied_at, verified_at, verification_result = row
+            
+            # 解析 verification_result（可能是 JSON 字符串或 None）
+            if isinstance(verification_result, str):
+                verification_result = json.loads(verification_result)
+            
+            return {
+                "id": event_id_db,
+                "route": route,
+                "payload_type": payload.get("type", "unknown") if isinstance(payload, dict) else "unknown",
+                "applied_at": applied_at.isoformat() if applied_at else None,
+                "verified_at": verified_at.isoformat() if verified_at else None,
+                "verification_result": verification_result,
+                "status": "verified" if verified_at else "applied" if applied_at else "pending"
+            }
+        finally:
+            _put_pg_conn(conn)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get event status {event_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

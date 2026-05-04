@@ -88,11 +88,11 @@ export interface ConversationTurn {
   source: string;
   status: string;
   latency_ms: number | null;
-  ts: string;
+  ts: number | string;
 }
 
 export interface FeedbackRecord {
-  ts: string;
+  ts: number | string;
   session_id: string;
   message_id: string;
   rating: number;
@@ -159,7 +159,7 @@ export async function getOpsMetrics(windowSec = 60): Promise<OpsMetricsResponse 
 // ── Learning ─────────────────────────────────────────────────────────────────
 
 export interface LearningRun {
-  ts: string;
+  ts: number | string;
   query: string;
   query_type: string;
   answer: string;
@@ -189,8 +189,9 @@ export interface LearningSummary {
 
 export interface LearningGap {
   query: string;
-  ts: string;
+  ts: number | string;
   quality: string;
+  status: string;
   refused: boolean;
   chunks_count: number;
   confidence: number;
@@ -459,7 +460,7 @@ export interface LearningEngineStatus {
   trigger_description: string;
   trigger_conditions: Array<{ name: string; active: boolean; command?: string; note?: string }>;
   last_run: {
-    ts?: string;
+    ts?: number | string;
     file?: string;
     file_mtime?: string;
     summary?: { total?: number; passed?: number; ok?: number; avg_confidence?: number };
@@ -479,4 +480,233 @@ export async function getLearningEngine(): Promise<LearningEngineStatus | null> 
     if (!r.ok) return null;
     return r.json();
   } catch { return null; }
+}
+
+// ── Signal Collector Integration (Layer 1 + Layer 2) ──────────────────────────
+
+export interface FeedbackSignal {
+  session_id: string;
+  message_id: string;
+  rating: number;
+  tags: string[];
+  feedback_text: string;
+  ts: number;
+}
+
+export interface FailureSignal {
+  session_id: string;
+  turn_index: number;
+  status: string;
+  latency_ms: number;
+  context: Record<string, any>;
+  ts: number;
+}
+
+export interface RepeatSignal {
+  session_id: string;
+  repeat_count: number;
+  original_turn: number;
+  latest_turn: number;
+  similarity: number;
+  ts: number;
+}
+
+export interface ViolationSignal {
+  run_id: string;
+  contract_name: string;
+  violation_code: string;
+  payload: Record<string, any>;
+  ts: number;
+}
+
+export interface TopoSignal {
+  edge_id: string;
+  from_node: string;
+  to_node: string;
+  anomaly_type: string;
+  last_traversed_at: string;
+  traversal_count: number;
+  ts: number;
+}
+
+export interface SignalAggregation {
+  timestamp: number;
+  feedback_signals: FeedbackSignal[];
+  failure_signals: FailureSignal[];
+  repeat_signals: RepeatSignal[];
+  violation_signals: ViolationSignal[];
+  topo_signals: TopoSignal[];
+  total_count: number;
+  severity_score: number;
+  collection_time_ms: number;
+}
+
+export interface SignalSummary {
+  last_collection: number;
+  next_scheduled: number;
+  signal_counts: {
+    feedback: number;
+    failures: number;
+    repeats: number;
+    violations: number;
+    topo: number;
+  };
+  severity_trend: number[];
+  health_status: 'good' | 'warning' | 'critical';
+}
+
+export async function getLatestSignals(limit = 100): Promise<SignalAggregation | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/signals?limit=${limit}`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+export async function getSignalsSummary(): Promise<SignalSummary | null> {
+  try {
+    const r = await fetch(`${API_BASE}/api/v1/learning/signals-summary`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+// ── Problem Analysis & Root Cause ────────────────────────────────────────────
+
+export interface ProblemReport {
+  problem_id: string;
+  category: string;  // 'prompt_issue' | 'tool_failure' | 'routing_error' | 'low_quality' | 'diversity'
+  severity: 'low' | 'medium' | 'high';
+  affected_route: string;  // R1-R5
+  description: string;
+  evidence: string[];
+  confidence: number;  // 0-1
+  created_at: number;
+  status: 'open' | 'analyzing' | 'pending_review';
+}
+
+export interface RootCauseAnalysis {
+  problem_id: string;
+  root_cause: string;
+  confidence: number;
+  evidence: Record<string, string[]>;
+  suggested_fixes: RepairSuggestion[];
+}
+
+export interface RepairSuggestion {
+  strategy_id: string;
+  action_type: string;
+  description: string;
+  route: string;
+  risk_level: 'low' | 'mid' | 'high';
+  estimated_impact: number;
+  decision: 'auto_apply' | 'pending_review' | 'manual_only';
+}
+
+export interface RepairStrategy {
+  strategy_id: string;
+  action_type: string;
+  description: string;
+  route: string;
+  risk_level: 'low' | 'mid' | 'high';
+  estimated_impact: number;
+  decision: 'auto_apply' | 'pending_review' | 'manual_only';
+}
+
+export interface ImprovementEvent {
+  event_id: number;
+  timestamp: number;
+  problem_id: string;
+  route: string;
+  action: string;
+  status: 'applied' | 'verified' | 'reverted' | 'failed';
+  before_rate: number;
+  after_rate: number;
+  delta: number;
+  improvement_pct: number;
+  execution_time: number;
+  reverted_at?: number;
+  revert_reason?: string;
+}
+
+export async function getDetectedProblems(
+  status?: string,
+  limit: number = 50
+): Promise<{ problems: ProblemReport[]; total: number; high_count: number; medium_count: number; low_count: number }> {
+  try {
+    const url = status ? `/api/v1/learning/problems?status=${status}&limit=${limit}` : `/api/v1/learning/problems?limit=${limit}`;
+    const response = await fetch(`${API_BASE}${url}`);
+    if (!response.ok) throw new Error('Failed to fetch problems');
+    return response.json();
+  } catch {
+    return { problems: [], total: 0, high_count: 0, medium_count: 0, low_count: 0 };
+  }
+}
+
+export async function analyzeRootCause(problemId: string): Promise<RootCauseAnalysis | null> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/learning/analyze-problem?problem_id=${problemId}`, {
+      method: 'POST',
+    });
+    if (!response.ok) throw new Error('Failed to analyze problem');
+    return response.json();
+  } catch { return null; }
+}
+
+export async function getRepairStrategies(problemId: string): Promise<{ strategies: RepairStrategy[]; recommended: string; all_auto_apply: boolean }> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/learning/strategies?problem_id=${problemId}`);
+    if (!response.ok) throw new Error('Failed to get strategies');
+    return response.json();
+  } catch {
+    return { strategies: [], recommended: '', all_auto_apply: false };
+  }
+}
+
+export async function approveFix(eventId: number, comments?: string): Promise<{ event_id: number; status: string; message: string }> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/learning/approve-fix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId, comments, approved_by: 'user' }),
+    });
+    if (!response.ok) throw new Error('Failed to approve fix');
+    return response.json();
+  } catch {
+    return { event_id: eventId, status: 'error', message: 'Failed to approve' };
+  }
+}
+
+export async function rejectFix(eventId: number, reason: string): Promise<{ event_id: number; status: string; reason: string }> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/learning/reject-fix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId, reason, rejected_by: 'user' }),
+    });
+    if (!response.ok) throw new Error('Failed to reject fix');
+    return response.json();
+  } catch {
+    return { event_id: eventId, status: 'error', reason };
+  }
+}
+
+export async function getImprovementHistory(days: number = 30, route?: string): Promise<{ period: string; events: ImprovementEvent[]; summary: any }> {
+  try {
+    let url = `/api/v1/learning/history?days=${days}`;
+    if (route) url += `&route=${route}`;
+    const response = await fetch(`${API_BASE}${url}`);
+    if (!response.ok) throw new Error('Failed to fetch history');
+    return response.json();
+  } catch {
+    return { period: '', events: [], summary: {} };
+  }
+}
+
+export async function getLearningStats(): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/learning/stats`);
+    if (!response.ok) throw new Error('Failed to fetch stats');
+    return response.json();
+  } catch { return {}; }
 }

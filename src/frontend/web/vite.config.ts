@@ -32,17 +32,17 @@ export default defineConfig({
         target: 'http://localhost:8002',
         changeOrigin: true
       },
-      // 其余 /api/* 尝试走 Go Gateway（生产用）
+      // 其余 /api/* 走 Go Gateway (:8080)
       '/api': {
-        target: 'http://localhost:8090',
+        target: 'http://localhost:8080',
         changeOrigin: true
       },
       '/health': {
-        target: 'http://localhost:8090',
+        target: 'http://localhost:8080',
         changeOrigin: true
       },
       '/metrics': {
-        target: 'http://localhost:8090',
+        target: 'http://localhost:8080',
         changeOrigin: true
       },
       // WebSocket 代理到 Go WebSocket Gateway (8081)

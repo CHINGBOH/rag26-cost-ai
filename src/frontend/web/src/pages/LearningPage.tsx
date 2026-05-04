@@ -8,6 +8,9 @@
 
 import { useEffect, useState } from 'react';
 import { PageHeader } from '../components/common/PageHeader';
+import { ProblemsPanel } from '../components/learning/ProblemsPanel';
+import { ReviewsPanel } from '../components/learning/ReviewsPanel';
+import { ImprovementHistoryPanel } from '../components/learning/ImprovementHistoryPanel';
 import {
   getLearningSummary,
   getLearningRuns,
@@ -16,6 +19,11 @@ import {
   getConversations,
   getFeedbackStats,
   getLearningEngine,
+  getLatestSignals,
+  getSignalsSummary,
+  getDetectedProblems,
+  getImprovementHistory,
+  getLearningStats,
   LearningSummary,
   LearningRun,
   LearningGap,
@@ -23,6 +31,10 @@ import {
   ConversationTurn,
   FeedbackStats,
   LearningEngineStatus,
+  SignalAggregation,
+  SignalSummary,
+  ProblemReport,
+  ImprovementEvent,
 } from '../services/metricsApi';
 import './LearningPage.css';
 import { fmtDateTime } from '../utils/dateUtils';
@@ -39,7 +51,7 @@ import {
 } from 'recharts';
 
 type QualityFilter = 'all' | 'good' | 'weak' | 'failure';
-type MainTab = 'runs' | 'conversations' | 'feedback';
+type MainTab = 'runs' | 'conversations' | 'feedback' | 'signals' | 'problems' | 'reviews' | 'history';
 
 const QUALITY_ZH: Record<string, string> = {
   good: '优质', weak: '弱', failure: '失败',
@@ -57,13 +69,18 @@ export const LearningPage: React.FC = () => {
   const [conversations, setConversations] = useState<ConversationTurn[]>([]);
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const [engine, setEngine] = useState<LearningEngineStatus | null>(null);
+  const [signals, setSignals] = useState<SignalAggregation | null>(null);
+  const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
+  const [problems, setProblems] = useState<ProblemReport[]>([]);
+  const [historyEvents, setHistoryEvents] = useState<ImprovementEvent[]>([]);
+  const [learningStats, setLearningStats] = useState<any>(null);
   const [filter, setFilter] = useState<QualityFilter>('all');
   const [mainTab, setMainTab] = useState<MainTab>('runs');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
-    const [s, r, g, b, convs, fb, eng] = await Promise.all([
+    const [s, r, g, b, convs, fb, eng, sig, sigSum, probData, histData, statsData] = await Promise.all([
       getLearningSummary(),
       getLearningRuns(50, filter === 'all' ? undefined : filter),
       getLearningGaps(20),
@@ -71,6 +88,11 @@ export const LearningPage: React.FC = () => {
       getConversations(50),
       getFeedbackStats(100),
       getLearningEngine(),
+      getLatestSignals(100),
+      getSignalsSummary(),
+      getDetectedProblems(),
+      getImprovementHistory(30),
+      getLearningStats(),
     ]);
     setSummary(s);
     setRuns(r);
@@ -79,6 +101,11 @@ export const LearningPage: React.FC = () => {
     setConversations(convs);
     setFeedbackStats(fb);
     setEngine(eng);
+    setSignals(sig);
+    setSignalsSummary(sigSum);
+    setProblems(probData.problems);
+    setHistoryEvents(histData.events);
+    setLearningStats(statsData);
     setLoading(false);
   };
 
@@ -153,6 +180,10 @@ export const LearningPage: React.FC = () => {
                   <div className="gap-q">{g.query}</div>
                   <div className="gap-meta">
                     <span className={`badge q-${g.quality}`}>{QUALITY_ZH[g.quality] ?? g.quality}</span>
+                    {g.status === 'resolved' && <span className="badge status-resolved">✅ 已解决</span>}
+                    {g.status === 'in_progress' && <span className="badge status-in-progress">🔄 处理中</span>}
+                    {g.status === 'open' && <span className="badge status-open">❌ 未开始</span>}
+                    {g.status === 'blocked' && <span className="badge status-blocked">🚫 被阻止</span>}
                     {g.refused && <span className="badge refused">拒答</span>}
                     <span className="muted small">片段 {g.chunks_count}</span>
                     <span className="muted small">置信 {g.confidence.toFixed(2)}</span>
@@ -315,7 +346,7 @@ export const LearningPage: React.FC = () => {
 
       {/* 主 Tab 导航 */}
       <div className="learn-main-tabs">
-        {([['runs', 'Agent 运行轨迹'], ['conversations', '问答记录'], ['feedback', '反馈与趋势']] as [MainTab, string][]).map(([t, label]) => (
+        {([['runs', 'Agent 运行轨迹'], ['conversations', '问答记录'], ['feedback', '反馈与趋势'], ['signals', '📡 信号监控'], ['problems', '🔍 问题诊断'], ['reviews', `📋 待审核 (${historyEvents.filter(e => e.status === 'applied').length})`], ['history', '📊 迭代历史']] as [MainTab, string][]).map(([t, label]) => (
           <button key={t} className={mainTab === t ? 'active' : ''} onClick={() => setMainTab(t)}>
             {label}
           </button>
@@ -327,6 +358,10 @@ export const LearningPage: React.FC = () => {
         {mainTab === 'runs' && '🔍 Agent 内部节点级执行轨迹（query_analysis → retrieval → synthesize → verify），用于排查质量问题。'}
         {mainTab === 'conversations' && '💬 用户每一轮 Q&A 原始记录（conversation_turns 表），是迭代的第一手素材。'}
         {mainTab === 'feedback' && '⭐ 用户的 👍👎 + 1-5 星评分 + 文字点评（rag_feedback 表），驱动模型/检索改进。'}
+        {mainTab === 'signals' && '📡 实时信号采集面板 — 反馈、失败、重复问题、合约违规、拓扑异常的综合展示。'}
+        {mainTab === 'problems' && '🔍 系统自动检测到的问题 — 提示、工具失败、路由错误、低质量、多样性不足，附带根因分析和修复建议。'}
+        {mainTab === 'reviews' && '📋 待人工审核的修复建议 — 中风险修复、已应用待验证的改进，支持批准或拒绝。'}
+        {mainTab === 'history' && '📊 迭代历史 — 所有修复的成功率变化趋势、详细日志，追踪系统改进进展。'}
       </p>
 
       {/* 运行明细 */}
@@ -539,6 +574,141 @@ export const LearningPage: React.FC = () => {
           </table>
         )}
       </section>
+      )}
+
+      {/* 信号监控 */}
+      {mainTab === 'signals' && signals && signalsSummary && (
+      <section className="learn-card learn-signals-card">
+        <div className="learn-card-head">
+          <h3>📡 实时信号监控</h3>
+          <span className="muted small">采集于 {fmtDateTime(signals.timestamp)}</span>
+        </div>
+
+        {/* 健康指示器 */}
+        <div className="signal-health-indicator" data-status={signalsSummary.health_status}>
+          <span className="status-icon">
+            {signalsSummary.health_status === 'good' && '✅'}
+            {signalsSummary.health_status === 'warning' && '⚠️'}
+            {signalsSummary.health_status === 'critical' && '🚨'}
+          </span>
+          <span className="status-text">系统健康度: <strong>{signalsSummary.health_status}</strong></span>
+        </div>
+
+        {/* 信号卡片网格 */}
+        <div className="signal-cards-grid">
+          <div className="signal-card feedback">
+            <div className="signal-count">{signalsSummary.signal_counts.feedback}</div>
+            <div className="signal-label">用户反馈</div>
+          </div>
+          <div className="signal-card failure">
+            <div className="signal-count">{signalsSummary.signal_counts.failures}</div>
+            <div className="signal-label">失败信号</div>
+          </div>
+          <div className="signal-card repeat">
+            <div className="signal-count">{signalsSummary.signal_counts.repeats}</div>
+            <div className="signal-label">重复问题</div>
+          </div>
+          <div className="signal-card violation">
+            <div className="signal-count">{signalsSummary.signal_counts.violations}</div>
+            <div className="signal-label">合约违规</div>
+          </div>
+          <div className="signal-card topo">
+            <div className="signal-count">{signalsSummary.signal_counts.topo}</div>
+            <div className="signal-label">拓扑异常</div>
+          </div>
+        </div>
+
+        {/* 严重度指数 */}
+        <div className="severity-meter">
+          <div className="meter-label">整体严重度指数</div>
+          <div className="meter-bar">
+            <div className="meter-fill" style={{ width: `${Math.min(signals.severity_score, 100)}%` }}></div>
+          </div>
+          <div className="meter-value">{signals.severity_score.toFixed(1)}/100</div>
+        </div>
+
+        {/* 采集统计 */}
+        <div className="collection-stats">
+          <div className="stat-item">
+            <span className="stat-label">总信号数:</span>
+            <span className="stat-value">{signals.total_count}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">采集耗时:</span>
+            <span className="stat-value">{signals.collection_time_ms.toFixed(1)}ms</span>
+          </div>
+        </div>
+
+        {/* 最新反馈信号 */}
+        {signals.feedback_signals.length > 0 && (
+          <div className="signal-details">
+            <h4 className="muted small">最新反馈信号 (Top 5)</h4>
+            <div className="signal-rows">
+              {signals.feedback_signals.slice(0, 5).map((s, i) => (
+                <div key={i} className="signal-row">
+                  <span className="ts">{fmtDateTime(s.ts * 1000)}</span>
+                  <span className="rating">⭐ {s.rating}/5</span>
+                  <span className="tags">{s.tags.join(', ') || '—'}</span>
+                  <span className="text">{(s.feedback_text || '—').substring(0, 60)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 最新失败信号 */}
+        {signals.failure_signals.length > 0 && (
+          <div className="signal-details">
+            <h4 className="muted small">最新失败信号 (Top 5)</h4>
+            <div className="signal-rows">
+              {signals.failure_signals.slice(0, 5).map((s, i) => (
+                <div key={i} className="signal-row">
+                  <span className="ts">{fmtDateTime(s.ts * 1000)}</span>
+                  <span className="status error">{s.status}</span>
+                  <span className="latency">{s.latency_ms}ms</span>
+                  <span className="session">{s.session_id.substring(0, 16)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+      )}
+
+      {mainTab === 'signals' && !signals && (
+      <section className="learn-card">
+        <p className="empty">正在加载信号数据...</p>
+      </section>
+      )}
+
+      {/* 问题诊断 Tab */}
+      {mainTab === 'problems' && (
+      <ProblemsPanel
+        problems={problems}
+      />
+      )}
+
+      {/* 待审核 Tab */}
+      {mainTab === 'reviews' && (
+      <ReviewsPanel
+        reviews={historyEvents.filter(e => e.status === 'applied')}
+        onApprove={(eventId) => {
+          console.log('Approved:', eventId);
+          refresh();
+        }}
+        onReject={(eventId, reason) => {
+          console.log('Rejected:', eventId, reason);
+          refresh();
+        }}
+      />
+      )}
+
+      {/* 迭代历史 Tab */}
+      {mainTab === 'history' && (
+      <ImprovementHistoryPanel
+        events={historyEvents}
+        stats={learningStats}
+      />
       )}
     </div>
   );

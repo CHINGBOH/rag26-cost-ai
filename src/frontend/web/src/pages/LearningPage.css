@@ -45,6 +45,10 @@
 .badge.q-weak    { background: rgba(245,158,11,0.15); color: #f59e0b; }
 .badge.q-failure { background: rgba(220,38,38,0.15); color: #dc2626; }
 .badge.refused   { background: rgba(220,38,38,0.15); color: #dc2626; }
+.badge.status-resolved { background: rgba(16,185,129,0.15); color: #10b981; font-size: 12px; text-transform: none; }
+.badge.status-in-progress { background: rgba(245,158,11,0.15); color: #f59e0b; font-size: 12px; text-transform: none; }
+.badge.status-open { background: rgba(220,38,38,0.15); color: #dc2626; font-size: 12px; text-transform: none; }
+.badge.status-blocked { background: rgba(107,114,128,0.15); color: #6b7280; font-size: 12px; text-transform: none; }
 
 .bar-list { list-style: none; margin: 0; padding: 0; }
 .bar-list li { margin-bottom: 8px; }
@@ -139,3 +143,215 @@
 .fb-bad-list .bad-score { color: #e07b3a; font-weight: 600; }
 .fb-bad-list .bad-text { color: #e0e0e0; }
 .fb-bad-list .bad-text.muted { color: #888; font-style: italic; }
+
+/* ── Signal Monitoring Panel ─────────────────────────────────────────────────── */
+
+.learn-signals-card {
+  background: rgba(30, 20, 8, 0.5);
+  border: 1px solid rgba(212, 168, 39, 0.15);
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.signal-health-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(46, 204, 113, 0.08);
+  border-left: 4px solid #2ecc71;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.signal-health-indicator[data-status="warning"] {
+  background: rgba(243, 156, 18, 0.08);
+  border-left-color: #f39c12;
+}
+
+.signal-health-indicator[data-status="critical"] {
+  background: rgba(231, 76, 60, 0.08);
+  border-left-color: #e74c3c;
+}
+
+.signal-health-indicator .status-icon {
+  font-size: 20px;
+  display: inline-block;
+}
+
+.signal-health-indicator .status-text {
+  font-size: 14px;
+  color: #e0e0e0;
+}
+
+.signal-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.signal-card {
+  background: #1a1208;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 16px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.signal-card:hover {
+  border-color: #d4a827;
+  box-shadow: 0 0 8px rgba(212, 168, 39, 0.1);
+}
+
+.signal-card.feedback { border-left: 3px solid #3498db; }
+.signal-card.failure { border-left: 3px solid #e74c3c; }
+.signal-card.repeat { border-left: 3px solid #f39c12; }
+.signal-card.violation { border-left: 3px solid #9b59b6; }
+.signal-card.topo { border-left: 3px solid #1abc9c; }
+
+.signal-count {
+  font-size: 24px;
+  font-weight: bold;
+  color: #d4a827;
+}
+
+.signal-label {
+  font-size: 12px;
+  color: #888;
+  margin-top: 6px;
+}
+
+.severity-meter {
+  background: rgba(212, 168, 39, 0.08);
+  border: 1px solid rgba(212, 168, 39, 0.18);
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.severity-meter .meter-label {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.meter-bar {
+  height: 24px;
+  background: #333;
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2ecc71, #f39c12, #e74c3c);
+  transition: width 0.3s ease;
+}
+
+.severity-meter .meter-value {
+  font-size: 13px;
+  color: #d4a827;
+  font-weight: 600;
+  text-align: right;
+}
+
+.collection-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(212, 168, 39, 0.1);
+  margin-bottom: 16px;
+}
+
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.stat-label {
+  color: #888;
+}
+
+.stat-value {
+  color: #d4a827;
+  font-weight: 600;
+}
+
+.signal-details {
+  margin-bottom: 16px;
+}
+
+.signal-details h4 {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(212, 168, 39, 0.1);
+}
+
+.signal-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-row {
+  display: grid;
+  grid-template-columns: 140px 70px 1fr 1fr;
+  gap: 12px;
+  padding: 8px;
+  background: rgba(212, 168, 39, 0.04);
+  border-radius: 4px;
+  border-left: 2px solid rgba(212, 168, 39, 0.2);
+  font-size: 12px;
+  align-items: center;
+}
+
+.signal-row .ts {
+  color: #888;
+  font-size: 11px;
+}
+
+.signal-row .rating {
+  color: #f39c12;
+}
+
+.signal-row .status {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.signal-row .status.error {
+  background: rgba(231, 76, 60, 0.2);
+  color: #e74c3c;
+}
+
+.signal-row .latency {
+  color: #888;
+}
+
+.signal-row .tags {
+  color: #3498db;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-row .text {
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-row .session {
+  color: #888;
+  font-family: monospace;
+  font-size: 11px;
+}

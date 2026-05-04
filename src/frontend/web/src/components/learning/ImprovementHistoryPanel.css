@@ -1,0 +1,175 @@
+/* 迭代历史样式 */
+.improvement-history-panel {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+/* 统计摘要 */
+.stats-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: #f5f5f5;
+  padding: 16px;
+  border-radius: 6px;
+  border-left: 4px solid #3498db;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all 0.2s;
+}
+
+.stat-card:hover {
+  background: #efefef;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.stat-card.success {
+  border-left-color: #2ecc71;
+}
+
+.stat-card.failed {
+  border-left-color: #e74c3c;
+}
+
+.stat-card.reverted {
+  border-left-color: #95a5a6;
+}
+
+.stat-card.improvement {
+  border-left-color: #f39c12;
+}
+
+.stat-card .label {
+  font-size: 11px;
+  color: #999;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-card .value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #333;
+}
+
+.stat-card.success .value {
+  color: #2ecc71;
+}
+
+.stat-card.failed .value {
+  color: #e74c3c;
+}
+
+.stat-card.improvement .value {
+  color: #f39c12;
+}
+
+/* 图表容器 */
+.chart-container {
+  background: #f9f9f9;
+  padding: 16px;
+  border-radius: 6px;
+  margin-bottom: 24px;
+  border: 1px solid #eee;
+}
+
+.chart-container h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+/* 历史详情表格 */
+.history-table {
+  margin-top: 24px;
+}
+
+.history-table h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.history-table .empty {
+  text-align: center;
+  color: #999;
+  padding: 20px;
+}
+
+.history-table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.history-table thead {
+  background: #f5f5f5;
+  border-bottom: 2px solid #ddd;
+}
+
+.history-table th {
+  padding: 12px;
+  text-align: left;
+  font-weight: bold;
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.history-table td {
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+  font-size: 12px;
+  color: #666;
+}
+
+.history-table tr:last-child td {
+  border-bottom: none;
+}
+
+.history-table tr:hover {
+  background: #f9f9f9;
+}
+
+.history-table tr.status-verified {
+  background: #f0f8f4;
+}
+
+.history-table tr.status-applied {
+  background: #f0f4ff;
+}
+
+.history-table tr.status-reverted {
+  background: #f5f5f5;
+}
+
+.history-table tr.status-failed {
+  background: #fff0f0;
+}
+
+.history-table .delta {
+  color: #2ecc71;
+  font-weight: bold;
+}
+
+.history-table .delta.negative {
+  color: #e74c3c;
+}
+
+.history-table .delta.neutral {
+  color: #999;
+}

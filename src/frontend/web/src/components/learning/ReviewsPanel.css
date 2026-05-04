@@ -1,0 +1,211 @@
+/* 待审核样式 */
+.reviews-panel {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+.reviews-panel h3 {
+  margin-top: 0;
+  margin-bottom: 16px;
+  font-size: 16px;
+}
+
+.reviews-panel .empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: #999;
+}
+
+.reviews-panel .empty p {
+  margin: 8px 0;
+}
+
+.review-items {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-card {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.review-card .header {
+  padding: 12px;
+  background: #f5f5f5;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  user-select: none;
+  transition: all 0.2s;
+}
+
+.review-card .header:hover {
+  background: #efefef;
+}
+
+.review-card .timestamp {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #999;
+  min-width: 150px;
+}
+
+.review-card .action {
+  flex: 1;
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+}
+
+.review-card .risk {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.review-card .toggle {
+  flex: 0 0 auto;
+  color: #999;
+}
+
+.review-card .content {
+  padding: 16px;
+  border-top: 1px solid #eee;
+  background: #fafafa;
+}
+
+.review-card .description {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.review-card .impact {
+  display: flex;
+  gap: 16px;
+  margin: 16px 0;
+  align-items: center;
+  background: #fff;
+  padding: 12px;
+  border-radius: 4px;
+}
+
+.review-card .metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.review-card .metric span {
+  font-size: 11px;
+  color: #999;
+}
+
+.review-card .metric strong {
+  font-size: 16px;
+  color: #333;
+}
+
+.review-card .arrow {
+  font-size: 16px;
+  color: #ddd;
+  flex: 0 0 auto;
+}
+
+.review-card .delta {
+  padding: 8px 12px;
+  background: #e8f5e9;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.review-card .delta span {
+  font-size: 11px;
+  color: #666;
+}
+
+.review-card .delta strong {
+  font-size: 14px;
+  color: #2ecc71;
+}
+
+.review-card .delta strong.positive {
+  color: #2ecc71;
+}
+
+.review-card .actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.review-card textarea {
+  flex: 1;
+  min-height: 60px;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.review-card textarea:focus {
+  outline: none;
+  border-color: #1976d2;
+}
+
+.review-card .buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.review-card button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.review-card button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.review-card .approve {
+  background: #2ecc71;
+  color: white;
+  flex: 1;
+}
+
+.review-card .approve:hover:not(:disabled) {
+  background: #27ae60;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.review-card .reject {
+  background: #e74c3c;
+  color: white;
+  flex: 1;
+}
+
+.review-card .reject:hover:not(:disabled) {
+  background: #c0392b;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
