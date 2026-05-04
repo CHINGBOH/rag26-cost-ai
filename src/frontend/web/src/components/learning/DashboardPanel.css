@@ -1,0 +1,446 @@
+.dashboard-panel {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  background: #f5f5f5;
+}
+
+.dashboard-error {
+  padding: 20px;
+  background: #f8d7da;
+  border-radius: 8px;
+  text-align: center;
+  color: #721c24;
+}
+
+.dashboard-error button {
+  margin-top: 12px;
+  padding: 8px 16px;
+  background: #721c24;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dashboard-error button:hover {
+  background: #5a151b;
+}
+
+.loading {
+  padding: 40px 20px;
+  text-align: center;
+  color: #666;
+  font-size: 16px;
+}
+
+/* 健康度卡片 */
+.health-card {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  padding: 24px;
+  background: #fff;
+  border-radius: 8px;
+  border-left: 4px solid;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.health-emoji {
+  font-size: 48px;
+  flex-shrink: 0;
+}
+
+.health-info {
+  flex: 1;
+}
+
+.health-info h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.health-score {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.score-number {
+  font-size: 36px;
+  font-weight: bold;
+  color: #333;
+}
+
+.score-bar {
+  height: 10px;
+  background: #eee;
+  border-radius: 5px;
+  overflow: hidden;
+  width: 100%;
+  max-width: 250px;
+}
+
+.score-bar .fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.score-text {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+
+/* 关键指标网格 */
+.key-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  background: #fff;
+  padding: 16px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border-top: 3px solid #e8e8e8;
+}
+
+.metric-card .label {
+  font-size: 12px;
+  color: #999;
+  font-weight: 500;
+}
+
+.metric-card .value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #333;
+}
+
+.metric-card .value.warning {
+  color: #f39c12;
+}
+
+.metric-card .value.running {
+  color: #e74c3c;
+  animation: pulse 2s infinite;
+}
+
+.metric-card .hint {
+  font-size: 11px;
+  color: #bbb;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* 告警部分 */
+.alerts-section {
+  background: #fff;
+  padding: 16px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.alerts-section h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.alert {
+  padding: 12px 14px;
+  border-radius: 4px;
+  border-left: 4px solid;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+
+.alert-warning {
+  background: #fff3cd;
+  border-left-color: #f39c12;
+  color: #856404;
+}
+
+.alert-critical {
+  background: #f8d7da;
+  border-left-color: #e74c3c;
+  color: #721c24;
+}
+
+.alert .severity-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.alert .message {
+  flex: 1;
+}
+
+.alert .time {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* 图表容器 */
+.chart-container {
+  background: #fff;
+  padding: 16px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.chart-container h3 {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 最近事件 */
+.recent-events {
+  background: #fff;
+  padding: 16px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.recent-events h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.event-item {
+  padding: 12px;
+  border-left: 4px solid #ddd;
+  background: #fafafa;
+  border-radius: 4px;
+  display: grid;
+  grid-template-columns: 80px 1fr 100px;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.event-item.status-verified {
+  border-left-color: #2ecc71;
+}
+
+.event-item.status-applied {
+  border-left-color: #3498db;
+}
+
+.event-item.status-reverted {
+  border-left-color: #e67e22;
+}
+
+.event-item.status-pending {
+  border-left-color: #95a5a6;
+}
+
+.event-time {
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+}
+
+.event-content {
+  min-width: 0;
+}
+
+.event-route {
+  font-weight: 600;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.event-description {
+  color: #666;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.event-status {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 2px;
+  white-space: nowrap;
+  text-align: center;
+  font-weight: 500;
+}
+
+.event-status.status-verified {
+  background: #d4edda;
+  color: #155724;
+}
+
+.event-status.status-applied {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.event-status.status-reverted {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.event-status.status-pending {
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+/* 空状态 */
+.empty-state {
+  padding: 60px 20px;
+  text-align: center;
+  color: #999;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.empty-state .hint {
+  font-size: 12px;
+  margin-top: 8px;
+  color: #bbb;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .dashboard-panel {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .health-card {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 16px;
+  }
+
+  .health-emoji {
+    font-size: 32px;
+  }
+
+  .score-number {
+    font-size: 28px;
+  }
+
+  .key-metrics-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .metric-card {
+    padding: 12px;
+    font-size: 13px;
+  }
+
+  .metric-card .value {
+    font-size: 20px;
+  }
+
+  .event-item {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .event-status {
+    justify-self: start;
+  }
+
+  .chart-container {
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-panel {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .health-card {
+    padding: 12px;
+  }
+
+  .health-emoji {
+    font-size: 24px;
+  }
+
+  .score-number {
+    font-size: 24px;
+  }
+
+  .score-bar {
+    max-width: 150px;
+  }
+
+  .metric-card .value {
+    font-size: 18px;
+  }
+
+  .alert {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .alert .time {
+    align-self: flex-start;
+  }
+
+  .event-item {
+    padding: 8px;
+    font-size: 11px;
+  }
+
+  .event-route {
+    font-size: 11px;
+  }
+
+  .event-description {
+    font-size: 10px;
+  }
+
+  .recent-events h3,
+  .chart-container h3,
+  .alerts-section h3 {
+    font-size: 13px;
+  }
+}

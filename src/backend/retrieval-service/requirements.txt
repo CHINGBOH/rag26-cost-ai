@@ -32,3 +32,4 @@ opentelemetry-exporter-otlp-proto-http>=1.41
 opentelemetry-instrumentation-fastapi>=0.62b1
 opentelemetry-instrumentation-httpx>=0.62b1
 opentelemetry-instrumentation-asyncpg>=0.62b1
+apscheduler>=3.10.0,<4.0

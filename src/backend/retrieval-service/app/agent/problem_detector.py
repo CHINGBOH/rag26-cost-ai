@@ -314,27 +314,28 @@ class ProblemDetector:
                 problems.append(problem)
 
         # Score distribution analysis
-        scores = [f.overall_score for f in feedbacks]
-        mean_score = mean(scores)
-        if mean_score < 3.0:
-            problem = ProblemReport(
-                problem_id=f"low_score_{int(time.time())}",
-                category=ProblemCategory.LOW_QUALITY,
-                severity=Severity.HIGH,
-                affected_route="R4_rerank_weights",  # Default: ranking issue
-                description=f"Low overall score: mean={mean_score:.2f}/5",
-                evidence=[f"Score #{i + 1}: {score}" for i, score in enumerate(scores[:5])],
-                confidence=1.0 - (mean_score / 5.0),
-                suggested_gap_id="gap_answer_quality",
-                ts=time.time(),
-                additional_context={
-                    "mean_score": mean_score,
-                    "median_score": median(scores),
-                    "min_score": min(scores),
-                    "max_score": max(scores),
-                },
-            )
-            problems.append(problem)
+        scores = [f.overall_score if f.overall_score > 0 else f.rating for f in feedbacks]
+        if scores:
+            mean_score = mean(scores)
+            if mean_score < 3.0:
+                problem = ProblemReport(
+                    problem_id=f"low_score_{int(time.time())}",
+                    category=ProblemCategory.LOW_QUALITY,
+                    severity=Severity.HIGH,
+                    affected_route="R4_rerank_weights",  # Default: ranking issue
+                    description=f"Low overall score: mean={mean_score:.2f}/5",
+                    evidence=[f"Score #{i + 1}: {score}" for i, score in enumerate(scores[:5])],
+                    confidence=1.0 - (mean_score / 5.0),
+                    suggested_gap_id="gap_answer_quality",
+                    ts=time.time(),
+                    additional_context={
+                        "mean_score": mean_score,
+                        "median_score": median(scores),
+                        "min_score": min(scores),
+                        "max_score": max(scores),
+                    },
+                )
+                problems.append(problem)
 
         return problems
 

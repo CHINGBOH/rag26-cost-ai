@@ -38,6 +38,7 @@ class FeedbackSignal:
     tags: List[str] = field(default_factory=list)
     feedback_text: str = ""
     ts: float = 0.0  # Unix timestamp (seconds)
+    overall_score: float = 0.0  # For compatibility with problem_detector
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

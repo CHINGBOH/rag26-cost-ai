@@ -4654,3 +4654,489 @@ async def get_event_status(event_id: int) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get event status {event_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/dashboard")
+async def get_learning_dashboard() -> Dict[str, Any]:
+    """
+    学习系统概览看板
+    
+    返回：
+    {
+        "health": {
+            "status": "good",  # good | warning | critical
+            "score": 85,       # 0-100
+            "last_check": 1714898730000
+        },
+        "key_metrics": {
+            "last_run": 1714898730000,
+            "next_run": 1714985130000,
+            "running": false,
+            "pending_approvals": 3
+        },
+        "improvement_trend": [
+            {"date": "2026-05-05", "rate": 0.75, "problems": 3, "fixed": 2},
+            ...
+        ],
+        "alerts": [
+            {
+                "severity": "warning",
+                "message": "3 high-risk patches pending approval",
+                "created_at": 1714898730000,
+                "acknowledged": false
+            }
+        ],
+        "recent_events": [
+            {
+                "timestamp": 1714898730000,
+                "type": "fix_applied",
+                "description": "Applied fix for navigator_dict",
+                "status": "verified"
+            }
+        ]
+    }
+    """
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+        
+        conn = _get_pg_conn()
+        try:
+            cursor = conn.cursor()
+            
+            # 1. 计算系统健康度
+            health_score = await _calculate_health_score(cursor)
+            
+            # 2. 获取关键指标
+            # 最后一次运行
+            cursor.execute(
+                """
+                SELECT id, ts FROM learning_runs 
+                ORDER BY ts DESC LIMIT 1
+                """
+            )
+            last_run_row = cursor.fetchone()
+            last_run_ts = int(last_run_row[1].timestamp() * 1000) if last_run_row else None
+            
+            # 待审核数 (尚未应用的改进)
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM improvement_events 
+                WHERE applied_at IS NULL
+                """
+            )
+            pending_count = cursor.fetchone()[0]
+            
+            # 最近 30 天的改进趋势
+            cursor.execute(
+                """
+                SELECT 
+                    DATE(ts) as date,
+                    COUNT(*) as fixes,
+                    SUM(CASE 
+                        WHEN applied_at IS NOT NULL THEN 1 
+                        ELSE 0 
+                    END) as successful
+                FROM improvement_events
+                WHERE ts > NOW() - INTERVAL '30 days'
+                GROUP BY DATE(ts)
+                ORDER BY date DESC
+                """
+            )
+            improvement_trend_rows = cursor.fetchall()
+            
+            # 3. 生成告警
+            alerts = await _generate_alerts(cursor, health_score)
+            
+            # 4. 最近事件
+            recent_events = await _get_recent_events(cursor, limit=10)
+            
+            cursor.close()
+            
+            return {
+                'health': {
+                    'status': 'good' if health_score > 70 else 'warning' if health_score > 50 else 'critical',
+                    'score': health_score,
+                    'last_check': int(time.time() * 1000)
+                },
+                'key_metrics': {
+                    'last_run': last_run_ts,
+                    'next_run': None,
+                    'running': False,
+                    'pending_approvals': pending_count
+                },
+                'improvement_trend': [
+                    {
+                        'date': r[0].isoformat(),
+                        'rate': float(r[2]) / float(r[1]) if r[1] and r[2] else 0,
+                        'problems': r[1],
+                        'fixed': r[2] or 0
+                    }
+                    for r in improvement_trend_rows
+                ],
+                'alerts': alerts,
+                'recent_events': recent_events
+            }
+        finally:
+            _put_pg_conn(conn)
+            
+    except Exception as e:
+        logger.error(f"Failed to get learning dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _calculate_health_score(cursor) -> int:
+    """
+    计算学习系统健康度 (0-100)
+    
+    指标：
+    - 最近运行成功率：30%
+    - 修复有效率：30%
+    - 待审核堆积：20%
+    - 系统响应时间：20%
+    """
+    # 最近 10 次运行的成功率
+    cursor.execute(
+        """
+        SELECT status FROM learning_runs
+        ORDER BY ts DESC LIMIT 10
+        """
+    )
+    recent_runs = cursor.fetchall()
+    run_success_rate = (
+        sum(1 for r in recent_runs if r[0] == 'completed') / len(recent_runs)
+        if recent_runs
+        else 0
+    )
+    
+    # 修复有效率（通过应用的 / 总修复数）
+    cursor.execute(
+        """
+        SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) as applied
+        FROM improvement_events
+        """
+    )
+    stats = cursor.fetchone()
+    total_improvements = stats[0] if stats[0] else 1
+    applied_improvements = stats[1] if stats[1] else 0
+    fix_effectiveness = (applied_improvements / total_improvements * 100) if total_improvements > 0 else 50
+    
+    # 待审核堆积
+    cursor.execute(
+        """
+        SELECT COUNT(*) FROM improvement_events 
+        WHERE approved_at IS NULL AND rejected_at IS NULL
+        """
+    )
+    pending_count = cursor.fetchone()[0]
+    approval_health = max(0, 100 - pending_count * 10)
+    
+    # 计算综合分数
+    health_score = (
+        run_success_rate * 0.3 * 100 +
+        fix_effectiveness * 0.3 +
+        approval_health * 0.2 +
+        80 * 0.2
+    )
+    
+    return min(100, max(0, int(health_score)))
+
+
+async def _generate_alerts(cursor, health_score: int) -> list:
+    """生成告警"""
+    alerts = []
+    
+    # 告警 1: 系统健康度低
+    if health_score < 60:
+        alerts.append({
+            'severity': 'critical' if health_score < 40 else 'warning',
+            'message': f'System health score is {health_score}/100',
+            'created_at': int(time.time() * 1000),
+            'acknowledged': False
+        })
+    
+    # 告警 2: 待审核项过多 (未应用的改进)
+    cursor.execute(
+        """
+        SELECT COUNT(*) FROM improvement_events 
+        WHERE applied_at IS NULL
+        """
+    )
+    pending = cursor.fetchone()[0]
+    if pending > 5:
+        alerts.append({
+            'severity': 'warning',
+            'message': f'{pending} patches pending application',
+            'created_at': int(time.time() * 1000),
+            'acknowledged': False
+        })
+    
+    # 告警 3: 最近运行失败
+    cursor.execute(
+        """
+        SELECT COUNT(*) FROM learning_runs 
+        WHERE status = 'failed' AND ts > NOW() - INTERVAL '1 day'
+        """
+    )
+    failed_runs = cursor.fetchone()[0]
+    if failed_runs > 0:
+        alerts.append({
+            'severity': 'warning',
+            'message': f'{failed_runs} learning runs failed in last 24h',
+            'created_at': int(time.time() * 1000),
+            'acknowledged': False
+        })
+    
+    return alerts
+
+
+async def _get_recent_events(cursor, limit: int = 10) -> list:
+    """获取最近事件"""
+    cursor.execute(
+        """
+        SELECT 
+            COALESCE(applied_at, ts) as timestamp,
+            affected_route as route,
+            patch_payload,
+            CASE 
+                WHEN applied_at IS NOT NULL THEN 'applied'
+                ELSE 'pending'
+            END as status
+        FROM improvement_events
+        ORDER BY ts DESC
+        LIMIT %s
+        """,
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    
+    return [
+        {
+            'timestamp': int(r[0].timestamp() * 1000) if r[0] else None,
+            'route': r[1],
+            'description': (
+                r[2].get('description') if isinstance(r[2], dict) and r[2] 
+                else f"Fix applied to {r[1]}"
+            ),
+            'status': r[3]
+        }
+        for r in rows
+    ]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Layer 2 - Learning Loop Trigger Mechanisms (Issue #96)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/v1/learning/trigger")
+async def trigger_learning_loop(reason: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Manually trigger the learning loop.
+    
+    Returns:
+        {
+            'run_id': 'run_manual_...',
+            'status': 'triggered',
+            'message': 'Learning loop triggered with reason: ...'
+        }
+    """
+    try:
+        from app.agent.scheduler import get_scheduler
+        
+        scheduler = get_scheduler()
+        if not scheduler:
+            raise HTTPException(status_code=503, detail="Learning scheduler not initialized")
+        
+        reason_str = reason or "manual_api_call"
+        run_id = await scheduler.trigger_manual(reason=reason_str)
+        
+        if not run_id:
+            raise HTTPException(status_code=500, detail="Failed to trigger learning loop")
+        
+        return {
+            'run_id': run_id,
+            'status': 'triggered',
+            'message': f'Learning loop triggered with reason: {reason_str}',
+            'trigger_type': 'manual'
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to trigger learning loop: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/learning/next-run")
+async def get_next_learning_run() -> Dict[str, Any]:
+    """
+    Get the next scheduled learning loop run time.
+    
+    Returns:
+        {
+            'job_id': 'learning_loop_daily',
+            'next_run_utc': '2024-05-06T02:00:00+00:00',
+            'next_run_timestamp': 1714982400000
+        }
+    """
+    try:
+        from app.agent.scheduler import get_scheduler
+        
+        scheduler = get_scheduler()
+        if not scheduler:
+            return {'error': 'scheduler not initialized', 'next_run': None}
+        
+        return await scheduler.get_next_run_time()
+        
+    except Exception as e:
+        logger.error(f"Failed to get next run time: {e}")
+        return {'error': str(e), 'next_run': None}
+
+
+@router.get("/api/v1/learning/failure-stats")
+async def get_failure_stats() -> Dict[str, Any]:
+    """
+    Get recent failure rate statistics.
+    
+    Returns:
+        {
+            'window_size': 16,
+            'failure_count': 3,
+            'success_count': 13,
+            'total_count': 16,
+            'failure_rate': 0.1875,
+            'should_trigger': False
+        }
+    """
+    try:
+        from app.agent.failure_monitor import get_failure_monitor
+        
+        monitor = get_failure_monitor()
+        if not monitor:
+            return {'error': 'failure monitor not initialized', 'should_trigger': False}
+        
+        stats = await monitor.get_recent_failure_stats()
+        
+        if not stats:
+            return {'error': 'no recent data', 'should_trigger': False}
+        
+        return {
+            'window_size': stats.window_size,
+            'failure_count': stats.failure_count,
+            'success_count': stats.success_count,
+            'total_count': stats.total_count,
+            'failure_rate': stats.failure_rate,
+            'should_trigger': await monitor.should_trigger(),
+            'threshold': monitor.FAILURE_THRESHOLD,
+            'min_samples': monitor.MIN_WINDOW_SAMPLES
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get failure stats: {e}")
+        return {'error': str(e), 'should_trigger': False}
+
+
+@router.get("/api/v1/learning/feedback-insights")
+async def get_feedback_insights(window_days: int = 7) -> Dict[str, Any]:
+    """
+    Get feedback analysis insights and trending problems.
+    
+    Returns:
+        {
+            'period_days': 7,
+            'total_feedback_count': 42,
+            'negative_feedback_rate': '28.6%',
+            'top_issues': [
+                {'tag': '数据过时', 'frequency': '35.0%', 'count': 7, 'weight': 70},
+                ...
+            ],
+            'trending_problems': ['数据过时', '缺少依据'],
+            'improvement_suggestions': [...],
+            'should_trigger_learning': False
+        }
+    """
+    try:
+        from app.agent.feedback_analyzer import get_feedback_analyzer
+        
+        analyzer = get_feedback_analyzer()
+        if not analyzer:
+            return {'error': 'feedback analyzer not initialized'}
+        
+        insights = await analyzer.get_insights(window_days=window_days)
+        
+        if not insights:
+            return {'error': 'no feedback data', 'period_days': window_days}
+        
+        return insights
+        
+    except Exception as e:
+        logger.error(f"Failed to get feedback insights: {e}")
+        return {'error': str(e), 'period_days': window_days}
+
+
+@router.get("/api/v1/learning/status")
+async def get_learning_status() -> Dict[str, Any]:
+    """
+    Get overall learning loop status and trigger mechanism states.
+    
+    Returns:
+        {
+            'scheduler': {'status': 'running', 'next_run': '...'},
+            'failure_monitor': {'status': 'monitoring', 'current_failure_rate': 0.125},
+            'feedback_analyzer': {'status': 'analyzing', 'trending_issues': 2},
+            'last_run': {'run_id': 'run_scheduled_...', 'status': 'completed', 'ts': '...'}
+        }
+    """
+    try:
+        from app.agent.scheduler import get_scheduler
+        from app.agent.failure_monitor import get_failure_monitor
+        from app.agent.feedback_analyzer import get_feedback_analyzer
+        
+        status = {}
+        
+        # Scheduler status
+        scheduler = get_scheduler()
+        if scheduler and scheduler._running:
+            next_run = await scheduler.get_next_run_time()
+            status['scheduler'] = {
+                'status': 'running',
+                'next_run': next_run.get('next_run_utc')
+            }
+        else:
+            status['scheduler'] = {'status': 'not_running'}
+        
+        # Failure monitor status
+        monitor = get_failure_monitor()
+        if monitor:
+            stats = await monitor.get_recent_failure_stats()
+            status['failure_monitor'] = {
+                'status': 'monitoring',
+                'current_failure_rate': stats.failure_rate if stats else None,
+                'threshold': monitor.FAILURE_THRESHOLD,
+                'should_trigger': await monitor.should_trigger()
+            }
+        else:
+            status['failure_monitor'] = {'status': 'not_initialized'}
+        
+        # Feedback analyzer status
+        analyzer = get_feedback_analyzer()
+        if analyzer:
+            analysis = await analyzer.analyze_feedback_trends()
+            status['feedback_analyzer'] = {
+                'status': 'analyzing',
+                'trending_issues_count': len(analysis.trending_problems) if analysis else 0,
+                'should_trigger': analysis.should_trigger if analysis else False
+            }
+        else:
+            status['feedback_analyzer'] = {'status': 'not_initialized'}
+        
+        return {
+            'layer2_triggers': status,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get learning status: {e}")
+        return {'error': str(e), 'timestamp': datetime.utcnow().isoformat()}

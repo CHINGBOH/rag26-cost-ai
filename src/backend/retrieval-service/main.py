@@ -58,11 +58,14 @@ logger = logging.getLogger(__name__)
 # 全局服务实例
 _pipeline = None
 _store = None
+_scheduler = None
+_failure_monitor = None
+_feedback_analyzer = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _pipeline, _store
+    global _pipeline, _store, _scheduler, _failure_monitor, _feedback_analyzer
     try:
         logger.info("Initializing UnifiedStore...")
         _store = UnifiedStore()
@@ -72,15 +75,64 @@ async def lifespan(app: FastAPI):
         logger.info("UnifiedRetrievalPipeline initialized")
         set_services(_pipeline, _store)
         logger.info("✅ Retrieval Service ready on port 8002")
+        
+        # Initialize Layer 2 trigger mechanisms
+        logger.info("Initializing Layer 2 trigger mechanisms...")
+        db_pool = _get_db_pool()
+        
+        # 1. Initialize learning scheduler (cron trigger)
+        try:
+            from app.agent.scheduler import init_scheduler
+            _scheduler = init_scheduler(db_pool=db_pool)
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize learning scheduler: {e}")
+        
+        # 2. Initialize failure monitor (threshold trigger)
+        try:
+            from app.agent.failure_monitor import init_failure_monitor
+            _failure_monitor = init_failure_monitor(db_pool=db_pool)
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize failure monitor: {e}")
+        
+        # 3. Initialize feedback analyzer (feedback trigger)
+        try:
+            from app.agent.feedback_analyzer import init_feedback_analyzer
+            _feedback_analyzer = init_feedback_analyzer(db_pool=db_pool)
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize feedback analyzer: {e}")
+        
+        logger.info("✅ Layer 2 trigger mechanisms initialized")
+        
     except Exception as e:
         import traceback
         logger.warning(f"⚠️ Failed to initialize some services: {e}")
         logger.warning(f"Traceback: {traceback.format_exc()}")
         set_services(None, _store)
+    
     yield
+    
+    # Shutdown Layer 2 components
+    logger.info("Shutting down Layer 2 trigger mechanisms...")
+    try:
+        if _scheduler:
+            from app.agent.scheduler import shutdown_scheduler
+            shutdown_scheduler()
+    except Exception as e:
+        logger.warning(f"Error shutting down scheduler: {e}")
+    
     if _store:
         _store.close()
         logger.info("✅ Retrieval Service shutdown")
+
+
+def _get_db_pool():
+    """Helper to get database connection pool from UnifiedStore"""
+    try:
+        if _store and hasattr(_store, 'pg_pool'):
+            return _store.pg_pool
+    except Exception as e:
+        logger.warning(f"Could not get DB pool from store: {e}")
+    return None
 
 
 app = FastAPI(

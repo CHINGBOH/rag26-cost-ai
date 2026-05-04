@@ -11,6 +11,7 @@ import { PageHeader } from '../components/common/PageHeader';
 import { ProblemsPanel } from '../components/learning/ProblemsPanel';
 import { ReviewsPanel } from '../components/learning/ReviewsPanel';
 import { ImprovementHistoryPanel } from '../components/learning/ImprovementHistoryPanel';
+import { DashboardPanel } from '../components/learning/DashboardPanel';
 import {
   getLearningSummary,
   getLearningRuns,
@@ -51,7 +52,7 @@ import {
 } from 'recharts';
 
 type QualityFilter = 'all' | 'good' | 'weak' | 'failure';
-type MainTab = 'runs' | 'conversations' | 'feedback' | 'signals' | 'problems' | 'reviews' | 'history';
+type MainTab = 'dashboard' | 'runs' | 'conversations' | 'feedback' | 'signals' | 'problems' | 'reviews' | 'history';
 
 const QUALITY_ZH: Record<string, string> = {
   good: '优质', weak: '弱', failure: '失败',
@@ -75,7 +76,7 @@ export const LearningPage: React.FC = () => {
   const [historyEvents, setHistoryEvents] = useState<ImprovementEvent[]>([]);
   const [learningStats, setLearningStats] = useState<any>(null);
   const [filter, setFilter] = useState<QualityFilter>('all');
-  const [mainTab, setMainTab] = useState<MainTab>('runs');
+  const [mainTab, setMainTab] = useState<MainTab>('dashboard');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
@@ -346,7 +347,7 @@ export const LearningPage: React.FC = () => {
 
       {/* 主 Tab 导航 */}
       <div className="learn-main-tabs">
-        {([['runs', 'Agent 运行轨迹'], ['conversations', '问答记录'], ['feedback', '反馈与趋势'], ['signals', '📡 信号监控'], ['problems', '🔍 问题诊断'], ['reviews', `📋 待审核 (${historyEvents.filter(e => e.status === 'applied').length})`], ['history', '📊 迭代历史']] as [MainTab, string][]).map(([t, label]) => (
+        {([['dashboard', '📊 监控看板'], ['runs', 'Agent 运行轨迹'], ['conversations', '问答记录'], ['feedback', '反馈与趋势'], ['signals', '📡 信号监控'], ['problems', '🔍 问题诊断'], ['reviews', `📋 待审核 (${historyEvents.filter(e => e.status === 'applied').length})`], ['history', '📊 迭代历史']] as [MainTab, string][]).map(([t, label]) => (
           <button key={t} className={mainTab === t ? 'active' : ''} onClick={() => setMainTab(t)}>
             {label}
           </button>
@@ -355,6 +356,7 @@ export const LearningPage: React.FC = () => {
 
       {/* Tab 简介 */}
       <p className="muted small" style={{ marginTop: -4, marginBottom: 12 }}>
+        {mainTab === 'dashboard' && '📊 学习系统健康度实时监控 — 系统得分、告警、改进趋势、最近事件一览。'}
         {mainTab === 'runs' && '🔍 Agent 内部节点级执行轨迹（query_analysis → retrieval → synthesize → verify），用于排查质量问题。'}
         {mainTab === 'conversations' && '💬 用户每一轮 Q&A 原始记录（conversation_turns 表），是迭代的第一手素材。'}
         {mainTab === 'feedback' && '⭐ 用户的 👍👎 + 1-5 星评分 + 文字点评（rag_feedback 表），驱动模型/检索改进。'}
@@ -363,6 +365,11 @@ export const LearningPage: React.FC = () => {
         {mainTab === 'reviews' && '📋 待人工审核的修复建议 — 中风险修复、已应用待验证的改进，支持批准或拒绝。'}
         {mainTab === 'history' && '📊 迭代历史 — 所有修复的成功率变化趋势、详细日志，追踪系统改进进展。'}
       </p>
+
+      {/* 监控看板 */}
+      {mainTab === 'dashboard' && (
+        <DashboardPanel />
+      )}
 
       {/* 运行明细 */}
       {mainTab === 'runs' && (
