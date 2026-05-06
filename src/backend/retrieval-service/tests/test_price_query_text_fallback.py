@@ -165,6 +165,9 @@ def test_hybrid_search_applies_rrf_config_and_query_family(monkeypatch) -> None:
             self.query = query
             self.params = params
 
+        def fetchone(self):
+            return (True,)
+
         def fetchall(self):
             if "to_tsvector('chinese', content)" in self.query:
                 return [(1, "doc_x", 3, "趋势说明", 0.12)]
@@ -201,7 +204,11 @@ def test_hybrid_search_applies_rrf_config_and_query_family(monkeypatch) -> None:
     monkeypatch.setattr(tools, "_query_fee_comparison_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_appendix_standard_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_fill_requirement_text_chunks", lambda conn, query, top_k=10: [])
-    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(
+        tools,
+        "_query_text_chunks_literal",
+        lambda conn, query, top_k=10, path_constraint="": [],
+    )
     monkeypatch.setattr(tools, "_should_include_structured_tables", lambda query: False)
 
     result = json.loads(tools.hybrid_search.func("中砂从2026年1月到2月的价格走势如何？", top_k=3))
@@ -357,6 +364,17 @@ def test_price_query_uses_ocr_fallback_for_material_only(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
     monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(tools, "_query_trend_points", lambda conn, material_name, start_month="", end_month="": [])
+    monkeypatch.setattr(
+        tools,
+        "_query_material_text_fallback",
+        lambda conn, material_name, year_month, top_k=5: [],
+    )
+    monkeypatch.setattr(
+        tools,
+        "_query_material_page_fallback",
+        lambda conn, material_name, year_month, top_k=1: [],
+    )
     monkeypatch.setattr(
         tools,
         "_query_material_ocr_fallback",
@@ -532,6 +550,17 @@ def test_price_trend_fills_missing_months_from_ocr(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
     monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(tools, "_query_trend_points", lambda conn, material_name, start_month="", end_month="": [])
+    monkeypatch.setattr(
+        tools,
+        "_query_material_text_fallback",
+        lambda conn, material_name, year_month, top_k=5: [],
+    )
+    monkeypatch.setattr(
+        tools,
+        "_query_material_page_fallback",
+        lambda conn, material_name, year_month, top_k=1: [],
+    )
     monkeypatch.setattr(
         tools,
         "_query_material_ocr_fallback",
@@ -546,8 +575,10 @@ def test_price_trend_fills_missing_months_from_ocr(monkeypatch) -> None:
         )
     )
 
-    assert [item["metadata"]["year_month"] for item in result] == ["2025-10", "2025-11", "2025-12"]
-    assert [item["metadata"]["avg_price"] for item in result] == [194.0, 194.0, 192.0]
+    monthly = [item for item in result if item["metadata"]["year_month"] != "*"]
+
+    assert [item["metadata"]["year_month"] for item in monthly] == ["2025-10", "2025-11", "2025-12"]
+    assert [item["metadata"]["avg_price"] for item in monthly] == [194.0, 194.0, 192.0]
 
 
 def test_price_trend_prefers_text_fallback_before_ocr(monkeypatch) -> None:
@@ -642,7 +673,7 @@ def test_price_trend_uses_trend_points_when_available(monkeypatch) -> None:
     assert result[0]["metadata"]["retrieval_path"] == "database"
 
 
-def test_pdf_page_search_returns_pdf_route_metadata(monkeypatch) -> None:
+def test_price_trend_keeps_month_average_delta_when_specs_mismatch(monkeypatch) -> None:
     class FakeCursor:
         def __enter__(self):
             return self
@@ -655,8 +686,85 @@ def test_pdf_page_search_returns_pdf_route_metadata(monkeypatch) -> None:
             self.params = params
 
         def fetchall(self):
-            if "ORDER BY length(content)" in self.query:
-                return [(51, "doc_pdf_rule", 8, "安全文明施工费计取基数为分部分项工程费与措施项目费。")]
+            return [
+                ("2026-01", 38.91, "m", "450/750V BV 35", 1),
+            ]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(tools, "_TSV_CONFIG_NAME", "simple")
+    monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
+    monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(tools, "_query_trend_points", lambda conn, material_name, start_month="", end_month="": [])
+    monkeypatch.setattr(
+        tools,
+        "_query_material_text_fallback",
+        lambda conn, material_name, year_month, top_k=5: [
+            {
+                "chunk_id": "text_dec",
+                "doc_id": "doc_dec",
+                "page_number": 32,
+                "source_db": "text_material_fallback",
+                "content": "电线 单位:m 价格:3.71元 期间:2025-12",
+                "score": 0.84,
+                "metadata": {
+                    "year_month": "2025-12",
+                    "unit": "m",
+                    "price": "3.71",
+                    "specification": "电线",
+                    "retrieval_path": "pdf_page",
+                    "evidence_kind": "pdf_page_table_row",
+                    "route_stage": "secondary",
+                },
+                "retrieval_path": "pdf_page",
+            }
+        ] if year_month == "2025-12" else [],
+    )
+    monkeypatch.setattr(tools, "_query_material_page_fallback", lambda conn, material_name, year_month, top_k=1: [])
+    monkeypatch.setattr(tools, "_query_material_ocr_fallback", lambda material_name, year_month: [])
+
+    result = json.loads(
+        tools.price_trend.func(
+            material_name="电线",
+            start_month="2025-12",
+            end_month="2026-01",
+        )
+    )
+
+    warning = result[0]
+    monthly = [item for item in result if item["metadata"]["year_month"] != "*"]
+
+    assert "月均价口径估算" in warning["content"]
+    assert warning["metadata"]["evidence_kind"] == "comparability_notice"
+    assert [item["metadata"]["year_month"] for item in monthly] == ["2025-12", "2026-01"]
+    assert round(monthly[1]["metadata"]["delta"], 2) == 35.20
+    assert round(monthly[1]["metadata"]["delta_percent"], 2) == 948.79
+    assert monthly[1]["metadata"]["trend_direction"] == "up"
+    assert "环比变化:+35.20" in monthly[1]["content"]
+    assert "环比幅度:+948.79%" in monthly[1]["content"]
+    assert "口径:按月均价估算" in monthly[1]["content"]
+
+
+def test_pdf_page_search_returns_pdf_route_metadata(monkeypatch) -> None:
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=None) -> None:
+            self.query = query
+            self.params = params
+
+        def fetchone(self):
+            return (True,)
+
+        def fetchall(self):
+            if "length(content)" in self.query:
+                return [(51, "doc_pdf_rule", 8, "安全文明施工费计取基数为分部分项工程费与措施项目费。", 0.73)]
             return []
 
     class FakeConn:
@@ -665,6 +773,11 @@ def test_pdf_page_search_returns_pdf_route_metadata(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
     monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(
+        tools,
+        "_query_text_chunks_literal",
+        lambda conn, query, top_k=10, path_constraint="": [],
+    )
 
     result = json.loads(tools.pdf_page_search.func("安全文明施工费计取基数", top_k=3))
 

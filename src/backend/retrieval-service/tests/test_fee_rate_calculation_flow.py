@@ -63,12 +63,43 @@ def test_build_forced_standard_ref_tool_calls_for_tax_query() -> None:
 
     tool_calls = graph._build_forced_standard_ref_tool_calls(state)
 
-    assert len(tool_calls) == 2
-    assert {tool_call["name"] for tool_call in tool_calls} == {"text_search"}
+    assert len(tool_calls) == 3
+    assert {tool_call["name"] for tool_call in tool_calls} == {"keyword_search"}
     queries = {tool_call["args"]["query"] for tool_call in tool_calls}
     assert queries == {
+        "一般计税方法下，税前工程造价中的费用是否包含进项税额？",
         "2025 一般计税方法 税前工程造价 进项税额",
         "2025 简易计税方法 税前工程造价 进项税额",
+    }
+
+
+def test_build_forced_rule_clause_tool_call_from_roadmap_for_appendix_query() -> None:
+    state = {
+        "query": "安装工程消耗量标准中送配电装置系统调试的计算规则是什么?",
+        "query_type": "standard_ref",
+        "retrieved_chunks": [],
+        "roadmap": [
+            {
+                "chapter_id": "10.1.7",
+                "title": "10.1.7 送配电装置系统调试：",
+                "path": "第二册电气设备安装工程/10.1/10.1.7",
+                "file_name": "第二册电气设备安装工程.pdf",
+            }
+        ],
+    }
+
+    tool_call = graph._build_forced_rule_clause_tool_call(state)
+
+    assert tool_call is not None
+    assert tool_call["name"] == "rule_clause_search"
+    assert tool_call["args"] == {
+        "query": "安装工程消耗量标准 送配电装置系统调试",
+        "doc_id": "",
+        "doc_filename": "第二册电气设备安装工程.pdf",
+        "section": "10.1.7",
+        "page_start": 0,
+        "page_end": 0,
+        "top_k": 6,
     }
 
 

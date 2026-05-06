@@ -1,191 +1,60 @@
 /**
- * RAG Agent 核心测试 - 16道跑通验证题
+ * Node live agent smoke harness.
  *
- * 测试目标：验证Agent能调用工具完成带索引的回答，并通过质量审核。
- * 判定标准（必须全部满足）：
- *  1. 有索引引用（indices非空）
- *  2. 数值准确（answer中包含数字，针对数值题）
- *  3. 工具调用痕迹（response中包含toolsUsed或迭代次数>0）
- *  4. 质量审核通过（confidence >= 0.7）
- *  5. 无幻觉（基于evaluation.passed判断）
+ * Responsibility split:
+ * - Canonical 16-question semantic regression lives in repo-root `tests/test_agent_16.py`
+ * - This Vitest file only verifies the Node `/api/agent/run` SSE contract and
+ *   representative end-to-end tool execution on the active runtime path.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-// ==================== 配置 ====================
-const NODE_BASE_URL = process.env.RAG_TEST_NODE_URL || 'http://localhost:3001';
-const PYTHON_BASE_URL = process.env.RAG_TEST_PYTHON_URL || 'http://localhost:8000';
-const GATEWAY_BASE_URL = process.env.RAG_TEST_GATEWAY_URL || 'http://localhost:8080';
-const REQUEST_TIMEOUT = 120_000; // 120秒（Agent可能迭代多次）
+const runLiveAgentTests = process.env.RAG_RUN_LIVE_AGENT_TESTS === '1';
+const describeIfLive = runLiveAgentTests ? describe : describe.skip;
 
-// ==================== 16道核心测试题 ====================
-interface TestCase {
+const NODE_BASE_URL =
+  process.env.RAG_TEST_NODE_URL || process.env.RAG_AGENT_API_URL || 'http://localhost:3001';
+const RETRIEVAL_BASE_URL =
+  process.env.RAG_TEST_RETRIEVAL_URL || process.env.RAG_TEST_PYTHON_URL || 'http://localhost:8002';
+const REQUEST_TIMEOUT = 120_000;
+
+interface LiveSmokeCase {
   id: string;
   query: string;
-  category: 'quota' | 'price' | 'calculation' | 'standard';
-  requiresNumeric: boolean;
-  requiresComparison: boolean;
-  expectedTools: string[];
 }
 
-const TEST_CASES: TestCase[] = [
+const TEST_CASES: LiveSmokeCase[] = [
   {
-    id: '01',
-    query: '安装工程消耗量标准中送配电装置系统调试的计算规则是什么？',
-    category: 'quota',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch', 'vectorSearch'],
-  },
-  {
-    id: '02',
-    query: '25版装饰工程消耗量标准中，楼梯面层中玻璃地板的人工费是多少？',
-    category: 'quota',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch'],
-  },
-  {
-    id: '03',
-    query: '对比深圳市2025年12月和2023年12月工程建设信息价中，电力电缆规格型号为0.6/1KV YJV 5×120的价格差异',
-    category: 'price',
-    requiresNumeric: true,
-    requiresComparison: true,
-    expectedTools: ['keywordSearch', 'calculator'],
-  },
-  {
-    id: '04',
-    query: '根据深圳信息价分析下从25年开始至今的装配式混凝土预制构件价格走势',
-    category: 'price',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch', 'calculator'],
-  },
-  {
-    id: '05',
-    query: '2025年深圳信息价中钛合金门窗的价格是多少',
-    category: 'price',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch'],
-  },
-  {
-    id: '06',
-    query: '详细说明深圳市工程建设地方标准中，关于安全文明施工费的组成内容、计算基数以及计取规定',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['vectorSearch', 'graphSearch'],
-  },
-  {
-    id: '07',
-    query: '工程项目中施工地点要按照什么要求填写',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['vectorSearch'],
-  },
-  {
-    id: '08',
+    id: 'quota-coefficient',
     query: '2025版费率标准中，房建工程赶工措施费的推荐系数是多少？',
-    category: 'quota',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch'],
   },
   {
-    id: '09',
-    query: '一般计税方法下，税前工程造价中的费用是否包含进项税额？',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['vectorSearch'],
+    id: 'price-comparison',
+    query: '对比深圳市2025年12月和2023年12月工程建设信息价中，电力电缆规格型号为0.6/1KV YJV 5×120的价格差异',
   },
   {
-    id: '10',
-    query: '总包管理服务费的计算基数是什么？',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['vectorSearch'],
-  },
-  {
-    id: '11',
-    query: '模块化建筑工程施工工期定额适用于单体预制箱体应用比例大于多少的±0.00以上工程？',
-    category: 'quota',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch'],
-  },
-  {
-    id: '12',
-    query: '2023版与2025版费率标准中，利润率的参考范围是否一致？',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: true,
-    expectedTools: ['vectorSearch', 'graphSearch'],
-  },
-  {
-    id: '13',
-    query: '某工程人工费100万、材料费200万、机械费50万、企业管理费25万，企业管理费率是多少？',
-    category: 'calculation',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch', 'calculator'],
-  },
-  {
-    id: '14',
-    query: '按2025版标准，如果机械费为0，企业管理费的计算基数是什么',
-    category: 'standard',
-    requiresNumeric: false,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch', 'vectorSearch'],
-  },
-  {
-    id: '15',
-    query: '2026年1月，中砂的价格是多少元/m³？',
-    category: 'price',
-    requiresNumeric: true,
-    requiresComparison: false,
-    expectedTools: ['keywordSearch'],
-  },
-  {
-    id: '16',
-    query: '2026年1月，电线、电缆价格较上月的变化幅度是多少？',
-    category: 'price',
-    requiresNumeric: true,
-    requiresComparison: true,
-    expectedTools: ['keywordSearch', 'calculator'],
+    id: 'standard-explanation',
+    query: '详细说明深圳市工程建设地方标准中，关于安全文明施工费的组成内容、计算基数以及计取规定',
   },
 ];
 
-// ==================== 类型定义 ====================
+interface IndexReference {
+  chunk_id?: string;
+  doc_id?: string;
+  page_number?: number;
+  source_db?: string;
+}
+
+interface Calculation {
+  formula?: string;
+  result?: number | string;
+}
+
 interface AgentRunResult {
   answer?: string;
-  indices?: Array<{
-    chunkId?: string;
-    docId?: string;
-    pageNumber?: number;
-    text?: string;
-    sourceDb?: string;
-  }>;
-  calculations?: Array<{
-    expression?: string;
-    result?: number | string;
-  }>;
+  indices?: IndexReference[];
+  calculations?: Calculation[];
   confidence?: number;
-  evaluation?: {
-    passed?: boolean;
-    overall?: number;
-    completeness?: number;
-    consistency?: number;
-    confidence?: number;
-    sourceDiversity?: number;
-    factConsistency?: number;
-    suggestions?: string[];
-  };
-  toolsUsed?: string[];
-  iterations?: number;
   latencyMs?: number;
 }
 
@@ -199,18 +68,14 @@ interface TestReport {
     query: string;
     passed: boolean;
     confidence: number | null;
-    iterations: number | null;
-    toolsUsed: string[];
+    toolCalls: string[];
     latencyMs: number;
     failures: string[];
   }>;
 }
 
-// ==================== 辅助函数 ====================
+type ReportDetail = TestReport['details'][number];
 
-/**
- * 检测服务是否可用
- */
 async function checkServiceHealth(url: string): Promise<boolean> {
   try {
     const controller = new AbortController();
@@ -223,13 +88,9 @@ async function checkServiceHealth(url: string): Promise<boolean> {
   }
 }
 
-/**
- * 调用Node端Agent（SSE流式）
- * 返回解析后的最终结果
- */
 async function runAgentQuery(
   query: string,
-  options: { maxIterations?: number; enableEvaluation?: boolean } = {}
+  options: { maxIterations?: number } = {},
 ): Promise<{ result: AgentRunResult | null; events: any[]; error?: string }> {
   const startTime = Date.now();
   const events: any[] = [];
@@ -240,7 +101,7 @@ async function runAgentQuery(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         query,
-        maxIterations: options.maxIterations ?? 5,
+        maxIterations: options.maxIterations ?? 3,
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT),
     });
@@ -285,7 +146,7 @@ async function runAgentQuery(
             return { result: null, events, error: event.message || 'Agent error' };
           }
         } catch {
-          // 忽略无法解析的SSE行
+          // Ignore malformed SSE lines.
         }
       }
     }
@@ -305,153 +166,116 @@ async function runAgentQuery(
   }
 }
 
-/**
- * 验证单条测试结果
- */
+function collectToolCalls(events: any[]): Array<{ name?: string; result?: string }> {
+  const toolCalls: Array<{ name?: string; result?: string }> = [];
+
+  for (const event of events) {
+    if (event.type === 'acting' && Array.isArray(event.toolCalls)) {
+      for (const toolCall of event.toolCalls) {
+        toolCalls.push({ name: toolCall.name, result: toolCall.result });
+      }
+    }
+  }
+
+  return toolCalls;
+}
+
 function validateResult(
-  tc: TestCase,
+  testCase: LiveSmokeCase,
   result: AgentRunResult | null,
-  events: any[]
-): { passed: boolean; failures: string[] } {
+  events: any[],
+): { passed: boolean; failures: string[]; toolCalls: string[]; confidence: number } {
   const failures: string[] = [];
 
   if (!result) {
-    return { passed: false, failures: ['Agent返回结果为空'] };
+    return { passed: false, failures: ['Agent返回结果为空'], toolCalls: [], confidence: 0 };
   }
 
-  // 1. HTTP状态已在外层保证，这里验证 answer 非空
-  if (!result.answer || result.answer.trim().length === 0) {
+  const answer = result.answer || '';
+  if (!answer.trim()) {
     failures.push('回答为空（answer字段缺失或空字符串）');
   }
 
-  // 2. 有索引引用
   const indices = result.indices || [];
-  const hasCitations = indices.length > 0 || (result.answer && /参考|chunk_|《.*》/.test(result.answer));
+  const hasCitations = indices.length > 0 || /参考|来源|《.*》|】/.test(answer);
   if (!hasCitations) {
     failures.push('无索引引用（indices为空且answer中无引用标记）');
   }
 
-  // 3. 数值准确（宽松检查：answer中是否包含数字）
-  if (tc.requiresNumeric) {
-    const hasNumber = /\d+(\.\d+)?/.test(result.answer || '');
-    if (!hasNumber) {
-      failures.push('数值类问题回答中未检测到数字');
-    }
+  const toolCalls = collectToolCalls(events);
+  const invokedTools = Array.from(new Set(toolCalls.map((toolCall) => toolCall.name).filter(Boolean))) as string[];
+  if (invokedTools.length === 0) {
+    failures.push('无工具调用痕迹（未检测到 acting/toolCalls 事件）');
   }
 
-  // 4. 对比类问题检查
-  if (tc.requiresComparison) {
-    const answer = result.answer || '';
-    const comparisonPatterns = [
-      /2025.*2023|2023.*2025/,
-      /较.*上|环比|同比|差异|变化|增加|减少|上升|下降/,
-      /一致|不一致|相同|不同/,
-      /vs|versus|对比|比较/,
-    ];
-    const hasComparison = comparisonPatterns.some((p) => p.test(answer));
-    if (!hasComparison) {
-      failures.push('对比类问题回答中未检测到对比表述');
-    }
+  const successfulToolResults = toolCalls.filter((toolCall) => {
+    if (!toolCall.result) return false;
+    return !toolCall.result.includes('调用失败');
+  });
+  if (invokedTools.length > 0 && successfulToolResults.length === 0 && indices.length === 0) {
+    failures.push('检测到工具调用，但工具结果全部失败');
   }
 
-  // 5. 工具调用痕迹（从events中提取tool名称，支持多种事件格式）
-  const toolsUsed = new Set<string>();
-  for (const ev of events) {
-    if (ev.type === 'tool_call' && ev.tool) toolsUsed.add(ev.tool);
-    if (ev.type === 'tool_result' && ev.tool) toolsUsed.add(ev.tool);
-    if (ev.tool_name) toolsUsed.add(ev.tool_name);
-    // react-loop.ts 使用 acting 事件，toolCalls 在 toolCalls 数组中
-    if (ev.type === 'acting' && Array.isArray(ev.toolCalls)) {
-      for (const tc of ev.toolCalls) {
-        if (tc.name) toolsUsed.add(tc.name);
-      }
-    }
-  }
-  if (result.toolsUsed) {
-    for (const t of result.toolsUsed) toolsUsed.add(t);
-  }
-  // 从 final result 的 indices 中也能推断工具使用（source_db 字段）
-  if (toolsUsed.size === 0 && result.indices) {
-    for (const idx of result.indices) {
-      if (idx.sourceDb === 'vector') toolsUsed.add('vectorSearch');
-      if (idx.sourceDb === 'keyword') toolsUsed.add('keywordSearch');
-      if (idx.sourceDb === 'graph') toolsUsed.add('graphSearch');
-    }
-  }
-  if (toolsUsed.size === 0) {
-    failures.push('无工具调用痕迹（未检测到tool事件且indices中无来源）');
-  }
-
-  // 6. 质量审核通过
-  const confidence = result.evaluation?.confidence ?? result.confidence ?? 0;
-  if (confidence < 0.7) {
-    failures.push(`置信度不足: ${confidence.toFixed(3)} < 0.7`);
-  }
-  if (result.evaluation && result.evaluation.passed === false) {
-    failures.push('evaluation.passed === false');
+  const confidence = result.confidence ?? 0;
+  if (!Number.isFinite(confidence)) {
+    failures.push('置信度字段非法');
   }
 
   return {
     passed: failures.length === 0,
     failures,
+    toolCalls: invokedTools,
+    confidence,
   };
 }
 
-// ==================== 测试套件 ====================
-
-describe('RAG Agent 核心16题跑通验证', () => {
+describeIfLive('Node agent live SSE smoke', () => {
   let nodeHealthy = false;
-  let pythonHealthy = false;
+  let retrievalHealthy = false;
+  const reportDetails = new Map<string, ReportDetail>();
 
   beforeAll(async () => {
     nodeHealthy = await checkServiceHealth(NODE_BASE_URL);
-    pythonHealthy = await checkServiceHealth(PYTHON_BASE_URL);
+    retrievalHealthy = await checkServiceHealth(RETRIEVAL_BASE_URL);
   });
 
-  // 生成每个测试用例的独立测试
-  for (const tc of TEST_CASES) {
-    it(`[${tc.id}] ${tc.query.slice(0, 40)}...`, async () => {
+  for (const testCase of TEST_CASES) {
+    it(`[${testCase.id}] ${testCase.query.slice(0, 36)}...`, async () => {
       if (!nodeHealthy) {
-        console.warn(`[${tc.id}] Node服务(${NODE_BASE_URL})不可用，跳过`);
-        expect(true).toBe(true); // 跳过时不失败，但标记为需要关注
+        console.warn(`[${testCase.id}] Node服务(${NODE_BASE_URL})不可用，跳过`);
+        expect(true).toBe(true);
+        return;
+      }
+      if (!retrievalHealthy) {
+        console.warn(`[${testCase.id}] Retrieval服务(${RETRIEVAL_BASE_URL})不可用，跳过`);
+        expect(true).toBe(true);
         return;
       }
 
-      const { result, events, error } = await runAgentQuery(tc.query, {
-        maxIterations: 5,
-        enableEvaluation: true,
-      });
-
+      const { result, events, error } = await runAgentQuery(testCase.query, { maxIterations: 3 });
       if (error) {
-        console.error(`[${tc.id}] 请求错误: ${error}`);
+        console.error(`[${testCase.id}] 请求错误: ${error}`);
       }
 
-      const { passed, failures } = validateResult(tc, result, events);
+      const { passed, failures, toolCalls, confidence } = validateResult(testCase, result, events);
+      reportDetails.set(testCase.id, {
+        id: testCase.id,
+        query: testCase.query,
+        passed,
+        confidence,
+        toolCalls,
+        latencyMs: result?.latencyMs ?? 0,
+        failures: error ? [error, ...failures] : failures,
+      });
+      console.log(
+        `[${testCase.id}] passed=${passed}, confidence=${confidence}, tools=[${toolCalls.join(',')}], failures=[${failures.join('; ')}]`,
+      );
 
-      // 收集toolsUsed用于报告
-      const toolsUsed = new Set<string>();
-      for (const ev of events) {
-        if (ev.type === 'tool_call' && ev.tool) toolsUsed.add(ev.tool);
-        if (ev.type === 'tool_result' && ev.tool) toolsUsed.add(ev.tool);
-        if (ev.tool_name) toolsUsed.add(ev.tool_name);
-      }
-      if (result?.toolsUsed) {
-        for (const t of result.toolsUsed) toolsUsed.add(t);
-      }
-
-      // 打印详细结果到控制台（便于调试）
-      console.log(`[${tc.id}] passed=${passed}, confidence=${result?.evaluation?.confidence ?? result?.confidence ?? 0}, tools=[${Array.from(toolsUsed).join(',')}], failures=[${failures.join('; ')}]`);
-
-      // 核心断言：必须通过所有判定标准
       expect(passed).toBe(true);
-      if (!passed) {
-        console.error(`[${tc.id}] 失败原因: ${failures.join('; ')}`);
-      }
     }, REQUEST_TIMEOUT + 10_000);
   }
 
-  // 批量报告测试（聚合结果）
-  it('应生成16题批量测试报告', async () => {
+  it('should generate a smoke report for representative live queries', async () => {
     const report: TestReport = {
       total: TEST_CASES.length,
       passed: 0,
@@ -460,110 +284,54 @@ describe('RAG Agent 核心16题跑通验证', () => {
       details: [],
     };
 
-    for (const tc of TEST_CASES) {
-      if (!nodeHealthy) {
+    for (const testCase of TEST_CASES) {
+      const detail = reportDetails.get(testCase.id);
+      if (!detail) {
         report.skipped++;
         report.details.push({
-          id: tc.id,
-          query: tc.query,
+          id: testCase.id,
+          query: testCase.query,
           passed: false,
           confidence: null,
-          iterations: null,
-          toolsUsed: [],
+          toolCalls: [],
           latencyMs: 0,
-          failures: ['Node服务不可用'],
+          failures: ['测试明细缺失（用例未执行或服务不可用）'],
         });
         continue;
       }
 
-      const start = Date.now();
-      const { result, events, error } = await runAgentQuery(tc.query, {
-        maxIterations: 5,
-        enableEvaluation: true,
-      });
-      const latencyMs = Date.now() - start;
-
-      const { passed, failures } = validateResult(tc, result, events);
-
-      const toolsUsed = new Set<string>();
-      for (const ev of events) {
-        if (ev.type === 'tool_call' && ev.tool) toolsUsed.add(ev.tool);
-        if (ev.type === 'tool_result' && ev.tool) toolsUsed.add(ev.tool);
-        if (ev.tool_name) toolsUsed.add(ev.tool_name);
-      }
-      if (result?.toolsUsed) {
-        for (const t of result.toolsUsed) toolsUsed.add(t);
-      }
-
-      if (passed) report.passed++;
+      if (detail.passed) report.passed++;
       else report.failed++;
-
-      report.details.push({
-        id: tc.id,
-        query: tc.query,
-        passed,
-        confidence: result?.evaluation?.confidence ?? result?.confidence ?? 0,
-        iterations: result?.iterations ?? events.filter((e) => e.type === 'iteration').length,
-        toolsUsed: Array.from(toolsUsed),
-        latencyMs: result?.latencyMs ?? latencyMs,
-        failures: error ? [error, ...failures] : failures,
-      });
+      report.details.push(detail);
     }
 
-    // 输出报告到控制台（JSON格式）
-    console.log('\n========== RAG Agent 核心测试报告 ==========');
+    console.log('\n========== Node agent live smoke report ==========');
     console.log(JSON.stringify(report, null, 2));
-    console.log('============================================\n');
+    console.log('==================================================\n');
 
-    // 断言：全部通过才算跑通
-    expect(report.passed).toBe(report.total);
+    expect(report.failed).toBe(0);
   }, TEST_CASES.length * (REQUEST_TIMEOUT + 5_000));
 });
 
-// ==================== Python后端搜索/评估接口验证 ====================
-
-describe('Python后端接口可用性验证', () => {
-  it('Python /api/v1/search 应返回结果', async () => {
-    try {
-      const res = await fetch(`${PYTHON_BASE_URL}/api/v1/search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: '房建工程赶工措施费', top_k: 5 }),
+describeIfLive('Retrieval backend live contract', () => {
+  it(
+    'retrieval /api/v1/search should return results',
+    async () => {
+      try {
+        const res = await fetch(`${RETRIEVAL_BASE_URL}/api/v1/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: '房建工程赶工措施费', top_k: 5 }),
         signal: AbortSignal.timeout(10_000),
       });
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data).toBeDefined();
-    } catch (err: any) {
-      console.warn('Python /api/v1/search 不可用:', err?.message || err);
-      // 服务未启动时不失败，但发出警告
-      expect(true).toBe(true);
-    }
-  });
-
-  it('Python /api/v1/evaluate 应返回评估分数', async () => {
-    try {
-      const res = await fetch(`${PYTHON_BASE_URL}/api/v1/evaluate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: '测试查询',
-          retrieved_chunks: [
-            { id: '1', content: '内容1', source: 'doc1', score: 0.9 },
-            { id: '2', content: '内容2', source: 'doc2', score: 0.8 },
-          ],
-          generated_answer: '这是生成的答案，参考[1]',
-          history_rounds: 0,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      expect(res.status).toBe(200);
-      const data = (await res.json()) as any;
-      expect(data.confidence).toBeDefined();
-      expect(data.completeness).toBeDefined();
-    } catch (err: any) {
-      console.warn('Python /api/v1/evaluate 不可用:', err?.message || err);
-      expect(true).toBe(true);
-    }
-  });
+      } catch (err: any) {
+        console.warn('Retrieval /api/v1/search 不可用:', err?.message || err);
+        expect(true).toBe(true);
+      }
+    },
+    15_000,
+  );
 });

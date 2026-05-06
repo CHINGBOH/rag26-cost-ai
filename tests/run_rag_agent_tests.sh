@@ -1,17 +1,17 @@
 #!/bin/bash
 # =============================================================================
-# RAG Agent 核心16题跑通验证 - 一键批量测试脚本
+# RAG Agent live regression runner
 # =============================================================================
 # 用法:
 #   chmod +x tests/run_rag_agent_tests.sh
 #   ./tests/run_rag_agent_tests.sh          # 运行全部测试
-#   ./tests/run_rag_agent_tests.sh --node   # 仅运行Node端测试
-#   ./tests/run_rag_agent_tests.sh --python # 仅运行Python端测试
+#   ./tests/run_rag_agent_tests.sh --node   # 仅运行Node SSE smoke
+#   ./tests/run_rag_agent_tests.sh --python # 仅运行16题金标回归
 #   ./tests/run_rag_agent_tests.sh --report # 仅生成报告（基于上次测试结果）
 #
 # 环境变量:
 #   RAG_TEST_NODE_URL    - Node后端地址，默认 http://localhost:3001
-#   RAG_TEST_PYTHON_URL  - Python后端地址，默认 http://localhost:8000
+#   RAG_TEST_PYTHON_URL  - Retrieval后端地址（兼容旧变量名），默认 http://localhost:8002
 #   RAG_TEST_GATEWAY_URL - API网关地址，默认 http://localhost:8080
 # =============================================================================
 
@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 
 # 默认值
 NODE_URL="${RAG_TEST_NODE_URL:-http://localhost:3001}"
-PYTHON_URL="${RAG_TEST_PYTHON_URL:-http://localhost:8000}"
+PYTHON_URL="${RAG_TEST_PYTHON_URL:-${RAG_TEST_RETRIEVAL_URL:-http://localhost:8002}}"
 GATEWAY_URL="${RAG_TEST_GATEWAY_URL:-http://localhost:8080}"
 REPORT_DIR="${REPORT_DIR:-$(pwd)/tests/reports}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -35,7 +35,7 @@ REPORT_FILE="${REPORT_DIR}/rag_agent_test_report_${TIMESTAMP}.json"
 # 项目路径
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_TEST_DIR="${PROJECT_ROOT}/src/backend/server"
-PYTHON_TEST_DIR="${PROJECT_ROOT}/src/backend/python-legacy"
+PYTHON_TEST_DIR="${PROJECT_ROOT}"
 
 mkdir -p "${REPORT_DIR}"
 
@@ -111,7 +111,7 @@ check_service() {
 # =============================================================================
 
 echo "========================================"
-echo "  RAG Agent 核心16题跑通验证"
+echo "  RAG Agent live regression"
 echo "========================================"
 echo ""
 
@@ -133,6 +133,9 @@ echo ""
 NODE_RESULTS="{}"
 PYTHON_RESULTS="{}"
 GATEWAY_RESULTS="{}"
+NODE_REPORT_FILE=""
+PYTHON_REPORT_FILE=""
+GATEWAY_REPORT_FILE=""
 
 # ---------- Node端测试 ----------
 if [[ "$RUN_NODE" == "true" && "$GENERATE_REPORT_ONLY" == "false" ]]; then
@@ -151,7 +154,10 @@ if [[ "$RUN_NODE" == "true" && "$GENERATE_REPORT_ONLY" == "false" ]]; then
 
   NODE_REPORT_FILE="${REPORT_DIR}/node_test_${TIMESTAMP}.json"
 
-  if npx vitest run src/__tests__/rag-agent-core.test.ts --reporter=json --outputFile="${NODE_REPORT_FILE}" 2>/dev/null; then
+  if RAG_RUN_LIVE_AGENT_TESTS=1 \
+     RAG_TEST_NODE_URL="${NODE_URL}" \
+     RAG_TEST_RETRIEVAL_URL="${PYTHON_URL}" \
+     npx vitest run src/__tests__/rag-agent-core.test.ts --reporter=json --outputFile="${NODE_REPORT_FILE}" 2>/dev/null; then
     log_success "Node端测试执行完成"
     if [[ -f "$NODE_REPORT_FILE" ]]; then
       NODE_RESULTS=$(cat "$NODE_REPORT_FILE")
@@ -165,30 +171,27 @@ if [[ "$RUN_NODE" == "true" && "$GENERATE_REPORT_ONLY" == "false" ]]; then
   echo ""
 fi
 
-# ---------- Python端测试 ----------
+# ---------- 16题金标回归 ----------
 if [[ "$RUN_PYTHON" == "true" && "$GENERATE_REPORT_ONLY" == "false" ]]; then
-  log_info "运行Python端测试 (pytest)..."
+  log_info "运行16题金标回归 (tests/test_agent_16.py)..."
   cd "$PYTHON_TEST_DIR"
 
   if [[ "$PYTHON_HEALTHY" == "false" ]]; then
-    log_warn "Python服务不可用，Python测试将跳过大部分用例"
+    log_warn "Retrieval服务不可用，16题金标回归可能失败"
   fi
 
   PYTHON_REPORT_FILE="${REPORT_DIR}/python_test_${TIMESTAMP}.json"
+  CANONICAL_RESULTS_FILE="${PROJECT_ROOT}/logs/agent_test_16_results.json"
 
-  if python -m pytest tests/test_rag_agent_core.py -v --json-report --json-report-file="${PYTHON_REPORT_FILE}" 2>/dev/null || \
-     python -m pytest tests/test_rag_agent_core.py -v 2>/dev/null; then
-    log_success "Python端测试执行完成"
-    if [[ -f "$PYTHON_REPORT_FILE" ]]; then
-      PYTHON_RESULTS=$(cat "$PYTHON_REPORT_FILE")
-    fi
+  if python tests/test_agent_16.py; then
+    log_success "16题金标回归执行完成"
   else
-    log_error "Python端测试执行失败或部分失败（可能缺少pytest-json-report插件）"
-    # 尝试无插件运行
-    python -m pytest tests/test_rag_agent_core.py -v || true
-    if [[ -f "$PYTHON_REPORT_FILE" ]]; then
-      PYTHON_RESULTS=$(cat "$PYTHON_REPORT_FILE")
-    fi
+    log_error "16题金标回归执行失败或部分失败"
+  fi
+
+  if [[ -f "$CANONICAL_RESULTS_FILE" ]]; then
+    cp "$CANONICAL_RESULTS_FILE" "$PYTHON_REPORT_FILE"
+    PYTHON_RESULTS=$(cat "$PYTHON_REPORT_FILE")
   fi
   echo ""
 fi
@@ -239,7 +242,7 @@ report = {
     "meta": {
         "timestamp": datetime.now().isoformat(),
         "node_url": os.environ.get("RAG_TEST_NODE_URL", "http://localhost:3001"),
-        "python_url": os.environ.get("RAG_TEST_PYTHON_URL", "http://localhost:8000"),
+        "python_url": os.environ.get("RAG_TEST_PYTHON_URL", os.environ.get("RAG_TEST_RETRIEVAL_URL", "http://localhost:8002")),
         "gateway_url": os.environ.get("RAG_TEST_GATEWAY_URL", "http://localhost:8080"),
     },
     "health": {
@@ -283,13 +286,17 @@ if python_report_path and os.path.exists(python_report_path):
     try:
         with open(python_report_path, "r", encoding="utf-8") as f:
             py_data = json.load(f)
+        total = py_data.get("summary", {}).get("total", 0)
+        passed = py_data.get("summary", {}).get("passed", 0)
+        failed = max(total - passed, 0)
         report["python_results"] = {
-            "total": py_data.get("summary", {}).get("total", 0),
-            "passed": py_data.get("summary", {}).get("passed", 0),
-            "failed": py_data.get("summary", {}).get("failed", 0),
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "errors": py_data.get("summary", {}).get("errors", 0),
         }
-        report["summary"]["passed"] += py_data.get("summary", {}).get("passed", 0)
-        report["summary"]["failed"] += py_data.get("summary", {}).get("failed", 0)
+        report["summary"]["passed"] += passed
+        report["summary"]["failed"] += failed
     except Exception as e:
         report["python_results"] = {"error": str(e)}
 
@@ -324,7 +331,7 @@ if [[ -f "$NODE_REPORT_FILE" ]]; then
 fi
 
 if [[ -f "$PYTHON_REPORT_FILE" ]]; then
-  PYTHON_FAILED=$(python3 -c "import json; d=json.load(open('$PYTHON_REPORT_FILE')); print(d.get('summary',{}).get('failed',0))" 2>/dev/null || echo 0)
+  PYTHON_FAILED=$(python3 -c "import json; d=json.load(open('$PYTHON_REPORT_FILE')); s=d.get('summary',{}); print(max(s.get('total',0)-s.get('passed',0), 0))" 2>/dev/null || echo 0)
   if [[ "$PYTHON_FAILED" -gt 0 ]]; then
     exit 1
   fi

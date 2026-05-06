@@ -1,8 +1,11 @@
 import { z } from 'zod'
 import { DynamicStructuredTool } from '@langchain/core/tools'
 import { IndexReference } from './types'
+import { runtimeConfig } from '../../../config/runtime'
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8000'
+function getPythonApiUrl(): string {
+  return runtimeConfig.services.retrievalApiUrl
+}
 
 async function callSearchAPI(
   query: string,
@@ -10,9 +13,10 @@ async function callSearchAPI(
   sourceDb: string
 ): Promise<string> {
   try {
-    // 优先调用真实检索管线 /api/search（unified_api.py）
-    // 若不可用则降级到 /api/v1/search（main_minimal.py 兼容接口）
-    let response = await fetch(`${PYTHON_API_URL}/api/search`, {
+    const retrievalApiUrl = getPythonApiUrl()
+
+    // 搜索 canonical 入口在 retrieval-service；优先 /api/search，失败再降级到 /api/v1/search。
+    let response = await fetch(`${retrievalApiUrl}/api/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -26,7 +30,7 @@ async function callSearchAPI(
     let data: any
     if (!response.ok && response.status === 404) {
       // 降级到兼容接口
-      response = await fetch(`${PYTHON_API_URL}/api/v1/search`, {
+      response = await fetch(`${retrievalApiUrl}/api/v1/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -40,7 +44,7 @@ async function callSearchAPI(
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.warn(`[${sourceDb}Search] Python backend error: ${response.status} - ${errorText}`)
+      console.warn(`[${sourceDb}Search] Retrieval backend error: ${response.status} - ${errorText}`)
       return `[${sourceDb}Search] 检索失败: ${response.status}`
     }
 
@@ -67,7 +71,7 @@ async function callSearchAPI(
 
     return lines.join('\n')
   } catch (error) {
-    console.warn(`[${sourceDb}Search] Failed to call Python backend:`, error)
+    console.warn(`[${sourceDb}Search] Failed to call retrieval backend:`, error)
     return `[${sourceDb}Search] 调用失败: ${String(error)}`
   }
 }

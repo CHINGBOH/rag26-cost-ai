@@ -20,7 +20,6 @@ import re
 import logging
 import hashlib
 import ast
-import os
 from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -28,6 +27,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from app.agent.event_taxonomy import REFUSAL_MARKERS
 from app.agent.state import RAGAgentState, ContractResult
 from app.agent.prompts import (
     SYSTEM_PROMPT,
@@ -105,15 +105,9 @@ from app.agent.presentation_payloads import (
     finalize_presentation_payload,
     refine_citations_for_answer,
 )
+from app.runtime_config import read_runtime_config
 
 logger = logging.getLogger(__name__)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    if not raw:
-        return default
-    return raw in {"1", "true", "yes", "on"}
 
 _graph = None
 _checkpointer = None
@@ -1711,18 +1705,38 @@ def _build_scope_hint(state: RAGAgentState) -> str:
 
 
 def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
-    if not state.get("force_clause_drilldown"):
+    query = str(state.get("query") or "").strip()
+    query_type = str(state.get("query_type") or "").strip().lower()
+    if query_type != "standard_ref":
+        return None
+
+    retrieved_chunks = list(state.get("retrieved_chunks") or [])
+    if any((chunk.get("metadata") or {}).get("evidence_kind") == "rule_clause_chunk" for chunk in retrieved_chunks):
         return None
 
     doc_id = str(state.get("target_doc_id") or "")
     doc_filename = str(state.get("target_doc_filename") or "")
-    if not doc_id and not doc_filename:
-        return None
-
-    query = _build_rule_clause_search_query(state["query"])
     section = str(state.get("target_section") or "")
     page_start = int(state.get("target_page_start") or 0)
     page_end = int(state.get("target_page_end") or 0)
+
+    if not state.get("force_clause_drilldown"):
+        if not is_appendix_standard_query(query):
+            return None
+        roadmap = list(state.get("roadmap") or [])
+        if not roadmap:
+            return None
+        primary_scope = roadmap[0] or {}
+        doc_id = str(primary_scope.get("doc_id") or "")
+        doc_filename = str(primary_scope.get("file_name") or "")
+        section = str(primary_scope.get("chapter_id") or primary_scope.get("title") or "")
+        page_start = int(primary_scope.get("page_start") or 0)
+        page_end = int(primary_scope.get("page_end") or 0)
+
+    if not doc_id and not doc_filename:
+        return None
+
+    query = _build_rule_clause_search_query(query)
     if page_start > 0 and page_end <= 0:
         page_end = page_start + 6
 
@@ -1980,18 +1994,19 @@ def _build_forced_standard_ref_tool_calls(state: RAGAgentState) -> list[dict]:
         if _chunk_text_has_keywords(retrieved_chunks, ["一般计税方法", "进项税额", "税前工程造价"]):
             return []
         targets = [
+            query,
             "2025 一般计税方法 税前工程造价 进项税额",
             "2025 简易计税方法 税前工程造价 进项税额",
         ]
         for target in targets:
             args = {"query": target, "top_k": 8, "path_constraint": ""}
             tool_hash = hashlib.md5(
-                f"text_search:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
+                f"keyword_search:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
             ).hexdigest()[:12]
             tool_calls.append(
                 {
                     "id": f"forced_tax_text_{tool_hash}",
-                    "name": "text_search",
+                    "name": "keyword_search",
                     "args": args,
                     "type": "tool_call",
                 }
@@ -2759,7 +2774,7 @@ def _parse_plan(content: str) -> list[str]:
         line = re.sub(r"^[\d\-\*\．。]+[\.\s]+", "", line.strip())
         if len(line) > 3:
             steps.append(line)
-    return steps[:4] if steps else [state["query"] if False else ""]
+    return steps[:4] if steps else [""]
 
 
 _QUESTION_STRIP_RE = re.compile(
@@ -3695,13 +3710,11 @@ def synthesize_node(state: RAGAgentState) -> dict:
         existing_presentation=presentation,
     )
 
-    _log_agent_run(state, final_answer, evaluation, runtime, all_chunks)
-
     try:
         from app.api import prom_record_agent as _pra
         _conf = float((evaluation or {}).get("confidence") or 0)
         _ig = float((evaluation or {}).get("information_gain") or 0)
-        _refused = any(m in final_answer for m in ["无法直接回答","无法回答","无法提供","无法分析","不足以回答","未提供","无相关数据","未包含"])
+        _refused = any(m in final_answer for m in REFUSAL_MARKERS)
         if _refused or not all_chunks:
             _q = "failure"
         elif _conf < 0.5 or _ig < 0.3:
@@ -3887,71 +3900,6 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
     except Exception as e:
         logger.debug(f"[followup] coverage scoring failed: {e}")
         return out[:max_n]
-
-
-def _log_agent_run(state: dict, final_answer: str, evaluation: dict, runtime: dict, all_chunks: list) -> None:
-    """Append a record of this agent run to a JSONL file for the learning loop.
-
-    Captures: query, final_answer, evaluation scores, tools used, chunk count,
-    iterations, runtime info. Quality is heuristically classified so the
-    learning page can surface failures and gaps without further analysis.
-    """
-    try:
-        log_dir = os.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, "agent_runs.jsonl")
-
-        ev = evaluation or {}
-        confidence = float(ev.get("confidence", 0) or 0)
-        info_gain = float(ev.get("information_gain", 0) or 0)
-
-        # Tools called (collected from messages with name attr in tool_node)
-        tools_used = []
-        for m in state.get("messages", []) or []:
-            tn = getattr(m, "name", None)
-            if tn and tn not in tools_used:
-                tools_used.append(tn)
-
-        # Heuristic classification — answer text leakage of refusal patterns
-        refusal_markers = ["无法直接回答", "无法回答", "无法提供", "无法分析",
-                           "不足以回答", "未提供", "无相关数据", "未包含"]
-        refused = any(m in final_answer for m in refusal_markers)
-        no_chunks = len(all_chunks) == 0
-        if refused or no_chunks:
-            quality = "failure"
-        elif confidence < 0.5 or info_gain < 0.3:
-            quality = "weak"
-        else:
-            quality = "good"
-
-        record = {
-            "ts": datetime.now().isoformat(),
-            "query": state.get("query", ""),
-            "query_type": state.get("query_type", ""),
-            "answer": final_answer[:1500],
-            "answer_truncated": len(final_answer) > 1500,
-            "iterations": int(state.get("iterations", 0) or 0),
-            "chunks_count": len(all_chunks),
-            "tools_used": tools_used,
-            "evaluation": {
-                "confidence": confidence,
-                "information_gain": info_gain,
-                "completeness": float(ev.get("completeness", 0) or 0),
-                "consistency": float(ev.get("consistency", 0) or 0),
-            },
-            "quality": quality,
-            "refused": refused,
-            "runtime": {
-                "provider": (runtime or {}).get("provider"),
-                "model": (runtime or {}).get("model"),
-            },
-        }
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"agent_run log failed: {e}")
-
-
 # ── Iterative Convergence Nodes ────────────────────────────────────────────────
 
 
@@ -4099,7 +4047,7 @@ def after_query_analysis(state: RAGAgentState) -> str:
 
 
 def after_synthesize(state: RAGAgentState) -> str:
-    if _env_flag("RAG_ENABLE_CONTRACT_VERIFIER_LOOP", False):
+    if read_runtime_config().contract_verifier_loop_enabled:
         return "contract_verifier_node"
     return "presentation_policy_node"
 

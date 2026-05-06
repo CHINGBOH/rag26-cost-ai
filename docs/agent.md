@@ -47,12 +47,11 @@ Agent 不是简单的"问答机器人"，而是一个**具备工具调用、质�
 
 | 组件 | 文件位置 | 职责 |
 |------|----------|------|
-| **RAG StateMachine** | `src/backend/server/src/modules/rag/machine.ts` | XState v5 状态机，驱动整个循环 |
+| **Agent Factory** | `src/backend/server/src/modules/agent/src/factory.ts` | 创建 LangChain Agent 实例 |
 | **ReAct Agent** | `src/backend/server/src/modules/agent/src/react-loop.ts` | LangChain ReAct 循环，LLM 决策工具调用 |
-| **Tool Bridge** | `src/backend/server/src/modules/rag/tool-bridge.ts` | 桥接 LangChain Tool 与 XState Event |
-| **Cascade Retrieval** | `src/backend/server/src/modules/retrieval/src/cascade-retrieval.ts` | 四库级联检索 |
 | **四库 Tools** | `src/backend/server/src/modules/agent/src/tools.ts` | vectorSearch/keywordSearch/graphSearch/calculator |
-| **Evaluator** | `src/backend/server/src/modules/rag/machine.ts` (evaluateResponse actor) | 回答质量评分 |
+| **Cascade Retrieval** | `src/backend/server/src/modules/retrieval/src/cascade-retrieval.ts` | 四库级联检索 |
+| **Runtime design reference** | `docs/langgraph-runtime-core.md` | Channel/State/runtime 设计参考 |
 
 ---
 
@@ -308,12 +307,12 @@ curl -X POST http://localhost:8080/api/rag/query \
 ### 7.2 批量跑通测试（16条）
 
 ```bash
-cd src/backend/python-legacy
-python -m pytest tests/test_rag_agent_core.py -v
+cd /home/l/rag-dashboard
+python tests/test_agent_16.py
 
-# 或运行 Node.js 端测试
+# Node.js 端仅保留 /api/agent/run 的 SSE contract smoke
 cd src/backend/server
-npm test -- tests/rag-agent-core.test.ts
+npx vitest run src/__tests__/rag-agent-core.test.ts
 ```
 
 ### 7.3 质量报告
@@ -362,12 +361,11 @@ npm test -- tests/rag-agent-core.test.ts
 
 | 文件 | 说明 |
 |------|------|
-| `src/backend/server/src/modules/rag/machine.ts` | RAG 状态机（XState v5） |
-| `src/backend/server/src/modules/rag/types.ts` | RAG 类型定义 |
-| `src/backend/server/src/modules/rag/context.ts` | RAGContext 工厂函数 |
+| `src/backend/server/src/modules/agent/src/factory.ts` | Agent 工厂 |
 | `src/backend/server/src/modules/agent/src/react-loop.ts` | ReAct Agent 循环 |
 | `src/backend/server/src/modules/agent/src/tools.ts` | 四库工具定义 |
 | `src/backend/server/src/modules/retrieval/src/cascade-retrieval.ts` | 级联检索服务 |
+| `docs/langgraph-runtime-core.md` | runtime / Channel / checkpoint 设计参考 |
 | `src/backend/python-legacy/ragas_eval.py` | Ragas 语义质量评估 |
 | `infrastructure/promptfooconfig.yaml` | Promptfoo A/B 测试配置 |
 | `config/config.yaml` | 检索权重、模型参数配置 |

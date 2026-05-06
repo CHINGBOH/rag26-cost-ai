@@ -30,6 +30,8 @@ from app.agent.query_analyzer import (
 from langchain_core.tools import tool
 from config.settings import AppConfig
 from infrastructure.vector_store import create_vector_store_adapter
+from app.runtime_config import postgres_connection_kwargs, read_runtime_config
+from app.runtime_overrides import get_runtime_override
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +46,6 @@ RETRIEVAL_PATH_PDF_PAGE = "pdf_page"
 import psycopg2
 from psycopg2 import pool as _pg_pool_mod
 
-PG_CONFIG = {
-    "host": os.environ.get("PG_HOST", "localhost"),
-    "port": int(os.environ.get("PG_PORT", "5432")),
-    "dbname": os.environ.get("PG_DB", "rag_db"),
-    "user": os.environ.get("PG_USER", "rag_user"),
-    "password": os.environ.get("POSTGRES_PASSWORD") or os.environ.get("PG_PASSWORD") or "",
-    "connect_timeout": 5,
-}
-
 _pool_lock = _threading.Lock()
 _pg_pool: _pg_pool_mod.ThreadedConnectionPool | None = None
 
@@ -64,7 +57,7 @@ def _get_pool() -> _pg_pool_mod.ThreadedConnectionPool:
         return _pg_pool
     with _pool_lock:
         if _pg_pool is None:
-            _pg_pool = _pg_pool_mod.ThreadedConnectionPool(1, 10, **PG_CONFIG)
+            _pg_pool = _pg_pool_mod.ThreadedConnectionPool(1, 10, **postgres_connection_kwargs())
             logger.info("[pg_pool] initialized (maxconn=10)")
     return _pg_pool
 
@@ -87,10 +80,6 @@ _embedding_svc = None
 _embedding_lock = _threading.Lock()
 _ocr_path_cache_lock = _threading.Lock()
 _ocr_month_file_cache: dict[str, str | None] = {}
-_OBSERVABILITY_ENABLED = (
-    os.environ.get("RETRIEVAL_OBSERVABILITY_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
-)
-_TSV_CONFIG_ENV = os.environ.get("PG_TSV_CONFIG", "chinese").strip().lower()
 _TSV_CONFIG_NAME: str | None = None
 _TSV_CONFIG_LOCK = _threading.Lock()
 
@@ -374,46 +363,36 @@ def count_valid_price_records(material_name: str) -> int:
         return 0
 
 
-def _env_int(name: str, default: int, minimum: int = 1) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning(f"[config] invalid int for {name}: {raw!r}; fallback={default}")
-        return default
-    return max(minimum, value)
-
-
-def _env_float(name: str, default: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(f"[config] invalid float for {name}: {raw!r}; fallback={default}")
-        return default
-    if value < min_value:
-        return min_value
-    if value > max_value:
-        return max_value
-    return value
-
-
 def _get_hybrid_runtime_config(top_k: int) -> dict:
-    normalized_top_k = max(1, int(top_k))
-    vector_fetch_multiplier = _env_int("HYBRID_VECTOR_FETCH_MULTIPLIER", 1, minimum=1)
-    text_fetch_multiplier = _env_int("HYBRID_TEXT_FETCH_MULTIPLIER", 1, minimum=1)
+    runtime = read_runtime_config()
+    requested_top_k = max(1, int(top_k))
+    normalized_top_k = int(get_runtime_override("top_k", requested_top_k))
+    vector_fetch_multiplier = max(1, int(runtime.hybrid_vector_fetch_multiplier))
+    text_fetch_multiplier = max(1, int(runtime.hybrid_text_fetch_multiplier))
+    structured_top_k = int(runtime.hybrid_structured_top_k) or normalized_top_k
+    literal_top_k = int(runtime.hybrid_literal_top_k) or normalized_top_k
     return {
-        "vector_min_score": _env_float("HYBRID_VECTOR_MIN_SCORE", 0.40, min_value=0.0, max_value=1.0),
+        "vector_min_score": get_runtime_override(
+            "score_threshold",
+            runtime.hybrid_vector_min_score,
+        ),
         "vector_fetch_k": normalized_top_k * vector_fetch_multiplier,
         "text_fetch_k": normalized_top_k * text_fetch_multiplier,
-        "rrf_rank_constant": _env_int("HYBRID_RRF_RANK_CONSTANT", 60, minimum=1),
-        "structured_top_k": _env_int("HYBRID_STRUCTURED_TOP_K", normalized_top_k, minimum=1),
-        "literal_top_k": _env_int("HYBRID_LITERAL_TOP_K", normalized_top_k, minimum=1),
+        "rrf_rank_constant": max(1, int(runtime.hybrid_rrf_rank_constant)),
+        "structured_top_k": max(1, structured_top_k),
+        "literal_top_k": max(1, literal_top_k),
+        "rerank_enabled": bool(get_runtime_override("rerank_enabled", True)),
     }
+
+
+def _effective_vector_backend() -> str:
+    override = get_runtime_override("vector_backend", None)
+    if override:
+        return str(override)
+    try:
+        return str(AppConfig().vector_store.type)
+    except Exception:
+        return "pgvector"
 
 
 def _apply_query_family_routing(query_family: str, cfg: dict, top_k: int) -> dict:
@@ -452,7 +431,7 @@ def _apply_query_family_routing(query_family: str, cfg: dict, top_k: int) -> dic
 
 
 def _log_retrieval_observability(event: str, payload: dict) -> None:
-    if not _OBSERVABILITY_ENABLED:
+    if not read_runtime_config().retrieval_observability_enabled:
         return
     logger.info("[retrieval_observability] %s %s", event, json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -509,7 +488,8 @@ def _resolve_text_search_config(conn) -> str:
     with _TSV_CONFIG_LOCK:
         if _TSV_CONFIG_NAME is not None:
             return _TSV_CONFIG_NAME
-        preferred = _TSV_CONFIG_ENV if re.fullmatch(r"[a-z0-9_]+", _TSV_CONFIG_ENV) else "simple"
+        preferred_env = read_runtime_config().pg_tsv_config
+        preferred = preferred_env if re.fullmatch(r"[a-z0-9_]+", preferred_env) else "simple"
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 FROM pg_catalog.pg_ts_config WHERE cfgname = %s LIMIT 1", (preferred,))
@@ -1313,7 +1293,7 @@ def _expand_concept_hits_from_graph(
     recursive_depth = (
         max(1, min(4, int(recursive_depth)))
         if recursive_depth is not None
-        else max(1, min(4, _env_int("CONCEPT_RECURSIVE_DEPTH", 2, minimum=1)))
+        else max(1, min(4, int(read_runtime_config().concept_recursive_depth)))
     )
     per_concept_limit = max(2, top_k * 2)
     expanded: list[dict] = []
@@ -2233,6 +2213,57 @@ def _pick_consistent_spec_trend(raw_rows: list[tuple]) -> list[tuple]:
     return groups[best_key]
 
 
+def _annotate_month_average_deltas(chunks: list[dict], *, comparability_mode: bool = False) -> None:
+    """Add month-over-month deltas to chunks built from monthly average points."""
+    previous_avg: float | None = None
+    previous_unit = ""
+
+    for chunk in chunks:
+        metadata = chunk.get("metadata") or {}
+        year_month = str(metadata.get("year_month") or "").strip()
+        if not year_month or year_month == "*":
+            continue
+
+        avg_value = metadata.get("avg_price")
+        if avg_value is None:
+            avg_value = metadata.get("price")
+        if avg_value is None:
+            continue
+
+        try:
+            avg_price = float(avg_value)
+        except (TypeError, ValueError):
+            previous_avg = None
+            previous_unit = ""
+            continue
+
+        unit = str(metadata.get("unit") or "").strip()
+        if previous_avg is not None and unit == previous_unit:
+            delta_value = avg_price - previous_avg
+            delta_percent = (delta_value / previous_avg * 100.0) if previous_avg else None
+            trend_direction = "up" if delta_value > 0 else "down" if delta_value < 0 else "flat"
+
+            metadata["delta"] = round(delta_value, 6)
+            metadata["delta_percent"] = round(delta_percent, 4) if delta_percent is not None else None
+            metadata["trend_direction"] = trend_direction
+            if comparability_mode:
+                metadata["comparability_basis"] = "month_average_estimate"
+            chunk["metadata"] = metadata
+
+            content = str(chunk.get("content") or "").rstrip()
+            if "环比变化:" not in content:
+                content += f" 环比变化:{delta_value:+.2f}"
+                if delta_percent is not None:
+                    content += f" 环比幅度:{delta_percent:+.2f}%"
+                content += f" 趋势:{trend_direction}"
+                if comparability_mode:
+                    content += " 口径:按月均价估算，跨月样本规格存在差异"
+                chunk["content"] = content
+
+        previous_avg = avg_price
+        previous_unit = unit
+
+
 def _build_price_period_label(year_month: str) -> str:
     normalized = _normalize_year_month(year_month)
     if not normalized:
@@ -2588,12 +2619,17 @@ def _run_coro_sync(coro):
 
 
 def _milvus_vector_results(query: str, top_k: int) -> list[dict]:
+    vector_backend = get_runtime_override("vector_backend", None)
+    if vector_backend == "pgvector":
+        return []
     try:
         vector_config = AppConfig().vector_store
     except Exception as e:
         logger.warning(f"[vector_search] failed to load vector store config: {e}")
         return []
 
+    if vector_backend == "milvus":
+        vector_config.type = "milvus"
     if vector_config.type != "milvus":
         return []
 
@@ -2656,7 +2692,13 @@ def vector_search(query: str, top_k: int = 10) -> str:
 
     conn = None
     try:
-        milvus_results = _milvus_vector_results(query, top_k)
+        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 10 else top_k
+        score_threshold = float(get_runtime_override("score_threshold", 0.40))
+        milvus_results = (
+            _milvus_vector_results(query, effective_top_k)
+            if _effective_vector_backend() == "milvus"
+            else []
+        )
         if milvus_results:
             return json.dumps(milvus_results, ensure_ascii=False)
 
@@ -2671,10 +2713,10 @@ def vector_search(query: str, top_k: int = 10) -> str:
                        1 - (embedding <=> %s::vector) AS score
                 FROM text_chunks
                 WHERE embedding IS NOT NULL
-                  AND 1 - (embedding <=> %s::vector) >= 0.40
+                  AND 1 - (embedding <=> %s::vector) >= %s
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
-            """, (query_embedding, query_embedding, query_embedding, top_k))
+            """, (query_embedding, query_embedding, score_threshold, query_embedding, effective_top_k))
 
             rows = cur.fetchall()
             results = []
@@ -2688,7 +2730,7 @@ def vector_search(query: str, top_k: int = 10) -> str:
                             "source_db": "pgvector",
                             "content": row[3] or "",
                             "score": round(float(row[4] or 0), 4),
-                            "metadata": {},
+                            "metadata": {"vector_backend": "pgvector"},
                         },
                         RETRIEVAL_PATH_VECTOR,
                         evidence_kind="vector_chunk",
@@ -3173,11 +3215,12 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
     path_filter_sql = "AND tc.path LIKE %s" if path_constraint else ""
     path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
-        cfg = _get_hybrid_runtime_config(top_k)
+        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 10 else top_k
+        cfg = _get_hybrid_runtime_config(effective_top_k)
         query_family = str((_concept_analyzer.analyze(query).get("intent") or "semantic"))
-        cfg = _apply_query_family_routing(query_family, cfg, top_k)
+        cfg = _apply_query_family_routing(query_family, cfg, effective_top_k)
         milvus_vector_hits: list[dict] = []
-        if not path_constraint:
+        if not path_constraint and _effective_vector_backend() == "milvus":
             milvus_vector_hits = _milvus_vector_results(query, int(cfg["vector_fetch_k"]))
             for chunk in milvus_vector_hits:
                 chunk["source_db"] = "hybrid_vector"
@@ -3194,7 +3237,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
         results: list[dict] = []
         observability = {
             "query_family": query_family,
-            "top_k": int(top_k),
+            "top_k": int(effective_top_k),
             "vector_fetch_k": int(cfg["vector_fetch_k"]),
             "text_fetch_k": int(cfg["text_fetch_k"]),
             "rrf_rank_constant": int(cfg["rrf_rank_constant"]),
@@ -3363,10 +3406,13 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
             observability["text_hits"] = len(text_hits)
 
         # dense + sparse 融合：RRF
-        for chunk in _rrf_fuse_chunks(
-            [vector_hits, multivector_hits, text_hits],
-            rank_constant=int(cfg["rrf_rank_constant"]),
-        ):
+        ranked_lists = [vector_hits, multivector_hits, text_hits]
+        fused_chunks = (
+            _rrf_fuse_chunks(ranked_lists, rank_constant=int(cfg["rrf_rank_constant"]))
+            if bool(cfg.get("rerank_enabled", True))
+            else [chunk for ranked in ranked_lists for chunk in ranked]
+        )
+        for chunk in fused_chunks:
             cid = chunk.get("chunk_id")
             if cid and cid not in seen_ids:
                 seen_ids.add(cid)
@@ -3427,7 +3473,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
             metadata["query_family"] = query_family
             metadata["hybrid_elapsed_ms"] = elapsed_ms
             chunk["metadata"] = metadata
-        return json.dumps(results[:top_k], ensure_ascii=False)
+        return json.dumps(results[:effective_top_k], ensure_ascii=False)
     except Exception as e:
         logger.error(f"[hybrid_search] error: {e}")
         _log_retrieval_observability(
@@ -4292,10 +4338,6 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
             )
         chunks.sort(key=lambda chunk: chunk["metadata"].get("year_month", ""))
 
-        # ── Comparability guard ──────────────────────────────────────────────
-        # If primary rows and fallback rows mix different specifications,
-        # cross-month % change is meaningless ("apples-to-oranges").  Emit a
-        # synthetic warning chunk so the synthesizer can refuse the bogus delta.
         primary_specs = {(r[3] or "").strip() for r in rows if r[3]}
         all_specs: set[str] = set(primary_specs)
         for fb in fallback_chunks:
@@ -4312,6 +4354,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 or "__fallback_aggregate__" in all_specs
             )
         )
+        _annotate_month_average_deltas(chunks, comparability_mode=spec_mismatch)
         if spec_mismatch:
             warning = {
                 "chunk_id": f"price_trend_warning_{material_name}",
@@ -4319,14 +4362,14 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
                 "page_number": 1,
                 "source_db": "price_records",
                 "content": (
-                    f"⚠️ 数据可比性提示：检索到的 {material_name} 跨月样本规格不一致，"
-                    f"涉及规格 {sorted(all_specs)[:5]}。不同规格的电线/电缆价格差异极大，"
-                    f"直接计算环比变化幅度会产生误导性结论。"
-                    f"建议：(1) 指定具体规格再查询，或 (2) 仅展示分月均价并明确说明样本规格差异。"
+                    f"⚠️ 数据口径提示：检索到的 {material_name} 跨月样本规格不一致，"
+                    f"涉及规格 {sorted(all_specs)[:5]}。以下环比变化已按各月月均价口径估算，"
+                    f"可用于粗粒度走势参考，但不能视为同规格精确对比。"
+                    f"回答时应明确说明规格差异；如需精确对比，请指定具体规格后再查询。"
                 ),
                 "score": 0.99,
                 "metadata": {
-                    "evidence_kind": "comparability_warning",
+                    "evidence_kind": "comparability_notice",
                     "specs_seen": sorted(all_specs)[:10],
                     "year_month": "*",
                 },
