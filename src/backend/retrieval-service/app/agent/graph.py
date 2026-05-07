@@ -4088,13 +4088,21 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
 # ── Iterative Convergence Nodes ────────────────────────────────────────────────
 
 
+
 def contract_verifier_node(state: RAGAgentState) -> dict:
-    """Aggregate all 4 node contracts; set quality_converged and root_cause_node."""
+    """
+    Aggregate all 4 node contracts; set quality_converged and root_cause_node.
+    
+    Issue #118: 集成真实质量收敛策略
+    - 检查contract violations（结构正确性）
+    - 检查evaluation score（语义质量）
+    - 支持Feature Flag切换新旧逻辑
+    """
     from config.observability import log_decision, DecisionType  # Phase 1 #115
     from config.param_registry import param
     
     outer_iter = state.get("outer_iteration", 0)
-    max_outer = param("contract_max_outer_iterations", default=3)  # Phase 1 #116
+    max_outer = param("contract_max_outer_iterations", default=5)  # Issue #118: 提升到5
 
     all_results = [
         verify_query_analysis_contract(state),
@@ -4103,94 +4111,211 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
         verify_synthesize_contract(state),
     ]
     all_passed = all(r["passed"] for r in all_results)
-
-    if all_passed:
-        logger.info("[contract_verifier] all contracts passed")
-        log_decision(
-            decision_type=DecisionType.CONTRACT_CONVERGENCE,
-            rationale=f"All 4 contracts passed at iteration {outer_iter}/{max_outer}",
-            inputs={"outer_iter": outer_iter, "max_outer": max_outer},
-            outputs={"converged": True, "passed_nodes": 4},
-            confidence=1.0,
-            metadata={"contracts": [r["node"] for r in all_results]}
-        )
-        return {
-            "contract_results": all_results,
-            "quality_converged": True,
-        }
-
-    if outer_iter >= max_outer:
-        logger.warning(f"[contract_verifier] max_outer_iterations ({max_outer}) reached, forcing output")
-        
-        # Sprint 2: Trigger learning for persistent contract failures (#117)
-        failed_nodes = [r["node"] for r in all_results if not r["passed"]]
-        if failed_nodes:
-            query = state.get("query", "")
-            try:
-                from config.feature_flags import is_feature_enabled
-                
-                # Get AdaptiveRetestScheduler from main.py global
-                from main import get_adaptive_retest_scheduler
-                adaptive_scheduler = get_adaptive_retest_scheduler()
-                
-                if is_feature_enabled("LEARNING_USE_ADAPTIVE_SCHEDULER") and adaptive_scheduler:
-                    # 新路径：通过 AdaptiveRetestScheduler
-                    from app.agent.adaptive_retest_scheduler import RetestRequest, RetestPriority
-                    from datetime import datetime, timezone
-                    
-                    question_hash = await adaptive_scheduler.request_retest(RetestRequest(
-                        question=query,
-                        source="contract",
-                        priority=RetestPriority.REPEATED_QUESTION,
-                        metadata={
-                            "trigger": "contract_violation",
-                            "outer_iter": outer_iter,
-                            "max_outer": max_outer,
-                            "failed_nodes": failed_nodes,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    ))
-                    
-                    logger.info(f"✅ Contract violation queued for learning: {query[:50]}... (hash={question_hash[:8]}...)")
-                    
-            except Exception as e:
-                logger.warning(f"Failed to queue contract violation for learning: {e}")
-        
-        log_decision(
-            decision_type=DecisionType.CONTRACT_CONVERGENCE,
-            rationale=f"Forced convergence: max iterations {max_outer} reached",
-            inputs={"outer_iter": outer_iter, "max_outer": max_outer},
-            outputs={"converged": False, "failed_nodes": failed_nodes},
-            confidence=0.3,
-            metadata={"forced": True, "learning_triggered": len(failed_nodes) > 0}
-        )
-        return {
-            "contract_results": all_results,
-            "quality_converged": True,
-        }
-
-    root = trace_root_cause({**state, "contract_results": all_results})
-    logger.info(
-        f"[contract_verifier] outer_iter={outer_iter}/{max_outer} "
-        f"failed_nodes={[r['node'] for r in all_results if not r['passed']]} "
-        f"root_cause={root}"
-    )
     
-    log_decision(
-        decision_type=DecisionType.CONTRACT_ITERATION,
-        rationale=f"Contracts not met, retry iteration {outer_iter+1}/{max_outer}",
-        inputs={"outer_iter": outer_iter, "max_outer": max_outer, "root_cause": root},
-        outputs={"failed_nodes": [r["node"] for r in all_results if not r["passed"]]},
-        confidence=0.5,
-        metadata={"root_cause_node": root}
-    )
+    # Issue #118: Feature Flag控制是否启用质量收敛策略
+    use_quality_convergence = os.getenv("ENABLE_QUALITY_CONVERGENCE", "false").lower() == "true"
+    
+    if use_quality_convergence:
+        # 新逻辑：基于evaluation score的质量收敛
+        from config.convergence_policy import (
+            get_default_convergence_policy,
+            create_iteration_record_from_state
+        )
+        
+        policy = get_default_convergence_policy()
+        
+        # 记录当前iteration到history
+        iteration_history = list(state.get("iteration_history") or [])
+        current_record = create_iteration_record_from_state(state, outer_iter)
+        iteration_history.append({
+            "iteration": current_record.iteration,
+            "eval_score": current_record.eval_score,
+            "semantic_score": current_record.semantic_score,
+            "passed": current_record.passed,
+            "contract_passed": current_record.contract_passed,
+            "feedback": current_record.feedback,
+        })
+        
+        # 从dict转回IterationRecord对象用于policy判断
+        from config.convergence_policy import IterationRecord
+        record_objects = [
+            IterationRecord(
+                iteration=rec["iteration"],
+                eval_score=rec["eval_score"],
+                semantic_score=rec.get("semantic_score"),
+                passed=rec["passed"],
+                contract_passed=rec["contract_passed"],
+                feedback=rec["feedback"]
+            )
+            for rec in iteration_history
+        ]
+        
+        converged, reason, metadata = policy.is_converged(record_objects)
+        
+        logger.info(
+            f"[contract_verifier] Quality convergence check: "
+            f"converged={converged}, reason={reason}, "
+            f"eval_score={current_record.eval_score:.3f}, "
+            f"iteration={outer_iter+1}/{policy.max_iterations}"
+        )
+        
+        log_decision(
+            decision_type=DecisionType.CONTRACT_CONVERGENCE,
+            rationale=f"Quality convergence: {reason} at iteration {outer_iter+1}",
+            inputs={
+                "outer_iter": outer_iter,
+                "max_iter": policy.max_iterations,
+                "eval_score": current_record.eval_score,
+                "target_score": policy.target_score
+            },
+            outputs={
+                "converged": converged,
+                "reason": reason,
+                "contract_passed": all_passed,
+                "quality_score": current_record.eval_score
+            },
+            confidence=current_record.eval_score,
+            metadata={
+                "convergence_metadata": metadata,
+                "iteration_history": iteration_history
+            }
+        )
+        
+        if converged:
+            if reason == "target_reached":
+                logger.info(f"[contract_verifier] ✅ Quality target reached: {current_record.eval_score:.3f}")
+            elif reason == "delta_converged":
+                logger.info(f"[contract_verifier] ✅ Quality delta converged: score={current_record.eval_score:.3f}")
+            elif reason == "max_iterations_forced":
+                logger.warning(
+                    f"[contract_verifier] ⚠️ Forced stop at max_iterations={policy.max_iterations}, "
+                    f"score={current_record.eval_score:.3f} (target={policy.target_score})"
+                )
+                
+                # Trigger learning for low-quality forced outputs
+                if current_record.eval_score < policy.target_score:
+                    failed_nodes = [r["node"] for r in all_results if not r["passed"]]
+                    _trigger_contract_learning(state, outer_iter, max_outer, failed_nodes)
+            
+            return {
+                "contract_results": all_results,
+                "quality_converged": True,
+                "iteration_history": iteration_history,
+                "convergence_reason": reason,
+                "convergence_metadata": metadata,
+            }
+        else:
+            # 未收敛，继续迭代
+            root = trace_root_cause({**state, "contract_results": all_results})
+            logger.info(
+                f"[contract_verifier] Continue iteration {outer_iter+1}/{policy.max_iterations}: "
+                f"score={current_record.eval_score:.3f}, root_cause={root}"
+            )
+            
+            return {
+                "contract_results": all_results,
+                "quality_converged": False,
+                "iteration_history": iteration_history,
+                "root_cause_node": root,
+                "outer_iteration": outer_iter + 1,
+            }
+    
+    else:
+        # 原有逻辑：仅基于contract violations
+        if all_passed:
+            logger.info("[contract_verifier] all contracts passed")
+            log_decision(
+                decision_type=DecisionType.CONTRACT_CONVERGENCE,
+                rationale=f"All 4 contracts passed at iteration {outer_iter}/{max_outer}",
+                inputs={"outer_iter": outer_iter, "max_outer": max_outer},
+                outputs={"converged": True, "passed_nodes": 4},
+                confidence=1.0,
+                metadata={"contracts": [r["node"] for r in all_results]}
+            )
+            return {
+                "contract_results": all_results,
+                "quality_converged": True,
+            }
 
-    return {
-        "contract_results": all_results,
-        "quality_converged": False,
-        "root_cause_node": root,
-        "outer_iteration": outer_iter + 1,
-    }
+        if outer_iter >= max_outer:
+            logger.warning(f"[contract_verifier] max_outer_iterations ({max_outer}) reached, forcing output")
+            
+            # Sprint 2: Trigger learning for persistent contract failures (#117)
+            failed_nodes = [r["node"] for r in all_results if not r["passed"]]
+            _trigger_contract_learning(state, outer_iter, max_outer, failed_nodes)
+            
+            log_decision(
+                decision_type=DecisionType.CONTRACT_CONVERGENCE,
+                rationale=f"Forced convergence: max iterations {max_outer} reached",
+                inputs={"outer_iter": outer_iter, "max_outer": max_outer},
+                outputs={"converged": False, "failed_nodes": failed_nodes},
+                confidence=0.3,
+                metadata={"forced": True, "learning_triggered": len(failed_nodes) > 0}
+            )
+            return {
+                "contract_results": all_results,
+                "quality_converged": True,
+            }
+
+        root = trace_root_cause({**state, "contract_results": all_results})
+        logger.info(
+            f"[contract_verifier] outer_iter={outer_iter}/{max_outer} "
+            f"failed_nodes={[r['node'] for r in all_results if not r['passed']]} "
+            f"root_cause={root}"
+        )
+        
+        log_decision(
+            decision_type=DecisionType.CONTRACT_ITERATION,
+            rationale=f"Contracts not met, retry iteration {outer_iter+1}/{max_outer}",
+            inputs={"outer_iter": outer_iter, "max_outer": max_outer, "root_cause": root},
+            outputs={"failed_nodes": [r["node"] for r in all_results if not r["passed"]]},
+            confidence=0.5,
+            metadata={"root_cause_node": root}
+        )
+
+        return {
+            "contract_results": all_results,
+            "quality_converged": False,
+            "root_cause_node": root,
+            "outer_iteration": outer_iter + 1,
+        }
+
+
+def _trigger_contract_learning(state: dict, outer_iter: int, max_outer: int, failed_nodes: list[str]):
+    """Helper: Trigger learning for contract violations"""
+    if not failed_nodes:
+        return
+    
+    query = state.get("query", "")
+    try:
+        from config.feature_flags import is_feature_enabled
+        
+        # Get AdaptiveRetestScheduler from main.py global
+        from main import get_adaptive_retest_scheduler
+        adaptive_scheduler = get_adaptive_retest_scheduler()
+        
+        if is_feature_enabled("LEARNING_USE_ADAPTIVE_SCHEDULER") and adaptive_scheduler:
+            # 新路径：通过 AdaptiveRetestScheduler
+            from app.agent.adaptive_retest_scheduler import RetestRequest, RetestPriority
+            from datetime import datetime, timezone
+            
+            question_hash = adaptive_scheduler.request_retest(RetestRequest(
+                question=query,
+                source="contract",
+                priority=RetestPriority.REPEATED_QUESTION,
+                metadata={
+                    "trigger": "contract_violation",
+                    "outer_iter": outer_iter,
+                    "max_outer": max_outer,
+                    "failed_nodes": failed_nodes,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ))
+            
+            logger.info(f"✅ Contract violation queued for learning: {query[:50]}... (hash={question_hash[:8]}...)")
+            
+    except Exception as e:
+        logger.warning(f"Failed to queue contract violation for learning: {e}")
 
 
 def corrective_action_node(state: RAGAgentState) -> dict:

@@ -65,12 +65,15 @@ class RAGAgentState(TypedDict):
     # ── Iterative convergence / outer-loop contract verification ────────────────
     contract_results: list[ContractResult]   # 每轮合约验证结果
     outer_iteration: int                     # 外循环迭代计数，default 0
-    max_outer_iterations: int                # 外循环上限，default 3
+    max_outer_iterations: int                # 外循环上限，default 5 (Issue #118)
     quality_converged: bool                  # True 时合约全部通过或强制输出
     corrective_actions: list[str]            # 已执行精炼动作，防重复
     root_cause_node: str                     # 重放目标节点，由 trace_root_cause 设定
     tool_fallback_level: int                 # 工具降级深度，default 0
     used_tool_categories: list[str]          # 已尝试工具类别，防重复
+    
+    # Issue #118: Quality-based convergence
+    iteration_history: list[dict]            # 每轮迭代的评分历史（用于真实质量收敛判断）
 
     # Trace recorder (#67)
     trace_id: str
