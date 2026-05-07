@@ -1210,6 +1210,54 @@ def _normalize_final_answer(
     return f"{direct_answer}\n\n简要分析：\n{analysis_text}\n\n{refs}".strip()
 
 
+def _generate_tool_selection_reasoning(
+    selected_tools: list[str],
+    available_tools: list[str],
+    plan_step: str,
+    query_type: str,
+) -> str:
+    """
+    Issue #123: Generate human-readable reasoning for tool selection.
+    
+    Maps tool names to reasons based on query_type and plan_step context.
+    This provides transparency for debugging and user understanding.
+    """
+    tool_purpose_map = {
+        "price_query": "查询价格信息",
+        "price_trend": "分析价格走势",
+        "text_search": "全文检索",
+        "vector_search": "语义向量检索",
+        "hybrid_search": "混合检索（关键词+向量）",
+        "concept_search": "概念/材料名搜索",
+        "category_search": "按类别检索",
+        "rule_clause_search": "检索条款规则",
+        "catalog_search": "目录检索",
+        "graph_query": "知识图谱查询",
+        "calculator": "数值计算",
+        "calendar_query": "日期查询",
+        "contract_verify": "合约验证",
+        "document_retrieve": "文档获取",
+    }
+    
+    query_type_context = {
+        "price": "价格查询场景",
+        "trend_chart": "价格走势场景",
+        "standard_ref": "标准规范查询",
+        "calculation": "计算场景",
+        "comparison": "对比场景",
+        "fee_rate": "费率查询",
+    }
+    
+    selected_purposes = [tool_purpose_map.get(tool, tool) for tool in selected_tools]
+    context = query_type_context.get(query_type, "通用查询")
+    
+    if len(selected_tools) == 1:
+        return f"【{context}】选择 {selected_tools[0]} ({selected_purposes[0]}) - 步骤: {plan_step[:50]}"
+    else:
+        tools_desc = ", ".join(f"{t}({p})" for t, p in zip(selected_tools, selected_purposes))
+        return f"【{context}】选择 {len(selected_tools)} 个工具: {tools_desc}"
+
+
 def _collect_chunks(tool_result_str: str, existing_chunks: list) -> list:
     """从工具返回的 JSON 字符串中提取 chunks，去重后追加"""
     try:
@@ -3444,6 +3492,14 @@ def executor_node(state: RAGAgentState) -> dict:
         patched_response = AIMessage(content=response.content or "", tool_calls=patched_calls)
         logger.info(f"[executor] tool calls: {[tc['name'] for tc in patched_calls]}")
         
+        # Issue #123: Generate tool selection reasoning for frontend
+        tool_reasoning = _generate_tool_selection_reasoning(
+            selected_tools=[tc['name'] for tc in patched_calls],
+            available_tools=[t.name for t in REACT_TOOLS] if REACT_TOOLS else [],
+            plan_step=step_hint[:100] if step_hint else "",
+            query_type=state.get("query_type", "unknown"),
+        )
+        
         # Phase 1+ Task 2: Observability integration for tool selection
         try:
             from config.observability import log_decision, DecisionType
@@ -3469,7 +3525,7 @@ def executor_node(state: RAGAgentState) -> dict:
                         for tc in patched_calls
                     )
                 },
-                reason=f"LLM selected {len(patched_calls)} tool(s) for step {current_step+1}/{len(plan)}",
+                reason=tool_reasoning,  # Issue #123: Use generated reasoning
                 confidence=0.85,
                 metadata={
                     "llm_runtime_ms": runtime.get("elapsed_ms", 0) if runtime else 0,
@@ -3490,6 +3546,7 @@ def executor_node(state: RAGAgentState) -> dict:
             "step_hint": step_hint,
             "pending_tool_calls": patched_calls,
             "llm_runtime": runtime,
+            "tool_selection_reasoning": tool_reasoning,  # Issue #123: Add reasoning to state
         }
     else:
         # 无工具调用：自省并推进步骤

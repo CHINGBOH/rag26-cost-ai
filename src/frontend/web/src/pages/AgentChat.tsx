@@ -1598,6 +1598,9 @@ const ProcessVisualization: React.FC = () => {
                     <span className="tool-duration">{tc.duration_ms}ms</span>
                   )}
                 </div>
+                {tc.reasoning && (
+                  <div className="tool-reasoning">{tc.reasoning}</div>
+                )}
                 {tc.result != null && (
                   <div className="tool-result">{JSON.stringify(tc.result).slice(0, 100)}</div>
                 )}

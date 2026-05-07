@@ -1365,6 +1365,19 @@
 .tool-status-badge.error { color: var(--color-error); }
 
 .tool-duration { font-size: 10px; color: var(--text-muted); }
+
+/* Issue #123: Tool selection reasoning display */
+.tool-reasoning {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(var(--page-accent-rgb), 0.06);
+  border-left: 2px solid rgba(var(--page-accent-rgb), 0.3);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  border-radius: 4px;
+}
+
 .tool-result { font-size: 10px; color: var(--text-muted); margin-top: 4px; font-family: monospace; }
 
 /* ── Sandbox ──────────────────────── */

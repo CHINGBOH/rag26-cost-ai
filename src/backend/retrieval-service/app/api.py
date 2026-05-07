@@ -814,6 +814,8 @@ async def agent_query_stream(request: AgentStreamRequest):
                         },
                     )
                 for tool_call in node_output.get("pending_tool_calls", []) or []:
+                    # Issue #123: Include tool selection reasoning
+                    tool_reasoning = node_output.get("tool_selection_reasoning", "")
                     yield _sse_event(
                         "tool_call_start",
                         {
@@ -822,6 +824,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                             "args": tool_call.get("args", {}),
                             "step": step_number,
                             "total": total_steps,
+                            "reasoning": tool_reasoning,  # Issue #123: Add reasoning field
                         },
                     )
                 step_summary = node_output.get("step_summary")

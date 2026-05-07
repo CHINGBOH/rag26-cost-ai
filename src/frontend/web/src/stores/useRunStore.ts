@@ -26,6 +26,8 @@ export interface ToolCall {
   result?: unknown;
   duration_ms?: number;
   status: 'running' | 'done' | 'error';
+  reasoning?: string;  // Issue #123: Why this tool was selected
+  alternatives?: string[];  // Issue #123: Other tools considered
 }
 
 export interface SandboxExec {
