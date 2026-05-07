@@ -868,27 +868,11 @@ const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ pre
 
 /* ── Config State ────────────────────────────────────── */
 
-interface ConfigState {
-  searchMode: string;
-  maxIterations: number;
-  scoreThreshold: number;
-  topK: number;
-  docTypes: string[];
-  llmRoute: 'auto' | 'local' | 'deepseek';
-  llmModel: string;
-  llmEngine: string;
-}
+// Issue #125 fix: Use unified schema from @rag/shared
+// This ensures frontend-backend contract consistency
+type ConfigState = AgentConfig;
 
-const DEFAULT_CONFIG: ConfigState = {
-  searchMode: 'hybrid',
-  maxIterations: 3,
-  scoreThreshold: 0.6,
-  topK: 8,
-  docTypes: [],
-  llmRoute: 'deepseek',
-  llmModel: 'deepseek-chat',
-  llmEngine: 'api',
-};
+const DEFAULT_CONFIG: ConfigState = DEFAULT_AGENT_CONFIG;
 
 const LLM_ROUTE_OPTIONS: Array<ConfigState['llmRoute']> = ['auto', 'local', 'deepseek'];
 

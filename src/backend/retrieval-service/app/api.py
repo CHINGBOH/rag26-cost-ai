@@ -415,9 +415,16 @@ class AgentRequest(BaseModel):
     session_id: Optional[str] = None
     max_iterations: int = 3
     llm_route: str = "deepseek"
-    llm_provider: Optional[str] = None
+    llm_provider: Optional[str] = None  # Issue #125 fix: allow None
     llm_model: Optional[str] = None
     llm_engine: Optional[str] = None
+
+    def resolve_llm_provider(self) -> str:
+        """Issue #125 fix: Infer provider from route if not explicitly set."""
+        if self.llm_provider:
+            return self.llm_provider
+        provider_map = {"deepseek": "deepseek", "local": "ollama", "auto": "deepseek"}
+        return provider_map.get(self.llm_route, "deepseek")
 
 
 @router.post("/api/v1/agent")
@@ -546,9 +553,27 @@ class AgentStreamRequest(BaseModel):
     search_mode: str = "hybrid"
     doc_types: list = []
     llm_route: str = "deepseek"
-    llm_provider: Optional[str] = None
+    llm_provider: Optional[str] = None  # Issue #125 fix: allow None
     llm_model: Optional[str] = None
     llm_engine: Optional[str] = None
+
+    def resolve_llm_provider(self) -> str:
+        """
+        Issue #125 fix: Infer provider from route if not explicitly set.
+        
+        This provides backward compatibility when frontend doesn't send
+        llm_provider explicitly.
+        """
+        if self.llm_provider:
+            return self.llm_provider
+        
+        # Fallback: infer from route
+        provider_map = {
+            "deepseek": "deepseek",
+            "local": "ollama",
+            "auto": "deepseek",
+        }
+        return provider_map.get(self.llm_route, "deepseek")
 
 
 def _sse_event(event_type: str, data: dict[str, Any]) -> str:
@@ -556,9 +581,11 @@ def _sse_event(event_type: str, data: dict[str, Any]) -> str:
 
 
 def _build_llm_config(request: AgentStreamRequest | AgentRequest) -> dict[str, Any]:
+    # Issue #125 fix: Use resolve_llm_provider() for backward compatibility
+    resolved_provider = request.resolve_llm_provider() if hasattr(request, 'resolve_llm_provider') else request.llm_provider
     return {
         "route_mode": request.llm_route,
-        "provider": request.llm_provider,
+        "provider": resolved_provider,
         "model": request.llm_model,
         "engine": request.llm_engine,
     }

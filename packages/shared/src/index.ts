@@ -2,6 +2,7 @@
  * Shared types and utilities for RAG Dashboard
  */
 
+export * from './types/agent-config';
 export * from './types/recursion';
 export * from './types/recursive-ui';
 export * from './types/infrastructure';

@@ -45,17 +45,11 @@ export interface ChatMessage {
   followups?: FollowupSuggestion[];
 }
 
-export interface AgentConfig {
-  maxIterations?: number;
-  scoreThreshold?: number;
-  topK?: number;
-  searchMode?: string;
-  docTypes?: string[];
-  llmRoute?: 'auto' | 'local' | 'deepseek';
-  llmProvider?: string;
-  llmModel?: string;
-  llmEngine?: string;
-}
+// Issue #125 fix: Import unified schema from @rag/shared
+import { type AgentConfig as SharedAgentConfig, resolveLLMProvider } from '@rag/shared';
+
+// Re-export for backward compatibility
+export type AgentConfig = SharedAgentConfig;
 
 interface ChatStore {
   messages: ChatMessage[];
@@ -239,6 +233,12 @@ export function useAgent() {
           currentDataLines = [];
         };
 
+        // Issue #125 fix: Resolve llmProvider if not explicitly provided
+        const resolvedProvider = config?.llmProvider || resolveLLMProvider({
+          ...(config || {}),
+          llmRoute: config?.llmRoute ?? 'deepseek',
+        } as SharedAgentConfig);
+
         const response = await fetch(`${API_BASE}/api/v1/agent/stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -251,7 +251,7 @@ export function useAgent() {
             search_mode: config?.searchMode ?? 'hybrid',
             doc_types: config?.docTypes ?? [],
             llm_route: config?.llmRoute ?? 'deepseek',
-            llm_provider: config?.llmProvider,
+            llm_provider: resolvedProvider,  // ✅ Now guaranteed to have a value
             llm_model: config?.llmModel,
             llm_engine: config?.llmEngine,
           }),
