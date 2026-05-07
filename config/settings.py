@@ -1,13 +1,34 @@
 """
 配置管理模块
 使用 Pydantic Settings + YAML 实现类型安全的配置管理
+
+⚠️ DEPRECATED: This module is deprecated since Issue #122.
+Please use config.loader instead:
+    from config.loader import get_config, RAGConfig
+    
+The new unified config loader provides:
+- Clear precedence: default < config.yaml < .env < env vars < CLI < runtime
+- Hot reload support
+- Type-safe validation
+- Better error messages
+
+This module will be removed in a future version.
 """
 
+import warnings
 from typing import Literal, List
 from pydantic import Field, field_validator, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 import yaml
+
+# Issue #122: Mark this module as deprecated
+warnings.warn(
+    "config.settings is deprecated. Use config.loader instead. "
+    "See config/loader.py for the new unified config API.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class ServerConfig(BaseSettings):
