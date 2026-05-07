@@ -11,6 +11,7 @@ import time
 import uuid
 import asyncio
 import threading as _threading
+from datetime import datetime
 from typing import List
 from pathlib import Path
 
@@ -2252,11 +2253,31 @@ def _annotate_month_average_deltas(chunks: list[dict], *, comparability_mode: bo
         unit = str(metadata.get("unit") or "").strip()
         if previous_avg is not None and unit == previous_unit:
             delta_value = avg_price - previous_avg
-            delta_percent = (delta_value / previous_avg * 100.0) if previous_avg else None
-            trend_direction = "up" if delta_value > 0 else "down" if delta_value < 0 else "flat"
+            # Issue #121: Safe delta calculation with explicit zero handling
+            if previous_avg == 0:
+                if avg_price == 0:
+                    # Both zero: no change
+                    delta_percent = 0.0
+                    trend_direction = "flat"
+                else:
+                    # From 0 to non-zero: infinite growth (cap at special marker)
+                    delta_percent = float('inf') if avg_price > 0 else float('-inf')
+                    trend_direction = "up" if avg_price > 0 else "down"
+                    logger.warning(
+                        f"[delta_calc] price surge from 0: {previous_avg} → {avg_price}, "
+                        f"delta_percent=inf"
+                    )
+            else:
+                delta_percent = (delta_value / previous_avg * 100.0)
+                trend_direction = "up" if delta_value > 0 else "down" if delta_value < 0 else "flat"
 
             metadata["delta"] = round(delta_value, 6)
-            metadata["delta_percent"] = round(delta_percent, 4) if delta_percent is not None else None
+            # Store infinity as None in JSON (JSON doesn't support inf)
+            if delta_percent == float('inf') or delta_percent == float('-inf'):
+                metadata["delta_percent"] = None
+                metadata["delta_percent_overflow"] = "infinity"
+            else:
+                metadata["delta_percent"] = round(delta_percent, 4)
             metadata["trend_direction"] = trend_direction
             if comparability_mode:
                 metadata["comparability_basis"] = "month_average_estimate"
@@ -2558,6 +2579,84 @@ def _query_structured_tables(query: str, top_k: int = 10) -> list[dict]:
         if conn is not None:
             _put_pg_conn(conn)
     return results
+
+
+# ── Time validation helpers (Issue #121) ─────────────────────────────────────
+def _validate_and_normalize_time_range(
+    start_month: str,
+    end_month: str,
+    material_name: str = "",
+    max_span_years: int = 10
+) -> tuple[str, str]:
+    """
+    Validate and normalize time range for price queries.
+    
+    Fixes Issue #121: Price query time validation
+    - Auto-correct reversed time ranges
+    - Validate against future dates
+    - Enforce max time span
+    - Provide clear error messages
+    
+    Args:
+        start_month: Start month in 'YYYY-MM' format
+        end_month: End month in 'YYYY-MM' format
+        material_name: Material name for error messages
+        max_span_years: Maximum allowed time span in years
+        
+    Returns:
+        Tuple of (corrected_start_month, corrected_end_month)
+        
+    Raises:
+        ValueError: If time range is invalid
+    """
+    current_date = datetime.now()
+    current_month_str = current_date.strftime("%Y-%m")
+    
+    # Validate format and parse
+    def parse_month(month_str: str, label: str) -> datetime | None:
+        if not month_str:
+            return None
+        try:
+            return datetime.strptime(month_str, "%Y-%m")
+        except ValueError:
+            raise ValueError(
+                f"Invalid {label} format: '{month_str}'. Expected 'YYYY-MM' (e.g., '2025-01')"
+            )
+    
+    start_dt = parse_month(start_month, "start_month")
+    end_dt = parse_month(end_month, "end_month")
+    
+    # If both are provided, validate and potentially swap
+    if start_dt and end_dt:
+        # Auto-correct reversed order
+        if start_dt > end_dt:
+            logger.warning(
+                f"[time_validation] Reversed time range: {start_month} > {end_month}. "
+                f"Auto-correcting to {end_month} → {start_month}"
+            )
+            start_month, end_month = end_month, start_month
+            start_dt, end_dt = end_dt, start_dt
+        
+        # Validate time span
+        span_months = (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month)
+        if span_months > max_span_years * 12:
+            raise ValueError(
+                f"Time span too large: {span_months} months ({span_months // 12} years). "
+                f"Maximum allowed: {max_span_years} years"
+            )
+    
+    # Validate against future dates
+    for month_str, dt, label in [
+        (start_month, start_dt, "start_month"),
+        (end_month, end_dt, "end_month")
+    ]:
+        if dt and dt > current_date:
+            raise ValueError(
+                f"Cannot query future {label}: '{month_str}'. "
+                f"Current month: {current_month_str}"
+            )
+    
+    return start_month, end_month
 
 
 def _query_trend_points(
@@ -4078,6 +4177,26 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
     start_month / end_month 格式为 'YYYY-MM'（如 '2025-01'）。
     返回按 year_month 升序排列的 JSON 列表，每条包含 year_month、avg_price、unit、specification。
     """
+    # Issue #121: Validate time range before querying
+    try:
+        if start_month or end_month:
+            start_month, end_month = _validate_and_normalize_time_range(
+                start_month, end_month, material_name
+            )
+    except ValueError as e:
+        error_msg = str(e)
+        logger.error(f"[price_trend] time validation failed: {error_msg}")
+        return json.dumps(
+            [{
+                "error": "time_validation_error",
+                "message": error_msg,
+                "material_name": material_name,
+                "start_month": start_month,
+                "end_month": end_month
+            }],
+            ensure_ascii=False
+        )
+    
     conn = None
     try:
         conn = _get_pg_conn()
