@@ -711,6 +711,44 @@ def _build_presentation_payload(query: str, query_type: str, chunks: list[dict])
     }
 
 
+def _validate_presentation_contract(presentation: dict | None) -> dict | None:
+    """
+    Issue #119 fix: Enforce frontend-backend contract invariants.
+
+    Contract rules:
+    - price_comparison: MUST have points.length >= 2, delta, delta_percent
+    - price_trend: MUST have points.length >= 2, delta, delta_percent
+    - price_snapshot: accepts any points.length >= 0
+
+    If presentation violates contract, we downgrade to price_snapshot.
+    """
+    if not presentation:
+        return presentation
+
+    ptype = presentation.get("type")
+    points = presentation.get("points") or []
+
+    # price_comparison requires 2+ points
+    if ptype == "price_comparison" and len(points) < 2:
+        presentation = {
+            **presentation,
+            "type": "price_snapshot",
+            "delta": None,
+            "delta_percent": None,
+        }
+
+    # price_trend requires 2+ points
+    if ptype == "price_trend" and len(points) < 2:
+        presentation = {
+            **presentation,
+            "type": "price_snapshot",
+            "delta": None,
+            "delta_percent": None,
+        }
+
+    return presentation
+
+
 def finalize_presentation_payload(
     query: str,
     query_type: str,
@@ -720,7 +758,7 @@ def finalize_presentation_payload(
     existing_presentation: dict | None = None,
 ) -> dict | None:
     if existing_presentation:
-        return existing_presentation
+        return _validate_presentation_contract(existing_presentation)
     if query_type == "calculation":
         calc_presentation = _build_calculation_steps_presentation(
             query=query,
@@ -729,8 +767,10 @@ def finalize_presentation_payload(
             citations_text=citations_text,
         )
         if calc_presentation:
-            return calc_presentation
-    return _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
+            return _validate_presentation_contract(calc_presentation)
+    return _validate_presentation_contract(
+        _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
+    )
 
 
 def _clean_markdown_noise(text: str) -> str:

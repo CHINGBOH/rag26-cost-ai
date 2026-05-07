@@ -425,7 +425,45 @@ const CalculationStepCard: React.FC<{ step: PresentationCalculationStep }> = ({ 
   );
 };
 
-const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation }) => {
+/**
+ * Issue #119 fix: Sanitize presentation to enforce frontend-backend contract.
+ *
+ * Contract rules:
+ * - price_comparison: requires points.length >= 2
+ * - price_trend: requires points.length >= 2
+ * - price_snapshot: accepts any points.length >= 0
+ *
+ * If backend sends invalid combination (e.g., comparison with 1 point),
+ * we downgrade to snapshot for defensive rendering.
+ */
+function sanitizePresentationPayload(p: PresentationPayload): PresentationPayload {
+  const pointCount = p.points?.length ?? 0;
+
+  // price_comparison requires 2+ points
+  if (p.type === 'price_comparison' && pointCount < 2) {
+    return {
+      ...p,
+      type: 'price_snapshot',
+      delta: undefined,
+      delta_percent: undefined,
+    };
+  }
+
+  // price_trend requires 2+ points
+  if (p.type === 'price_trend' && pointCount < 2) {
+    return {
+      ...p,
+      type: 'price_snapshot',
+      delta: undefined,
+      delta_percent: undefined,
+    };
+  }
+
+  return p;
+}
+
+const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation: rawPresentation }) => {
+  const presentation = sanitizePresentationPayload(rawPresentation);
   const [activeTrendIndex, setActiveTrendIndex] = useState(0);
 
   useEffect(() => {
