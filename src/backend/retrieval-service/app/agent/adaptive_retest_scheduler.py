@@ -47,10 +47,14 @@ BACKOFF_SCHEDULE = [
 class RetestPriority(IntEnum):
     """重测优先级（数字越大优先级越高）"""
     TIMER = 5             # 定时触发（最低）
-    FOLLOWUP = 6          # 知识覆盖不足建议
+    PATCH = 6             # Gap Retest / 修复验证
     REPEATED_QUESTION = 7 # 重复失败问题
-    FEEDBACK = 8          # 用户反馈触发
+    USER_FEEDBACK = 8     # 用户反馈触发
     MANUAL = 10           # 手动触发（最高）
+    
+    # Backward compatibility
+    FOLLOWUP = 6          # Alias for PATCH
+    FEEDBACK = 8          # Alias for USER_FEEDBACK
 
 
 class RetestStatus:

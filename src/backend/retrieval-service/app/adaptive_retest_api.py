@@ -136,12 +136,12 @@ async def request_retest(req: RetestRequestInput):
     if req.priority is None:
         priority_map = {
             "manual": RetestPriority.MANUAL,
-            "feedback": RetestPriority.FEEDBACK,
+            "feedback": RetestPriority.USER_FEEDBACK,
             "repeated": RetestPriority.REPEATED_QUESTION,
-            "followup": RetestPriority.FOLLOWUP,
+            "followup": RetestPriority.PATCH,  # Backward compat, now PATCH
+            "patch": RetestPriority.PATCH,
             "timer": RetestPriority.TIMER,
             "contract": RetestPriority.REPEATED_QUESTION,
-            "patch": RetestPriority.REPEATED_QUESTION,
         }
         priority = priority_map.get(req.source, RetestPriority.TIMER)
     else:

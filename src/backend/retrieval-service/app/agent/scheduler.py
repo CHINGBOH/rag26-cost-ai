@@ -352,20 +352,72 @@ class LearningScheduler:
         retest_limit = max(0, min(int(config.max_live_retests or 0), len(active_gaps)))
         actions: List[Dict[str, Any]] = []
         counts: Dict[str, int] = {}
-        retester = GapRetestService(repository=repository)
-        for gap in active_gaps[:retest_limit]:
-            result = await retester.retest_gap(
-                gap,
-                actor=config.actor,
-                consultation_endpoint=config.consultation_endpoint,
-                timeout_seconds=config.consultation_timeout_seconds,
-                max_iterations=config.max_iterations,
-                observation_window_days=config.observation_window_days,
-                dry_run=config.dry_run,
-            )
-            action = str(result.get("action") or "unknown")
-            counts[action] = counts.get(action, 0) + 1
-            actions.append(result)
+        
+        # Sprint 3: Feature Flag control - Route through AdaptiveRetestScheduler if enabled (#117)
+        from config.feature_flags import is_feature_enabled
+        
+        if is_feature_enabled("LEARNING_USE_ADAPTIVE_SCHEDULER") and self.adaptive_scheduler:
+            # 新路径：通过 AdaptiveRetestScheduler 统一调度
+            from app.agent.adaptive_retest_scheduler import RetestRequest, RetestPriority
+            from datetime import datetime, timezone
+            
+            try:
+                queued_count = 0
+                for gap in active_gaps[:retest_limit]:
+                    gap_key = str(gap.get("gap_key") or "")
+                    query = str(gap.get("query") or gap.get("query_text") or gap.get("description") or f"gap_{gap_key}")
+                    
+                    await self.adaptive_scheduler.request_retest(RetestRequest(
+                        question=query[:500],  # Limit length
+                        source="patch",
+                        priority=RetestPriority.PATCH,
+                        metadata={
+                            "trigger": "gap_retest_listener",
+                            "gap_key": gap_key,
+                            "gap_status": gap.get("status"),
+                            "cause_type": gap.get("cause_type"),
+                            "run_id": run_id,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ))
+                    queued_count += 1
+                
+                logger.info(f"✅ Gap retest listener queued {queued_count} gaps via AdaptiveRetestScheduler")
+                counts["queued_via_adaptive_scheduler"] = queued_count
+                
+            except Exception as e:
+                logger.warning(f"Failed to queue gaps via AdaptiveRetestScheduler, falling back to direct execution: {e}")
+                # Fallback to direct execution
+                retester = GapRetestService(repository=repository)
+                for gap in active_gaps[:retest_limit]:
+                    result = await retester.retest_gap(
+                        gap,
+                        actor=config.actor,
+                        consultation_endpoint=config.consultation_endpoint,
+                        timeout_seconds=config.consultation_timeout_seconds,
+                        max_iterations=config.max_iterations,
+                        observation_window_days=config.observation_window_days,
+                        dry_run=config.dry_run,
+                    )
+                    action = str(result.get("action") or "unknown")
+                    counts[action] = counts.get(action, 0) + 1
+                    actions.append(result)
+        else:
+            # 旧路径：直接执行 gap retest（fallback）
+            retester = GapRetestService(repository=repository)
+            for gap in active_gaps[:retest_limit]:
+                result = await retester.retest_gap(
+                    gap,
+                    actor=config.actor,
+                    consultation_endpoint=config.consultation_endpoint,
+                    timeout_seconds=config.consultation_timeout_seconds,
+                    max_iterations=config.max_iterations,
+                    observation_window_days=config.observation_window_days,
+                    dry_run=config.dry_run,
+                )
+                action = str(result.get("action") or "unknown")
+                counts[action] = counts.get(action, 0) + 1
+                actions.append(result)
         repair_promotions: list[dict[str, Any]] = []
         if config.repair_promotion_enabled and not config.dry_run:
             repair_promotions = GapRepairTaskService(repository=repository).promote_from_retest_actions(
