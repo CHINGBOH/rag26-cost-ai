@@ -140,9 +140,131 @@
   color: #bbb;
 }
 
+.metric-card .value.idle {
+  color: #2ecc71;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+.drift-section {
+  background: #fff;
+  padding: 16px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.drift-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.drift-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drift-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.drift-total {
+  min-width: 40px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.drift-total.healthy {
+  background: #d4edda;
+  color: #155724;
+}
+
+.drift-total.warning {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.drift-empty {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.drift-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.drift-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.drift-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 14px;
+  background: #fafafa;
+}
+
+.drift-card.has-drift {
+  border-color: #f39c12;
+  background: #fffaf0;
+}
+
+.drift-card-title {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.drift-card-count {
+  font-size: 28px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.drift-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  font-size: 11px;
+  color: #777;
+}
+
+.drift-reconcile-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.drift-reconcile-btn:hover:not(:disabled) {
+  background: #1a5fd0;
+}
+
+.drift-reconcile-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 /* 告警部分 */

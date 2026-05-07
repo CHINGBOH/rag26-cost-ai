@@ -13,6 +13,7 @@ import os
 
 from domain.models import Document
 from domain.ports import EmbeddingModelPort, RerankModelPort
+from config.runtime import read_runtime_config
 from config.settings import EmbeddingModelConfig, RerankModelConfig
 
 
@@ -32,7 +33,7 @@ class EmbeddingModelAdapter(EmbeddingModelPort):
         """加载模型"""
         try:
             # 设置模型缓存路径
-            cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "/home/l/models")
+            cache_dir = read_runtime_config().sentence_transformers_home
 
             self._model = SentenceTransformer(
                 self.config.name, device=self.config.device, cache_folder=cache_dir
@@ -115,7 +116,7 @@ class RerankModelAdapter(RerankModelPort):
     def _load_model(self) -> None:
         """加载模型"""
         try:
-            cache_dir = os.environ.get("HF_HOME", "/home/l/models")
+            cache_dir = read_runtime_config().hf_home
 
             self._tokenizer = AutoTokenizer.from_pretrained(self.config.name, cache_dir=cache_dir)
             self._model = AutoModelForSequenceClassification.from_pretrained(

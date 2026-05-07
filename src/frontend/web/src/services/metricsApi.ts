@@ -2,7 +2,9 @@
  * Metrics API — ops dashboard endpoints
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+import { getApiBaseUrl } from '../config/runtime';
+
+const API_BASE = getApiBaseUrl();
 
 export interface ServiceHealth {
   status: 'healthy' | 'degraded' | 'unhealthy' | 'not_running';
@@ -159,22 +161,41 @@ export async function getOpsMetrics(windowSec = 60): Promise<OpsMetricsResponse 
 // ── Learning ─────────────────────────────────────────────────────────────────
 
 export interface LearningRun {
+  kind?: 'interaction' | 'learning_loop' | string;
+  run_id?: string;
+  session_id?: string;
   ts: number | string;
-  query: string;
-  query_type: string;
-  answer: string;
-  iterations: number;
-  chunks_count: number;
-  tools_used: string[];
-  evaluation: {
+  query?: string;
+  query_type?: string;
+  answer?: string;
+  iterations?: number;
+  chunks_count?: number;
+  tools_used?: string[];
+  evaluation?: {
     confidence: number;
     information_gain: number;
     completeness: number;
     consistency: number;
   };
   quality: 'good' | 'weak' | 'failure' | string;
-  refused: boolean;
-  runtime: { provider?: string; model?: string };
+  refused?: boolean;
+  runtime?: { provider?: string; model?: string };
+  channel?: string;
+  status?: string;
+  outcome_family?: string;
+  outcome_code?: string;
+  learning_eligible?: boolean;
+  early_exit?: boolean;
+  request_id?: string;
+  trace_id?: string;
+  latency_ms?: number;
+  run_type?: string;
+  event_type?: string;
+  signal_summary?: Record<string, number>;
+  problems_count?: number;
+  severity_score?: number;
+  reason?: string;
+  error?: string;
 }
 
 export interface LearningSummary {
@@ -188,6 +209,8 @@ export interface LearningSummary {
 }
 
 export interface LearningGap {
+  gap_key?: string;
+  problem_id?: string | null;
   query: string;
   ts: number | string;
   quality: string;
@@ -196,6 +219,166 @@ export interface LearningGap {
   chunks_count: number;
   confidence: number;
   answer_preview: string;
+  description?: string;
+  source?: string;
+  affected_route?: string | null;
+  resolution_plan?: string | null;
+  resolved_at?: number | string | null;
+  verified_at?: number | string | null;
+  observation_until?: number | string | null;
+  last_reopened_at?: number | string | null;
+  scope_type?: 'user' | 'agent' | 'project' | 'global' | string;
+  scope_id?: string | null;
+  cluster_id?: string | null;
+  cause_type?: string | null;
+  priority?: number;
+  owner?: string | null;
+  reopen_count?: number;
+  linked_event_id?: number | null;
+  first_seen_at?: number | string | null;
+  last_seen_at?: number | string | null;
+  frequency?: number;
+  sample_queries?: string[];
+  current_outcome_code?: string | null;
+  current_decision?: string | null;
+}
+
+export interface LearningGapPresentation {
+  quality: string;
+  refused: boolean;
+  chunks_count: number;
+  confidence: number;
+  badge: string;
+  reason: string;
+}
+
+export interface LearningGapEvidence {
+  id: number;
+  gap_key: string;
+  evidence_type: string;
+  source_type?: string | null;
+  actor: string;
+  query: string;
+  answer_preview?: string | null;
+  quality?: string | null;
+  outcome_code?: string | null;
+  http_status?: number | null;
+  chunks_count?: number | null;
+  confidence?: number | null;
+  refused?: boolean | null;
+  generic_answer?: boolean | null;
+  latency_ms?: number | null;
+  run_id?: string | null;
+  session_id?: string | null;
+  recorded_at: number | string;
+}
+
+export interface LearningGapRepairTask {
+  id: number;
+  gap_key: string;
+  task_type: string;
+  status: string;
+  actor: string;
+  reason: string;
+  latest_evidence_ids: number[];
+  issue_number?: number | null;
+  issue_url?: string | null;
+  created_at: number | string;
+  updated_at: number | string;
+  resolved_at?: number | string | null;
+}
+
+export interface LearningGapWorkbenchItem {
+  gap: LearningGap;
+  bucket: 'active' | 'observing' | 'blocked' | 'resolved';
+  allowed_actions: string[];
+  latest_evidence?: LearningGapEvidence | null;
+  repair_task?: LearningGapRepairTask | null;
+  presentation?: LearningGapPresentation;
+}
+
+export interface LearningGapWorkbench {
+  generated_at: string;
+  counts: {
+    total: number;
+    active: number;
+    observing: number;
+    blocked: number;
+    resolved: number;
+    by_status: Record<string, number>;
+  };
+  buckets: Record<'active' | 'observing' | 'blocked' | 'resolved', LearningGapWorkbenchItem[]>;
+  last_retest_run?: LearningRun | null;
+}
+
+export interface LearningDashboardAlert {
+  severity: 'warning' | 'critical';
+  message: string;
+  created_at: number;
+  acknowledged: boolean;
+}
+
+export interface LearningDashboardTrend {
+  date: string;
+  rate: number;
+  problems: number;
+  fixed: number;
+}
+
+export interface LearningDashboardEvent {
+  timestamp: number | null;
+  route: string;
+  description: string;
+  status: 'pending_review' | 'approved' | 'verified' | 'applied' | 'reverted' | 'rejected' | 'pending';
+}
+
+export interface ProjectionDriftProjection {
+  drift_count: number;
+  ledger_count?: number;
+  projection_count?: number;
+  missing_in_projection?: string[];
+  stale_in_projection?: string[];
+  mismatches?: Array<{ run_id: string; fields: string[] }>;
+}
+
+export interface LearningProjectionDriftSummary {
+  run_id?: string | null;
+  total_drift_count: number;
+  drifted_projections: string[];
+  projections: Record<string, ProjectionDriftProjection>;
+}
+
+export interface LearningProjectionReconcileSummary {
+  run_id?: string | null;
+  rebuilt_total: number;
+  remaining_drift_count: number;
+  projections: Record<string, { rebuilt: number; after?: { drift_count?: number } }>;
+}
+
+export interface LearningProjectionReconcileAuditSummary {
+  run_id?: string | null;
+  scope?: string | null;
+  rebuilt_total: number;
+  remaining_drift_count: number;
+  occurred_at?: number | string;
+}
+
+export interface LearningDashboard {
+  health: {
+    status: 'good' | 'warning' | 'critical';
+    score: number;
+    last_check: number;
+  };
+  key_metrics: {
+    last_run: number | null;
+    next_run: number | null;
+    running: boolean;
+    pending_approvals: number;
+  };
+  improvement_trend: LearningDashboardTrend[];
+  alerts: LearningDashboardAlert[];
+  recent_events: LearningDashboardEvent[];
+  projection_drift?: LearningProjectionDriftSummary;
 }
 
 export async function getLearningSummary(): Promise<LearningSummary | null> {
@@ -208,9 +391,51 @@ export async function getLearningSummary(): Promise<LearningSummary | null> {
   }
 }
 
-export async function getLearningRuns(limit = 50, quality?: string): Promise<LearningRun[]> {
+export async function getLearningDashboard(): Promise<LearningDashboard | null> {
   try {
-    const q = new URLSearchParams({ limit: String(limit) });
+    const res = await fetch(`${API_BASE}/api/v1/learning/dashboard`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLearningProjectionDrift(
+  runId?: string,
+): Promise<LearningProjectionDriftSummary | null> {
+  try {
+    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+    const res = await fetch(`${API_BASE}/api/v1/learning/projections/drift${qs}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function reconcileLearningProjections(
+  runId?: string,
+): Promise<LearningProjectionReconcileSummary | null> {
+  try {
+    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+    const res = await fetch(`${API_BASE}/api/v1/learning/projections/reconcile${qs}`, {
+      method: 'POST',
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function getLearningRuns(
+  limit = 50,
+  quality?: string,
+  kind: 'interaction' | 'learning_loop' | 'all' = 'interaction',
+): Promise<LearningRun[]> {
+  try {
+    const q = new URLSearchParams({ limit: String(limit), kind });
     if (quality) q.set('quality', quality);
     const res = await fetch(`${API_BASE}/api/v1/learning/runs?${q}`);
     if (!res.ok) return [];
@@ -221,14 +446,36 @@ export async function getLearningRuns(limit = 50, quality?: string): Promise<Lea
   }
 }
 
-export async function getLearningGaps(limit = 30): Promise<LearningGap[]> {
+export async function getLearningGaps(
+  limit = 30,
+  options: { activeOnly?: boolean } = {},
+): Promise<LearningGap[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/learning/gaps?limit=${limit}`);
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (options.activeOnly) q.set('active_only', 'true');
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps?${q}`);
     if (!res.ok) return [];
     const data = await res.json();
     return data.gaps || [];
   } catch {
     return [];
+  }
+}
+
+export async function getLearningGapWorkbench(
+  limit = 200,
+  includeResolved = false,
+): Promise<LearningGapWorkbench | null> {
+  try {
+    const q = new URLSearchParams({
+      limit: String(limit),
+      include_resolved: String(includeResolved),
+    });
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps/workbench?${q}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
   }
 }
 
@@ -471,6 +718,8 @@ export interface LearningEngineStatus {
     weak_or_failed_runs: number;
     pending_negative_feedback_with_text: number;
   };
+  projection_drift?: LearningProjectionDriftSummary | null;
+  last_projection_reconcile?: LearningProjectionReconcileAuditSummary | null;
   next_actions: string[];
 }
 
@@ -616,10 +865,13 @@ export interface RepairStrategy {
 export interface ImprovementEvent {
   event_id: number;
   timestamp: number;
+  created_at?: number | null;
+  applied_at?: number | null;
+  verified_at?: number | null;
   problem_id: string;
   route: string;
   action: string;
-  status: 'applied' | 'verified' | 'reverted' | 'failed';
+  status: 'pending_review' | 'approved' | 'applied' | 'verified' | 'reverted' | 'failed' | 'rejected';
   before_rate: number;
   after_rate: number;
   delta: number;
@@ -627,6 +879,44 @@ export interface ImprovementEvent {
   execution_time: number;
   reverted_at?: number;
   revert_reason?: string;
+  source?: {
+    kind?: 'auto' | 'human' | 'external' | string;
+    actor?: string | null;
+    source_run_id?: string | null;
+  };
+  strategy?: {
+    id?: string | null;
+    type?: string | null;
+    decision?: 'auto_apply' | 'pending_review' | 'manual_only' | string | null;
+    risk_level?: 'low' | 'medium' | 'high' | string | null;
+    estimated_impact?: string | null;
+    root_cause_type?: string | null;
+    reversible_by?: string | null;
+  };
+  review?: {
+    status?: 'pending_review' | 'approved' | 'rejected' | string | null;
+    reviewer?: string | null;
+    note?: string | null;
+    updated_at?: number | null;
+  };
+  verification?: {
+    status?: 'pending' | 'applied' | 'verified' | 'failed' | string | null;
+    success?: boolean | null;
+    improved?: boolean | null;
+    error?: string | null;
+    failed_at?: number | null;
+  };
+  gap?: {
+    gap_key?: string | null;
+    status?: 'open' | 'in_progress' | 'observing' | 'resolved' | 'blocked' | string | null;
+    owner?: string | null;
+    scope_type?: 'user' | 'agent' | 'project' | 'global' | string | null;
+    cluster_id?: string | null;
+    verified_at?: number | null;
+    observation_until?: number | null;
+    last_reopened_at?: number | null;
+    reopen_count?: number;
+  } | null;
 }
 
 export async function getDetectedProblems(

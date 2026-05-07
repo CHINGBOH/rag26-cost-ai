@@ -11,11 +11,16 @@ import time
 import argparse
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parents[3]
+legacy_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(legacy_root))
 sys.path.insert(0, str(project_root))
 
-API_URL = os.environ.get("RAG_API", "http://localhost:8080")
-OCR_URL = os.environ.get("OCR_API", "http://localhost:8001")
+from config.runtime import read_runtime_config, tool_pg_config
+
+runtime_config = read_runtime_config()
+API_URL = runtime_config.rag_api_url
+OCR_URL = runtime_config.ocr_api_url
 
 
 def _curl(method: str, url: str, data=None, headers=None, files=None, timeout=30):
@@ -114,7 +119,7 @@ def cmd_upload(args):
             continue
 
         # Step 3: save JSON
-        out_dir = project_root / "data" / "ocr_outputs"
+        out_dir = Path(runtime_config.ocr_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"{pdf.stem}_ocr.json"
         with open(out_file, "w", encoding="utf-8") as f:
@@ -193,13 +198,7 @@ def cmd_check(args):
     # 1. PG 连接
     pg_ok = False
     try:
-        conn = psycopg2.connect(
-            host=os.environ.get("PG_HOST", "localhost"),
-            port=int(os.environ.get("PG_PORT", "5432")),
-            database=os.environ.get("PG_DB", "rag_db"),
-            user=os.environ.get("PG_USER", "rag_user"),
-            password=os.environ.get("PG_PASSWORD", "rag_password"),
-        )
+        conn = psycopg2.connect(**tool_pg_config())
         pg_ok = True
         print("✅ PostgreSQL: connected")
     except Exception as e:

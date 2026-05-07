@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { DashboardEvent, SystemVitals } from '@rag/shared';
+import { frontendRuntimeConfig, resolveWebSocketUrl } from '../config/runtime';
 
 type MessageHandler = (event: DashboardEvent) => void;
 
@@ -41,7 +42,7 @@ export function useWebSocket(room: string = 'dashboard') {
   // 连接 WebSocket
   useEffect(() => {
     const connect = () => {
-      const wsUrl = import.meta.env.VITE_WS_URL || `ws://${window.location.host}/ws?room=${room}`;
+      const wsUrl = resolveWebSocketUrl(room);
       const socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
@@ -70,7 +71,7 @@ export function useWebSocket(room: string = 'dashboard') {
         setIsConnected(false);
         
         // 自动重连
-        reconnectTimeout.current = setTimeout(connect, 3000);
+        reconnectTimeout.current = setTimeout(connect, frontendRuntimeConfig.wsReconnectDelayMs);
       };
 
       socket.onerror = (err) => {

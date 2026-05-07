@@ -26,7 +26,6 @@
 | 文件 | 路径 | 描述 |
 |------|------|------|
 | docker-compose.langfuse.yml | infrastructure/ | LangFuse + Postgres 容器配置 |
-| langfuse.ts | src/backend/server/src/modules/rag/utils/ | TypeScript LangFuse SDK 集成 |
 | ragas_eval.py | src/backend/python-legacy/ | Ragas 语义质量评估脚本 |
 | promptfooconfig.yaml | infrastructure/ | Promptfoo 配置文件 |
 | rag-architecture-inspection-guide.md | docs/ | 工具使用指南 |
@@ -35,7 +34,7 @@
 
 | 文件 | 修改内容 |
 |------|----------|
-| package.json | 移除不存在的 @llamaindex/* 包，添加 langfuse 依赖 |
+| package.json | 移除不存在的 @llamaindex/* 包 |
 
 ---
 
@@ -78,7 +77,7 @@
 ## 5. TypeScript 编译检测
 
 ### 5.1 检测结果
-tsc 编译发现 **20 个错误**，主要在测试文件和 langfuse.ts（缺少 langfuse 模块）
+tsc 编译发现 **20 个错误**，主要在测试文件和当时未接入的观测集成代码
 
 ### 5.2 错误分布
 
@@ -87,7 +86,6 @@ tsc 编译发现 **20 个错误**，主要在测试文件和 langfuse.ts（缺�
 | src/__tests__/integration.test.ts | 2 | Promise 未 await |
 | src/modules/agent/src/react-loop.ts | 1 | - |
 | src/modules/auth/__tests__/auth.test.ts | 16 | Promise 未 await |
-| src/modules/rag/utils/langfuse.ts | 1 | langfuse 模块未安装 |
 
 ---
 

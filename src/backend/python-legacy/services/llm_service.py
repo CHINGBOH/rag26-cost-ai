@@ -13,13 +13,9 @@ from datetime import datetime
 import json
 import httpx
 
+from config.runtime import read_runtime_config
+
 # 配置
-LLAMA_CPP_PATH = os.getenv("LLAMA_CPP_PATH", "/usr/local/bin/llama-cli")
-LLAMA_MODEL_PATH = os.getenv("LLAMA_MODEL_PATH", "/models/llama-3-8b-instruct-q4_k_m.gguf")
-
-VLLM_API_URL = os.getenv("VLLM_API_URL", "http://localhost:8000")
-VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "meta-llama/Llama-2-7b-chat-hf")
-
 # 日志配置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,8 +41,9 @@ class LlamaCppService:
     """llama.cpp服务"""
     
     def __init__(self):
-        self.model_path = LLAMA_MODEL_PATH
-        self.llama_cli_path = LLAMA_CPP_PATH
+        runtime_config = read_runtime_config()
+        self.model_path = runtime_config.llama_model_path
+        self.llama_cli_path = runtime_config.llama_cpp_path
         self.is_available = False
         
     async def initialize(self):
@@ -202,8 +199,9 @@ class VLLMService:
     """vLLM服务"""
     
     def __init__(self):
-        self.api_url = VLLM_API_URL
-        self.model_name = VLLM_MODEL_NAME
+        runtime_config = read_runtime_config()
+        self.api_url = runtime_config.vllm_api_url
+        self.model_name = runtime_config.vllm_model_name
         self.client = None
         self.is_available = False
         

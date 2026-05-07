@@ -12,13 +12,17 @@ from collections import defaultdict
 from pathlib import Path
 import psycopg2
 
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
 sys.path.insert(0, str(Path(__file__).parent))
+
+from config.runtime import read_runtime_config, tool_pg_config
 
 
 def get_embed_model():
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("/home/l/rag-dashboard/models/BAAI/bge-m3")
+        model = SentenceTransformer(read_runtime_config().embedding_model_path)
         print(f"✓ Embedding model loaded: {model.get_sentence_embedding_dimension()}d")
         return model
     except Exception as e:
@@ -26,13 +30,7 @@ def get_embed_model():
         return None
 
 
-PG_CONFIG = {
-    "host": os.environ.get("PG_HOST", "localhost"),
-    "port": int(os.environ.get("PG_PORT", "5432")),
-    "database": os.environ.get("PG_DB", "rag_db"),
-    "user": os.environ.get("PG_USER", "rag_user"),
-    "password": os.environ.get("PG_PASSWORD", "rag_password"),
-}
+PG_CONFIG = tool_pg_config()
 
 
 def get_pg_conn():
@@ -375,7 +373,7 @@ def main():
 
     embed_model = get_embed_model()
 
-    ocr_dir = "/home/l/rag-dashboard/data/ocr_outputs"
+    ocr_dir = read_runtime_config().ocr_output_dir
     all_jsons = sorted([f for f in os.listdir(ocr_dir) if f.endswith('.json')])
 
     # 去重策略：优先 merged 文件，跳过 chunk 文件

@@ -4,17 +4,13 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gorilla/websocket"
-)
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
-}
+	runtimeconfig "rag-system/config"
+)
 
 // BroadcastRequest is the expected payload for the POST /broadcast endpoint.
 type BroadcastRequest struct {
@@ -24,12 +20,33 @@ type BroadcastRequest struct {
 
 // Server handles websocket upgrades and HTTP broadcast requests.
 type Server struct {
-	hub *Hub
+	hub      *Hub
+	upgrader websocket.Upgrader
 }
 
 // NewServer creates a new Server.
-func NewServer(hub *Hub) *Server {
-	return &Server{hub: hub}
+func NewServer(hub *Hub, cfg runtimeconfig.WebSocketConfig) *Server {
+	return &Server{
+		hub: hub,
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  cfg.ReadBufferSize,
+			WriteBufferSize: cfg.WriteBufferSize,
+			CheckOrigin: func(r *http.Request) bool {
+				if cfg.AllowAllOrigins {
+					return true
+				}
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true
+				}
+				parsedOrigin, err := url.Parse(origin)
+				if err != nil {
+					return false
+				}
+				return strings.EqualFold(parsedOrigin.Host, r.Host)
+			},
+		},
+	}
 }
 
 // ServeWS handles websocket upgrades at GET /ws?room=<roomId>.
@@ -40,7 +57,7 @@ func (s *Server) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("websocket upgrade failed: %v", err)
 		return
@@ -81,13 +98,14 @@ func (s *Server) ServeBroadcast(w http.ResponseWriter, r *http.Request) {
 
 // Run starts the HTTP server on the given address.
 func (s *Server) Run(addr string) error {
-	http.HandleFunc("/ws", s.ServeWS)
-	http.HandleFunc("/broadcast", s.ServeBroadcast)
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", s.ServeWS)
+	mux.HandleFunc("/broadcast", s.ServeBroadcast)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 	log.Printf("🚀 WebSocket Gateway starting on %s", addr)
-	return http.ListenAndServe(addr, nil)
+	return http.ListenAndServe(addr, mux)
 }

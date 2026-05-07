@@ -13,16 +13,20 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+runtime_config = read_runtime_config()
 
-OCR_OUTPUT_DIR = os.environ.get("OCR_OUTPUT_DIR", "/home/l/rag-dashboard/data/ocr_outputs")
-KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "/home/l/rag-dashboard/data/knowledge_base")
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+KNOWLEDGE_BASE_DIR = runtime_config.knowledge_base_dir
 
 class OCRKnowledgeBaseImporter:
     """OCR数据知识库导入器"""

@@ -85,3 +85,44 @@ def test_vector_search_falls_back_to_pgvector(monkeypatch: pytest.MonkeyPatch) -
     assert len(result) == 1
     assert result[0]["source_db"] == "pgvector"
     assert result[0]["retrieval_path"] == "vector"
+
+
+def test_vector_search_runtime_override_disables_milvus(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params) -> None:
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            return [(9, "doc-9", 6, "PG override vector hit", 0.77)]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr(
+        tools,
+        "AppConfig",
+        lambda: SimpleNamespace(vector_store=SimpleNamespace(type="milvus")),
+    )
+    monkeypatch.setattr(
+        tools,
+        "_milvus_vector_results",
+        lambda query, top_k: (_ for _ in ()).throw(AssertionError("milvus helper should be skipped by override")),
+    )
+    monkeypatch.setattr(tools, "get_runtime_override", lambda key, default, refresh=False: "pgvector" if key == "vector_backend" else default)
+    monkeypatch.setattr(tools, "_get_embedding", lambda query: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(tools, "_get_pg_conn", lambda: FakeConn())
+    monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+
+    result = json.loads(tools.vector_search.func("企业管理费", top_k=2))
+
+    assert len(result) == 1
+    assert result[0]["source_db"] == "pgvector"
+    assert result[0]["metadata"]["vector_backend"] == "pgvector"

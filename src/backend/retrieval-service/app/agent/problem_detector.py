@@ -13,6 +13,8 @@ import uuid
 from collections import defaultdict
 from statistics import mean, median
 
+from app.agent.learning_config import get_learning_config
+
 
 class ProblemCategory(str, Enum):
     """Classification of detected problems."""
@@ -138,13 +140,14 @@ class ProblemDetector:
     Applies rule-based heuristics to identify systemic issues.
     """
 
-    # Configuration thresholds
-    CONTINUOUS_FAILURE_THRESHOLD = 3
-    REPEAT_QUESTION_THRESHOLD = 2
-    NEGATIVE_FEEDBACK_FREQUENCY_THRESHOLD = 0.2  # 20%
-    LATENCY_P95_THRESHOLD_MS = 5000
-
     def __init__(self):
+        config = get_learning_config().problem_detector
+        self.CONTINUOUS_FAILURE_THRESHOLD = config.continuous_failure_threshold
+        self.REPEAT_QUESTION_THRESHOLD = config.repeat_question_threshold
+        self.NEGATIVE_FEEDBACK_FREQUENCY_THRESHOLD = (
+            config.negative_feedback_frequency_threshold
+        )
+        self.LATENCY_P95_THRESHOLD_MS = config.latency_p95_threshold_ms
         self.detected_problems: List[ProblemReport] = []
 
     async def detect_problems(

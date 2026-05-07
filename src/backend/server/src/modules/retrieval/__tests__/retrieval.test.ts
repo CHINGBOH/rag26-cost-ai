@@ -4,6 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { Document } from '@langchain/core/documents'
+import { runtimeConfig } from '../../../config/runtime'
 import { 
   decompose,
   vectorSearch,
@@ -41,7 +42,7 @@ describe('Retrieval 模块', () => {
 
       expect(options.topK).toBe(20)
       expect(options.enableRerank).toBe(false)
-      expect(options.vectorWeight).toBe(0.6) // 默认值
+      expect(options.vectorWeight).toBe(runtimeConfig.retrieval.vectorWeight)
     })
 
     it('应该验证 FusionWeights', () => {
@@ -64,12 +65,12 @@ describe('Retrieval 模块', () => {
       expect(subQueries[1].targetDB).toBe('vector') // 第二个也是vector
     })
 
-    it('应该为案例类查询添加图谱查询', async () => {
+    it('应该为案例类查询添加额外的向量查询', async () => {
       const decomposeFn = decompose()
       const subQueries = await decomposeFn('如何使用RAG的案例')
 
       expect(subQueries.length).toBeGreaterThanOrEqual(3)
-      expect(subQueries.some(q => q.targetDB === 'graph')).toBe(true)
+      expect(subQueries.every(q => q.targetDB === 'vector')).toBe(true)
     })
   })
 
@@ -196,7 +197,7 @@ describe('Retrieval 模块', () => {
 
       expect(health.healthy).toBeDefined()
       expect(health.services).toHaveProperty('qdrant')
-      expect(health.services).toHaveProperty('neo4j')
+      expect(health.services).not.toHaveProperty('neo4j')
     })
   })
 })

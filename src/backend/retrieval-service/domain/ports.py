@@ -28,10 +28,12 @@ class VectorStorePort(Protocol):
         Returns:
             (文档, 相似度分数) 列表
         """
+        _ = (query_vector, top_k, score_threshold)
         ...
 
     async def upsert(self, documents: List[DocumentChunk], vectors: np.ndarray) -> bool:
         """插入或更新文档"""
+        _ = (documents, vectors)
         ...
 
     async def delete(self, doc_ids: List[str]) -> bool:
@@ -48,10 +50,12 @@ class KeywordStorePort(Protocol):
 
     async def search(self, query: str, top_k: int = 20, min_score: float = 1.0) -> List[Document]:
         """关键词搜索"""
+        _ = (query, top_k, min_score)
         ...
 
     async def index(self, documents: List[DocumentChunk]) -> bool:
         """索引文档"""
+        _ = documents
         ...
 
     async def delete(self, doc_ids: List[str]) -> bool:
@@ -70,6 +74,7 @@ class GraphStorePort(Protocol):
         self, entity_names: List[str], depth: int = 2, top_k: int = 10
     ) -> List[Document]:
         """实体扩展检索"""
+        _ = (entity_names, depth, top_k)
         ...
 
     async def build_from_document(self, doc_id: str, chunks: List[DocumentChunk]) -> bool:
@@ -89,10 +94,12 @@ class EmbeddingModelPort(Protocol):
 
     def encode(self, texts: str | List[str]) -> np.ndarray:
         """编码文本为向量"""
+        _ = texts
         ...
 
     def encode_queries(self, queries: str | List[str]) -> np.ndarray:
         """编码查询（添加指令前缀）"""
+        _ = queries
         ...
 
     @property
@@ -123,6 +130,7 @@ class RetrieverPort(Protocol):
         self, query: str, top_k: int = 10, enable_rerank: bool = True
     ) -> List[Document]:
         """执行检索"""
+        _ = (query, top_k, enable_rerank)
         ...
 
 
@@ -133,6 +141,7 @@ class IndexerPort(Protocol):
         self, doc_id: str, chunks: List[DocumentChunk], build_graph: bool = True
     ) -> bool:
         """索引文档"""
+        _ = (doc_id, chunks, build_graph)
         ...
 
 
@@ -144,14 +153,16 @@ class EventPublisherPort(Protocol):
 
     async def publish(self, event: Any) -> None:
         """发布事件"""
+        _ = event
         ...
 
 
 class EventSubscriberPort(Protocol):
     """事件订阅接口"""
 
-    async def subscribe(self, event_type: type, handler: Any) -> None:
+    async def subscribe(self, event_type: type, _handler: Any) -> None:
         """订阅事件"""
+        _ = (event_type, _handler)
         ...
 
 
@@ -163,12 +174,15 @@ class CachePort(Protocol):
 
     async def get(self, key: str) -> Optional[Any]:
         """获取缓存"""
+        _ = key
         ...
 
     async def set(self, key: str, value: Any, ttl: int = 3600) -> bool:
         """设置缓存"""
+        _ = (key, value, ttl)
         ...
 
     async def delete(self, key: str) -> bool:
         """删除缓存"""
+        _ = key
         ...

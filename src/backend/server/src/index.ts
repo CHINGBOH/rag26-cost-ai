@@ -3,34 +3,12 @@
  * 入口文件 - 安全强化版
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-
-// .env 必须在 telemetry 之前 load，因为 OTEL 启动读 OTEL_EXPORTER_OTLP_ENDPOINT
-
-// 手动加载根目录 .env 文件
-function loadEnv() {
-  const envPath = path.resolve(process.cwd(), '..', '..', '..', '.env');
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eqIdx = trimmed.indexOf('=');
-      if (eqIdx === -1) continue;
-      const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim();
-      if (key && process.env[key] === undefined) {
-        process.env[key] = val;
-      }
-    }
-  }
-}
-loadEnv();
+import './config/bootstrap-env';
 
 // 启动 OpenTelemetry SDK（opt-in via OTEL_EXPORTER_OTLP_ENDPOINT）
 import './telemetry';
 
+import * as fs from 'fs';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 // import websocket from '@fastify/websocket';
@@ -38,6 +16,7 @@ import rateLimit from '@fastify/rate-limit';
 import { EventEmitter } from 'events';
 import { pipeline } from 'stream';
 import { promisify } from 'util';
+import * as path from 'path';
 import { RecursionController } from './core/RecursionController';
 import { PostgresPersistenceService } from './services/PostgresPersistenceService';
 import { WebSocketManager } from './services/WebSocketManager';
@@ -52,6 +31,7 @@ import { logger } from './services/LoggerService';
 import { successResponse, errorResponse, ErrorCodes } from './types/response';
 import { validate, CreateSessionSchema, RecordActivitySchema, LoginSchema, PaginationSchema } from './types/validation';
 import { AgentFactory, createFourDatabaseTools, AgentOptions, StructuredOutput } from './modules/agent/src';
+import { resolveLlmApiKey, runtimeConfig } from './config/runtime';
 
 // 全局服务实例（用于进程信号处理）
 let cacheService: CacheService | null = null;
@@ -62,17 +42,18 @@ const pump = promisify(pipeline);
 
 async function main() {
   logger.info('🚀 启动 RAG Dashboard Server...');
+  const showDetailedErrors = runtimeConfig.app.environment === 'development';
 
   const app = Fastify({
     logger: false, // 使用自定义logger
-    requestTimeout: 30000, // 30秒请求超时
-    connectionTimeout: 30000 // 30秒连接超时
+    requestTimeout: runtimeConfig.server.requestTimeoutMs,
+    connectionTimeout: runtimeConfig.server.connectionTimeoutMs
   });
 
   // 注册速率限制
   await app.register(rateLimit, {
-    max: 100, // 每分钟最多100请求
-    timeWindow: '1 minute',
+    max: runtimeConfig.rateLimit.max,
+    timeWindow: runtimeConfig.rateLimit.timeWindow,
     errorResponseBuilder: (req, context) => {
       return errorResponse(
         ErrorCodes.RATE_LIMITED,
@@ -84,7 +65,7 @@ async function main() {
 
   // 注册插件
   await app.register(cors, {
-    origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'],
+    origin: runtimeConfig.server.corsOrigins,
     credentials: true
   });
   // await app.register(websocket);
@@ -100,14 +81,13 @@ async function main() {
     });
 
     // 隐藏内部错误细节
-    const isDev = process.env.NODE_ENV === 'development';
-    const message = isDev ? error.message : '内部服务器错误';
+    const message = showDetailedErrors ? error.message : '内部服务器错误';
 
     reply.status(error.statusCode || 500).send(
       errorResponse(
         ErrorCodes.INTERNAL_ERROR,
         message,
-        isDev ? { stack: error.stack } : undefined,
+        showDetailedErrors ? { stack: error.stack } : undefined,
         request.id as string
       )
     );
@@ -129,20 +109,34 @@ async function main() {
   const eventEmitter = new EventEmitter();
 
   // 初始化缓存服务
-  cacheService = new CacheService();
+  cacheService = new CacheService({
+    redisUrl: runtimeConfig.services.redisUrl,
+    defaultTTL: runtimeConfig.cache.defaultTtlSeconds,
+    keyPrefix: runtimeConfig.cache.keyPrefix,
+  });
   logger.info('✅ 缓存服务已初始化');
 
   // 初始化任务队列服务
   try {
-    taskQueueService = new TaskQueueService(eventEmitter);
+    taskQueueService = new TaskQueueService(eventEmitter, {
+      redisUrl: runtimeConfig.services.redisUrl,
+      concurrency: runtimeConfig.taskQueue.concurrency,
+      evaluationConcurrency: runtimeConfig.taskQueue.evaluationConcurrency,
+      ocrConcurrency: runtimeConfig.taskQueue.ocrConcurrency,
+    });
     logger.info('✅ 任务队列服务已初始化');
   } catch (error) {
     logger.warn('⚠️ 任务队列初始化失败，将使用同步处理: ' + (error instanceof Error ? error.message : String(error)));
   }
 
   // 初始化认证服务
-  const authService = new AuthService();
-  logger.info('✅ 认证服务已初始化 (默认账号: admin/admin123)');
+  const authService = new AuthService({
+    secretKey: runtimeConfig.auth.serviceSecret,
+    tokenExpiry: runtimeConfig.auth.tokenExpirySeconds,
+    defaultAdminUsername: runtimeConfig.auth.defaultAdminUsername,
+    defaultAdminPassword: runtimeConfig.auth.defaultAdminPassword,
+  });
+  logger.info('✅ 认证服务已初始化');
 
   // 初始化监控服务
   const metricsService = new MetricsService(eventEmitter);
@@ -158,7 +152,18 @@ async function main() {
   }
 
   // 创建递归控制器（带持久化）
-  const controller = new RecursionController(eventEmitter, pgInitialized ? pgPersistence : undefined);
+  const controller = new RecursionController(
+    eventEmitter,
+    {
+      gatewayUrl: runtimeConfig.services.wsBroadcastUrl,
+      ragUrl: runtimeConfig.services.retrievalApiUrl,
+      cleanupIntervalMs: runtimeConfig.recursion.cleanupIntervalMs,
+      completedSessionMaxAgeMs: runtimeConfig.recursion.completedSessionMaxAgeMs,
+      hardSessionMaxAgeMs: runtimeConfig.recursion.hardSessionMaxAgeMs,
+      requestTimeoutMs: runtimeConfig.recursion.requestTimeoutMs,
+    },
+    pgInitialized ? pgPersistence : undefined,
+  );
   const restoredCount = await controller.restoreAllActiveSessions();
   if (restoredCount > 0) {
     logger.info(`✅ 已从 PostgreSQL 恢复 ${restoredCount} 个活跃会话`);
@@ -166,7 +171,9 @@ async function main() {
   logger.info('✅ 递归控制器已初始化');
 
   // 创建 WebSocket 网关广播客户端
-  const wsManager = new WebSocketManager();
+  const wsManager = new WebSocketManager({
+    gatewayUrl: runtimeConfig.services.wsBroadcastUrl,
+  });
 
   // 创建心跳服务（真实时间感知）
   const heartbeatService = new HeartbeatService(
@@ -234,7 +241,13 @@ async function main() {
   }
 
   // 初始化数据管道服务
-  pipelineService = new PipelineService(eventEmitter);
+  pipelineService = new PipelineService(eventEmitter, {
+    uploadDir: runtimeConfig.pipeline.uploadDir,
+    pythonApiUrl: runtimeConfig.services.pythonApiUrl,
+    ocrApiUrl: runtimeConfig.services.ocrApiUrl,
+    maxConcurrent: runtimeConfig.pipeline.maxConcurrent,
+    processingLoopIntervalMs: runtimeConfig.pipeline.processingLoopIntervalMs,
+  });
   logger.info('✅ 数据管道服务已初始化');
 
   // 监听递归事件并广播
@@ -265,7 +278,7 @@ async function main() {
     };
 
     wsManager.broadcastVitals(vitals);
-  }, 3000);
+  }, runtimeConfig.heartbeat.broadcastIntervalMs);
 
   // 认证钩子
   app.addHook('preHandler', async (request, reply) => {
@@ -312,12 +325,12 @@ async function main() {
     }
 
     try {
-      const apiKey = body.apiKey || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || process.env.LLM_API_KEY;
-      const baseUrl = body.baseUrl || process.env.LLM_BASE_URL || 'https://api.deepseek.com';
-      const model = body.model || process.env.LLM_MODEL || 'deepseek-chat';
+      const apiKey = resolveLlmApiKey(runtimeConfig.llm, body.apiKey);
+      const baseUrl = body.baseUrl || runtimeConfig.llm.baseUrl;
+      const model = body.model || runtimeConfig.llm.model;
 
       if (!apiKey) {
-        throw new Error('LLM API Key 未配置。请设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY 环境变量');
+        throw new Error('LLM API Key 未配置。请设置 DEEPSEEK_API_KEY、OPENAI_API_KEY 或 LLM_API_KEY。');
       }
 
       reply.raw.setHeader('Content-Type', 'text/event-stream');
@@ -473,8 +486,8 @@ async function main() {
     return successResponse({
       sessionId,
       silenceDuration,
-      threshold: 30000,
-      remaining: Math.max(0, 30000 - silenceDuration)
+      threshold: runtimeConfig.heartbeat.silenceThresholdMs,
+      remaining: Math.max(0, runtimeConfig.heartbeat.silenceThresholdMs - silenceDuration)
     });
   });
 
@@ -507,12 +520,12 @@ async function main() {
     } catch (error) {
       reply.status(500);
       logger.error('OCR任务提交失败', { error: error instanceof Error ? error.message : String(error) });
-      return errorResponse(
-        ErrorCodes.INTERNAL_ERROR,
-        'OCR任务提交失败',
-        process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : String(error)) : undefined
-      );
-    }
+        return errorResponse(
+          ErrorCodes.INTERNAL_ERROR,
+          'OCR任务提交失败',
+          showDetailedErrors ? (error instanceof Error ? error.message : String(error)) : undefined
+        );
+      }
   });
 
   // 获取 OCR 任务状态
@@ -696,12 +709,12 @@ async function main() {
       return errorResponse(ErrorCodes.VALIDATION_ERROR, 'messages是必需的且必须是数组');
     }
 
-    const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
-    const baseURL = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
+    const apiKey = resolveLlmApiKey(runtimeConfig.llm);
+    const baseURL = runtimeConfig.llm.baseUrl;
 
     if (!apiKey) {
       // 降级：返回明确的配置提示，让前端 UI 正常显示
-      const notice = '⚠️ LLM API 未配置。请在服务端设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY 环境变量后重启服务。';
+      const notice = '⚠️ LLM API 未配置。请在服务端设置 DEEPSEEK_API_KEY、OPENAI_API_KEY 或 LLM_API_KEY 后重启服务。';
       console.warn('[LLM] API Key 未配置，返回降级提示');
       if (body.stream) {
         reply.header('Content-Type', 'text/event-stream');
@@ -710,14 +723,14 @@ async function main() {
           id: fallbackId,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
-          model: body.model || 'deepseek-chat',
+          model: body.model || runtimeConfig.llm.model,
           choices: [{ index: 0, delta: { role: 'assistant', content: notice }, finish_reason: null }]
         };
         const doneChunk = {
           id: fallbackId,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
-          model: body.model || 'deepseek-chat',
+          model: body.model || runtimeConfig.llm.model,
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
         };
         reply.send(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(doneChunk)}\n\ndata: [DONE]\n\n`);
@@ -727,7 +740,7 @@ async function main() {
         id: 'llm-not-configured',
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: body.model || 'deepseek-chat',
+        model: body.model || runtimeConfig.llm.model,
         choices: [
           {
             index: 0,
@@ -747,10 +760,10 @@ async function main() {
           'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: body.model || 'deepseek-chat',
+          model: body.model || runtimeConfig.llm.model,
           messages: body.messages,
-          temperature: body.temperature ?? 0.7,
-          max_tokens: body.max_tokens ?? 2000,
+          temperature: body.temperature ?? runtimeConfig.llm.temperature,
+          max_tokens: body.max_tokens ?? runtimeConfig.llm.maxTokens,
           stream: body.stream ?? false
         })
       });
@@ -850,14 +863,14 @@ async function main() {
   });
 
   // 启动服务器
-  const port = parseInt(process.env.PORT || '3001');
-  await app.listen({ port, host: '0.0.0.0' });
+  const { host, port } = runtimeConfig.server;
+  await app.listen({ port, host });
 
   logger.info(`
 ╔══════════════════════════════════════════════════════════╗
 ║     🚀 RAG Dashboard Server v0.2.0                       ║
 ║                                                          ║
-║     📡 WebSocket Gateway: ws://localhost:8081/ws          ║
+║     📡 WebSocket Gateway: ${runtimeConfig.server.wsPublicUrl} ║
 ║     🌐 HTTP API:   http://localhost:${port}               ║
 ║     📊 Metrics:    http://localhost:${port}/metrics       ║
 ║                                                          ║
@@ -872,7 +885,7 @@ async function main() {
 ║     • Prometheus监控                                     ║
 ║     • 结构化日志                                         ║
 ║                                                          ║
-║     📝 默认账号: admin / admin123                        ║
+║     📝 默认管理员密码需显式配置（DEFAULT_ADMIN_PASSWORD）   ║
 ╚══════════════════════════════════════════════════════════╝
   `);
 
@@ -890,7 +903,7 @@ async function main() {
       totalSessions: sessions.length,
       onlineUsers: authService.getOnlineCount()
     });
-  }, 60000); // 每分钟记录一次
+  }, runtimeConfig.heartbeat.statusLogIntervalMs); // 每分钟记录一次
 }
 
 function calculateHealthScore(sessions: any[]): number {

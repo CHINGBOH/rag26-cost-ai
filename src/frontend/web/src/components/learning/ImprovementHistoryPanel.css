@@ -173,3 +173,99 @@
 .history-table .delta.neutral {
   color: #999;
 }
+
+.history-time-cell,
+.history-lifecycle-cell,
+.history-strategy-cell,
+.history-verification-cell,
+.history-gap-cell {
+  vertical-align: top;
+}
+
+.history-subtle {
+  color: #999;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.history-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.history-status-pill.status-pending_review {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.history-status-pill.status-approved,
+.history-status-pill.status-applied {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.history-status-pill.status-verified {
+  background: rgba(34, 197, 94, 0.12);
+  color: #15803d;
+}
+
+.history-status-pill.status-reverted,
+.history-status-pill.status-rejected {
+  background: rgba(107, 114, 128, 0.14);
+  color: #4b5563;
+}
+
+.history-status-pill.status-failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+}
+
+.history-detail-list {
+  display: grid;
+  gap: 6px;
+  line-height: 1.5;
+}
+
+.history-detail-list code,
+.history-action code {
+  background: #f2f4f7;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.history-action {
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.history-note {
+  padding: 8px 10px;
+  background: #f7f7f7;
+  border-radius: 6px;
+  color: #555;
+}
+
+.history-error {
+  padding: 8px 10px;
+  background: rgba(231, 76, 60, 0.08);
+  border-radius: 6px;
+  color: #c0392b;
+  font-weight: 500;
+}
+
+.history-metric-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 6px;
+}

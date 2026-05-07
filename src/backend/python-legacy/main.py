@@ -16,18 +16,22 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, current_dir)
 
 # 使用统一 API
+from config.runtime import read_runtime_config
 from api.unified_api import app
+
+runtime_config = read_runtime_config()
+display_host = "localhost" if runtime_config.api_host == "0.0.0.0" else runtime_config.api_host
 
 if __name__ == "__main__":
     import uvicorn
 
-    print("""
+    print(f"""
 ╔═══════════════════════════════════════════════════════════╗
 ║     RAG Dashboard Backend (Unified API)                   ║
 ║                                                           ║
-║     API:     http://localhost:8000                        ║
-║     Docs:    http://localhost:8000/docs                   ║
-║     Health:  http://localhost:8000/health                 ║
+║     API:     http://{display_host}:{runtime_config.api_port}                        ║
+║     Docs:    http://{display_host}:{runtime_config.api_port}/docs                   ║
+║     Health:  http://{display_host}:{runtime_config.api_port}/health                 ║
 ║                                                           ║
 ║     Features:                                             ║
 ║     • 四库联动 (Qdrant/ES/Neo4j/Redis)                    ║
@@ -37,4 +41,10 @@ if __name__ == "__main__":
 ╚═══════════════════════════════════════════════════════════╝
     """)
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run(
+        "main:app",
+        host=runtime_config.api_host,
+        port=runtime_config.api_port,
+        reload=runtime_config.api_reload,
+        log_level=runtime_config.log_level.lower(),
+    )

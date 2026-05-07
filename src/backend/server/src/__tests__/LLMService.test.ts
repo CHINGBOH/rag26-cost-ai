@@ -11,7 +11,11 @@ describe('LLMService', () => {
   beforeEach(() => {
     service = new LLMService({
       provider: 'kimi',
-      model: 'kimi-for-coding'
+      baseUrl: 'http://localhost:12345',
+      apiKey: 'test-api-key',
+      model: 'kimi-for-coding',
+      temperature: 0.7,
+      maxTokens: 2000,
     });
   });
 

@@ -46,9 +46,11 @@
 .badge.q-failure { background: rgba(220,38,38,0.15); color: #dc2626; }
 .badge.refused   { background: rgba(220,38,38,0.15); color: #dc2626; }
 .badge.status-resolved { background: rgba(16,185,129,0.15); color: #10b981; font-size: 12px; text-transform: none; }
+.badge.status-observing { background: rgba(59,130,246,0.15); color: #3b82f6; font-size: 12px; text-transform: none; }
 .badge.status-in-progress { background: rgba(245,158,11,0.15); color: #f59e0b; font-size: 12px; text-transform: none; }
 .badge.status-open { background: rgba(220,38,38,0.15); color: #dc2626; font-size: 12px; text-transform: none; }
 .badge.status-blocked { background: rgba(107,114,128,0.15); color: #6b7280; font-size: 12px; text-transform: none; }
+.badge.status-neutral { background: rgba(148,163,184,0.15); color: #94a3b8; font-size: 12px; text-transform: none; }
 
 .bar-list { list-style: none; margin: 0; padding: 0; }
 .bar-list li { margin-bottom: 8px; }
@@ -76,6 +78,73 @@
 .learn-runs-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .learn-runs-table .tools-cell { font-family: 'JetBrains Mono', Menlo, Consolas, monospace; font-size: 11px; color: var(--color-text-muted); }
 .learn-runs-table code { background: var(--color-surface-2); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+.learn-run-sections { display: grid; gap: 18px; }
+.learn-run-section { display: grid; gap: 10px; }
+.run-drift-panel {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+}
+.run-drift-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.run-drift-summary {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.run-drift-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.run-drift-card {
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.run-drift-card.has-drift {
+  border-color: #f59e0b;
+}
+.run-drift-card-title {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+.run-drift-card-count {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.run-drift-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.run-drift-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 11px;
+}
+.run-drift-btn:hover {
+  border-color: var(--color-accent, #2563eb);
+  color: var(--color-accent, #2563eb);
+}
 
 /* ── Main tab nav ─────────────────────────────────────────────────────────── */
 .learn-main-tabs {

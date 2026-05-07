@@ -17,6 +17,8 @@ from typing import List, Dict, Optional, Any
 import uuid
 import logging
 
+from config.runtime import read_runtime_config
+
 # 类型导入
 from domain_models.search_models import SearchQuery
 from domain_models.retrieval_models import RetrievalRequest, RetrievalResponse, RetrievalConfig
@@ -27,7 +29,9 @@ from retrieval.unified_pipeline import UnifiedRetrievalPipeline
 from infrastructure.adapters.unified import UnifiedStore
 from services.document_processor import DocumentProcessor
 
-logging.basicConfig(level=logging.INFO)
+runtime_config = read_runtime_config()
+
+logging.basicConfig(level=getattr(logging, runtime_config.log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
 # 创建 FastAPI 应用
@@ -38,7 +42,7 @@ app = FastAPI(
 # CORS 配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080").split(","),
+    allow_origins=list(runtime_config.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

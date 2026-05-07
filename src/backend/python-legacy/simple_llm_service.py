@@ -16,17 +16,20 @@ from dataclasses import dataclass, field
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from config.runtime import read_runtime_config
+
+runtime_config = read_runtime_config()
 
 # 日志配置
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, runtime_config.log_level, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # ============ 配置 ============
 
-MODEL_PATH = "/home/l/rag-dashboard/models"
+MODEL_PATH = runtime_config.models_dir
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ============ 数据模型 ============
@@ -325,4 +328,4 @@ async def chat_completion(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8003)
+    uvicorn.run(app, host=runtime_config.api_host, port=runtime_config.simple_llm_port)

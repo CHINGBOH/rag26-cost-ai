@@ -5,7 +5,6 @@ RAG系统FastAPI服务
 提供完整的RAG系统API
 """
 
-import os
 import asyncio
 import logging
 from typing import List, Optional, Dict, Any
@@ -17,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
+from config.runtime import read_runtime_config
+
 # 导入服务
 from services.embedding_service import get_embedding_service, EmbeddingService
 from services.four_database_service import get_four_db_service, FourDatabaseService
@@ -24,10 +25,11 @@ from services.rerank_service import get_rerank_service, RerankService
 from services.llm_service import get_llm_service, UnifiedLLMService, Message
 from services.model_caller import get_model_caller, UnifiedModelCaller, EmbeddingResult, RerankResult
 
-# 配置
-API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", 8000))
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+runtime_config = read_runtime_config()
+
+API_HOST = runtime_config.api_host
+API_PORT = runtime_config.api_port
+LOG_LEVEL = runtime_config.log_level
 
 # 日志配置
 logging.basicConfig(
@@ -104,7 +106,7 @@ app = FastAPI(
 # CORS配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(runtime_config.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -447,5 +449,5 @@ if __name__ == "__main__":
         host=API_HOST,
         port=API_PORT,
         log_level=LOG_LEVEL.lower(),
-        reload=True
+        reload=runtime_config.api_reload
     )

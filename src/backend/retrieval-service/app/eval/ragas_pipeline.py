@@ -11,7 +11,6 @@ Metrics:
   - answer_relevancy: answer addresses the question
   - context_precision: retrieved chunks are relevant
 """
-import os
 import sys
 import json
 import uuid
@@ -25,19 +24,13 @@ RETRIEVAL_SVC = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(RETRIEVAL_SVC))
 
 import psycopg2
+from app.runtime_config import postgres_connection_kwargs, read_runtime_config
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-EVAL_SET_PATH = Path("/home/l/rag-dashboard/data/eval/golden_test_set.json")
-DB_CONFIG = dict(host="localhost", dbname="rag_db", user="rag_user", password=os.environ.get("POSTGRES_PASSWORD", "rag_password"))
-
-LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8080/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "no-key")
-
-
 def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(**postgres_connection_kwargs())
 
 
 def call_rag(question: str, intent: str) -> dict:
@@ -262,7 +255,7 @@ def run_evaluation(questions: list[dict], dry_run: bool = False) -> dict:
     }
 
     # Save JSON report
-    report_path = Path(f"/home/l/rag-dashboard/reports/{eval_run_id}.json")
+    report_path = read_runtime_config().reports_dir / f"{eval_run_id}.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
@@ -283,7 +276,7 @@ def main():
     parser.add_argument("--question-ids", type=str, help="Comma-separated question IDs to run (e.g., 01,02,15)")
     args = parser.parse_args()
 
-    with open(EVAL_SET_PATH, encoding="utf-8") as f:
+    with open(read_runtime_config().eval_set_path, encoding="utf-8") as f:
         eval_set = json.load(f)
 
     questions = eval_set["questions"]

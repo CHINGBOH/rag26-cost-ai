@@ -68,6 +68,26 @@ class FeedbackAnalyzer:
             db_pool: psycopg2.ThreadedConnectionPool or None
         """
         self.db_pool = db_pool
+
+    @staticmethod
+    def _feedback_ts_expression(data_type: Optional[str]) -> str:
+        normalized = (data_type or "").lower()
+        if normalized in {"double precision", "real", "numeric", "integer", "bigint", "smallint"}:
+            return "to_timestamp(ts)"
+        if normalized in {"timestamp with time zone", "timestamp without time zone"}:
+            return "ts"
+        return "created_at"
+
+    def _detect_feedback_ts_expression(self, cursor) -> str:
+        cursor.execute(
+            """
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_name = 'rag_feedback' AND column_name = 'ts'
+            """
+        )
+        row = cursor.fetchone()
+        return self._feedback_ts_expression(row[0] if row else None)
     
     async def analyze_feedback_trends(self, window_days: int = 7) -> Optional[FeedbackAnalysis]:
         """
@@ -87,13 +107,14 @@ class FeedbackAnalyzer:
             conn = self.db_pool.getconn()
             try:
                 with conn.cursor() as cur:
+                    ts_expr = self._detect_feedback_ts_expression(cur)
                     # Fetch recent feedback
                     cur.execute(
-                        """
+                        f"""
                         SELECT rating, tags, praise, criticism, suggestion
                         FROM rag_feedback
-                        WHERE ts > NOW() - INTERVAL '%d days'
-                        ORDER BY ts DESC
+                        WHERE {ts_expr} > NOW() - (%s * INTERVAL '1 day')
+                        ORDER BY {ts_expr} DESC
                         """,
                         (window_days,)
                     )
@@ -110,7 +131,7 @@ class FeedbackAnalyzer:
             negative_count = 0
             
             for rating, tags, praise, criticism, suggestion in rows:
-                # Count negative feedback (rating <= 2)
+                # Runtime semantics treat ratings <= 2 as negative feedback.
                 if rating is not None and rating <= 2:
                     negative_count += 1
                 
@@ -208,6 +229,8 @@ class FeedbackAnalyzer:
         """
         Analyze feedback and trigger learning loop if conditions met.
         
+        Sprint 3: Routes through AdaptiveRetestScheduler if Feature Flag enabled.
+        
         Returns:
             run_id if triggered, None otherwise
         """
@@ -217,6 +240,41 @@ class FeedbackAnalyzer:
             return None
         
         try:
+            # Sprint 3: Feature Flag control (#117)
+            from config.feature_flags import is_feature_enabled
+            from main import get_adaptive_retest_scheduler
+            
+            adaptive_scheduler = get_adaptive_retest_scheduler()
+            trending_tags = [issue.tag for issue in analysis.trending_problems]
+            
+            if is_feature_enabled("LEARNING_USE_ADAPTIVE_SCHEDULER") and adaptive_scheduler:
+                # 新路径：通过 AdaptiveRetestScheduler
+                from app.agent.adaptive_retest_scheduler import RetestRequest, RetestPriority
+                from datetime import datetime, timezone
+                
+                try:
+                    question = f"Feedback analysis: {', '.join(trending_tags[:3])}"
+                    question_hash = await adaptive_scheduler.request_retest(RetestRequest(
+                        question=question,
+                        source="feedback",
+                        priority=RetestPriority.USER_FEEDBACK,
+                        metadata={
+                            "trigger": "feedback_analysis",
+                            "trending_tags": trending_tags,
+                            "total_feedback": analysis.total_feedback,
+                            "negative_rate": analysis.negative_rate,
+                            "top_issues": [{"tag": i.tag, "count": i.count, "frequency": i.frequency} for i in analysis.top_issues[:5]],
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ))
+                    
+                    logger.info(f"✅ Feedback trigger queued via AdaptiveRetestScheduler: {question[:50]}... (hash={question_hash[:8]}...)")
+                    return f"queued_{question_hash[:8]}"
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to queue via AdaptiveRetestScheduler, falling back to direct trigger: {e}")
+            
+            # 旧路径：直接触发（fallback）
             from app.agent.scheduler import get_scheduler
             
             scheduler = get_scheduler()
@@ -224,11 +282,10 @@ class FeedbackAnalyzer:
                 logger.warning("Scheduler not initialized, cannot trigger learning loop")
                 return None
             
-            trending_tags = [issue.tag for issue in analysis.trending_problems]
             reason = f"feedback_analysis_{'_'.join(trending_tags[:3])}"
             run_id = await scheduler.trigger_manual(reason=reason)
             
-            logger.info(f"✅ Learning loop triggered via feedback analysis: {run_id}")
+            logger.info(f"✅ Learning loop triggered via feedback analysis (direct): {run_id}")
             return run_id
             
         except Exception as e:
@@ -276,3 +333,9 @@ def init_feedback_analyzer(db_pool=None) -> FeedbackAnalyzer:
 def get_feedback_analyzer() -> Optional[FeedbackAnalyzer]:
     """Get the global feedback analyzer instance"""
     return _analyzer
+
+
+def shutdown_feedback_analyzer():
+    """Reset the global feedback analyzer instance."""
+    global _analyzer
+    _analyzer = None

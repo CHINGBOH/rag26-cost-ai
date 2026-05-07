@@ -23,17 +23,17 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
 
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config, tool_pg_config
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+runtime_config = read_runtime_config()
 
-OCR_DIR = Path("/home/l/rag-dashboard/data/ocr_outputs")
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "rag_db",
-    "user": "rag_user",
-    "password": "your_password_here",
-}
+OCR_DIR = Path(runtime_config.ocr_output_dir)
+DB_CONFIG = tool_pg_config()
 
 # Embedding model (global)
 TOKENIZER = None
@@ -45,7 +45,7 @@ def init_embedding_model():
     global TOKENIZER, MODEL, DEVICE
     if MODEL is not None:
         return
-    model_path = "/home/l/rag-dashboard/models/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181"
+    model_path = runtime_config.embedding_model_path
     logger.info("Loading embedding model: BAAI/bge-m3 ...")
     TOKENIZER = AutoTokenizer.from_pretrained(model_path)
     MODEL = AutoModel.from_pretrained(model_path)

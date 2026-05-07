@@ -25,6 +25,8 @@ interface AuthToken {
 interface AuthConfig {
   secretKey: string;
   tokenExpiry: number; // 秒
+  defaultAdminUsername: string;
+  defaultAdminPassword: string;
 }
 
 export class AuthService {
@@ -33,19 +35,14 @@ export class AuthService {
   private sessions: Map<string, string> = new Map(); // token -> userId
   private initialized: boolean = false;
 
-  constructor(config?: Partial<AuthConfig>) {
-    const secretKey = config?.secretKey || process.env.AUTH_SECRET;
-
-    if (!secretKey) {
+  constructor(config: AuthConfig) {
+    if (!config.secretKey) {
       throw new Error('AUTH_SECRET环境变量必须设置');
     }
 
-    this.config = {
-      secretKey,
-      tokenExpiry: config?.tokenExpiry || 24 * 60 * 60 // 24小时
-    };
+    this.config = config;
 
-    // 延迟初始化默认用户，使用环境变量中的密码
+    // 延迟初始化默认用户，避免在代码中保留硬编码默认密码
     this.initializeDefaultUser();
   }
 
@@ -61,11 +58,16 @@ export class AuthService {
    * 使用环境变量设置初始密码
    */
   private initializeDefaultUser(): void {
-    const defaultUsername = process.env.DEFAULT_ADMIN_USERNAME || 'admin';
-    const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'admin123';
+    const { defaultAdminUsername, defaultAdminPassword } = this.config;
 
-    this.createUser(defaultUsername, defaultPassword, 'admin');
-    console.log(`[AuthService] 默认管理员用户已创建: ${defaultUsername}`);
+    if (!defaultAdminPassword) {
+      console.warn('[AuthService] 未配置默认管理员密码，跳过默认管理员引导');
+      this.initialized = true;
+      return;
+    }
+
+    this.createUser(defaultAdminUsername, defaultAdminPassword, 'admin');
+    console.log(`[AuthService] 默认管理员用户已创建: ${defaultAdminUsername}`);
 
     this.initialized = true;
   }

@@ -10,7 +10,7 @@ import {
   DatabaseTarget
 } from '@rag/shared';
 
-interface RetrievalConfig {
+export interface RetrievalConfig {
   pythonApiUrl: string;
   retrievalApiUrl?: string;
   apiKey?: string;
@@ -40,16 +40,30 @@ interface SearchResponse {
   fusion_scores?: Record<string, number>;
 }
 
+interface DecomposeResponse {
+  subQueries?: SubQuery[];
+  sub_queries?: SubQuery[];
+}
+
+interface EvaluateResponse {
+  completeness: number;
+  consistency: number;
+  confidence: number;
+  informationGain?: number;
+  information_gain?: number;
+  sourceDiversity?: number;
+  source_diversity?: number;
+  factConsistency?: number;
+  fact_consistency?: number;
+  coverageEstimate?: number;
+  coverage_estimate?: number;
+}
+
 export class RetrievalService {
   private config: RetrievalConfig;
 
-  constructor(config?: Partial<RetrievalConfig>) {
-    this.config = {
-      pythonApiUrl: config?.pythonApiUrl || process.env.PYTHON_API_URL || 'http://localhost:8000',
-      retrievalApiUrl: config?.retrievalApiUrl || process.env.RETRIEVAL_API_URL || 'http://localhost:8002',
-      apiKey: config?.apiKey || process.env.API_KEY,
-      timeout: config?.timeout || 30000
-    };
+  constructor(config: RetrievalConfig) {
+    this.config = config;
   }
 
   private async fetchWithTimeout(
@@ -131,8 +145,8 @@ export class RetrievalService {
       });
 
       if (response.ok) {
-        const data = await response.json() as { subQueries: SubQuery[] };
-        return data.subQueries;
+        const data = await response.json() as DecomposeResponse;
+        return data.subQueries ?? data.sub_queries ?? this.localDecomposeQuery(query);
       }
 
       // 如果API不存在，使用本地简单分解
@@ -252,7 +266,8 @@ export class RetrievalService {
       });
 
       if (response.ok) {
-        return await response.json() as RoundEvaluation;
+        const data = await response.json() as EvaluateResponse;
+        return this.normalizeEvaluationResponse(data);
       }
 
       throw new Error('评估API不可用');
@@ -318,6 +333,18 @@ export class RetrievalService {
       sourceDiversity: diversity,
       factConsistency,
       coverageEstimate
+    };
+  }
+
+  private normalizeEvaluationResponse(data: EvaluateResponse): RoundEvaluation {
+    return {
+      completeness: data.completeness,
+      consistency: data.consistency,
+      confidence: data.confidence,
+      informationGain: data.informationGain ?? data.information_gain ?? 0,
+      sourceDiversity: data.sourceDiversity ?? data.source_diversity ?? 0,
+      factConsistency: data.factConsistency ?? data.fact_consistency ?? 0,
+      coverageEstimate: data.coverageEstimate ?? data.coverage_estimate ?? 0,
     };
   }
 

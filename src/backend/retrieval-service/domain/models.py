@@ -4,7 +4,7 @@
 """
 
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime
 from enum import Enum
 
@@ -48,8 +48,8 @@ class Document(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="附加元数据")
     publish_date: Optional[str] = Field(default=None, description="发布日期")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "doc_001_chunk_01",
                 "content": "企业管理费包括管理人员工资、办公费...",
@@ -61,6 +61,7 @@ class Document(BaseModel):
                 "final_score": 0.92,
             }
         }
+    )
 
 
 class SearchRequest(BaseModel):

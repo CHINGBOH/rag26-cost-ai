@@ -15,18 +15,39 @@ import {
 } from '@rag/shared';
 import { PostgresPersistenceService } from '../services/PostgresPersistenceService';
 
+export interface RecursionControllerConfig {
+  gatewayUrl: string;
+  ragUrl: string;
+  cleanupIntervalMs: number;
+  completedSessionMaxAgeMs: number;
+  hardSessionMaxAgeMs: number;
+  requestTimeoutMs: number;
+}
+
 export class RecursionController {
   private sessions: Map<string, RecursionSession> = new Map();
   private eventEmitter: EventEmitter;
   private cleanupInterval: NodeJS.Timeout | null = null;
   private gatewayUrl: string;
   private ragUrl: string;
+  private cleanupIntervalMs: number;
+  private completedSessionMaxAgeMs: number;
+  private hardSessionMaxAgeMs: number;
+  private requestTimeoutMs: number;
   private persistence: PostgresPersistenceService | null = null;
 
-  constructor(eventEmitter: EventEmitter, persistence?: PostgresPersistenceService) {
+  constructor(
+    eventEmitter: EventEmitter,
+    config: RecursionControllerConfig,
+    persistence?: PostgresPersistenceService,
+  ) {
     this.eventEmitter = eventEmitter;
-    this.gatewayUrl = process.env.WS_GATEWAY_URL || 'http://localhost:8081/broadcast';
-    this.ragUrl = process.env.RETRIEVAL_URL || 'http://localhost:8002';
+    this.gatewayUrl = config.gatewayUrl;
+    this.ragUrl = config.ragUrl;
+    this.cleanupIntervalMs = config.cleanupIntervalMs;
+    this.completedSessionMaxAgeMs = config.completedSessionMaxAgeMs;
+    this.hardSessionMaxAgeMs = config.hardSessionMaxAgeMs;
+    this.requestTimeoutMs = config.requestTimeoutMs;
     this.persistence = persistence || null;
     this.startCleanupTimer();
   }
@@ -48,7 +69,7 @@ export class RecursionController {
     // 每10分钟清理一次过期会话
     this.cleanupInterval = setInterval(() => {
       this.cleanupExpiredSessions();
-    }, 10 * 60 * 1000);
+    }, this.cleanupIntervalMs);
   }
 
   /**
@@ -56,15 +77,14 @@ export class RecursionController {
    */
   private cleanupExpiredSessions(): void {
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24小时
     let cleanedCount = 0;
 
     for (const [sessionId, session] of this.sessions) {
       // 清理已完成/失败的过期会话
       const isCompleted = session.currentState === 'completed' || session.currentState === 'failed';
-      const isExpired = now - session.updatedAt > maxAge;
+      const isExpired = now - session.updatedAt > this.completedSessionMaxAgeMs;
 
-      if ((isCompleted && isExpired) || now - session.updatedAt > maxAge * 7) {
+      if ((isCompleted && isExpired) || now - session.updatedAt > this.hardSessionMaxAgeMs) {
         this.sessions.delete(sessionId);
         this.persistence?.deleteSession(sessionId).catch(() => {});
         cleanedCount++;
@@ -167,7 +187,7 @@ export class RecursionController {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: session.originalQuery, session_id: sessionId }),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       });
 
       if (!resp.ok) {

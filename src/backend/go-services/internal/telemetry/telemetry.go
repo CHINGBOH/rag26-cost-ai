@@ -7,7 +7,6 @@ package telemetry
 import (
 	"context"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -21,13 +20,9 @@ import (
 
 // Init bootstraps the global TracerProvider + W3C propagator.
 // Returns a shutdown func that callers should defer.
-func Init(serviceName string) (func(context.Context) error, error) {
-	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+func Init(endpoint string, serviceName string) (func(context.Context) error, error) {
 	if endpoint == "" {
 		return func(context.Context) error { return nil }, nil
-	}
-	if name := os.Getenv("OTEL_SERVICE_NAME"); name != "" {
-		serviceName = name
 	}
 
 	host := strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")

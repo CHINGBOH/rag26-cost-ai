@@ -11,6 +11,8 @@ describe('RetrievalService', () => {
   beforeEach(() => {
     service = new RetrievalService({
       pythonApiUrl: 'http://localhost:8000',
+      retrievalApiUrl: 'http://localhost:8002',
+      apiKey: 'test-api-key',
       timeout: 5000
     });
   });

@@ -3,7 +3,9 @@
  * 连接统一检索后端
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+import { getApiBaseUrl, resolveWebSocketUrl } from '../config/runtime';
+
+const API_BASE = getApiBaseUrl();
 
 export interface SearchResult {
   chunk_id: string;
@@ -503,7 +505,7 @@ export async function getStats(): Promise<any> {
  * WebSocket 连接
  */
 export function createWebSocketConnection(): WebSocket {
-  const wsUrl = import.meta.env.VITE_WS_URL || `ws://${window.location.host}/ws?room=dashboard`;
+  const wsUrl = resolveWebSocketUrl('dashboard');
   const ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {

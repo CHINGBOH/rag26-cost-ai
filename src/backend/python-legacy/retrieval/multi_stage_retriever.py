@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 import hashlib
 import time
 
+from config.runtime import read_runtime_config
+
 
 class QueryType(Enum):
     """查询类型"""
@@ -328,10 +330,9 @@ class Reranker:
         try:
             from transformers import AutoTokenizer, AutoModelForSequenceClassification
             import torch
-            import os
 
             # 设置模型缓存路径
-            cache_dir = os.environ.get("HF_HOME", "/home/l/models")
+            cache_dir = read_runtime_config().hf_home
 
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name, cache_dir=cache_dir

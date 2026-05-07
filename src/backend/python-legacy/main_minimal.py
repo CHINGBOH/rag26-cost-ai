@@ -23,25 +23,12 @@ import numpy as np
 from datetime import datetime
 import re
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from config.runtime import read_runtime_config
 
-# 加载 .env 环境变量
-try:
-    from dotenv import load_dotenv
-    # 尝试多个位置查找 .env
-    env_candidates = [
-        os.path.join(current_dir, ".env"),          # python-legacy 目录
-        os.path.join(project_root, ".env"),          # src/backend 目录
-        os.path.join(os.path.dirname(project_root), ".env"),  # 项目根目录
-    ]
-    for env_path in env_candidates:
-        if os.path.exists(env_path):
-            load_dotenv(env_path)
-            logger.info("Loaded .env from %s", env_path)
-            break
-except Exception:
-    pass
+runtime_config = read_runtime_config()
+
+logging.basicConfig(level=getattr(logging, runtime_config.log_level, logging.INFO))
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG Dashboard Minimal API", description="最小化测试API（真实检索）", version="0.2.0")
 
@@ -58,7 +45,7 @@ def _init_db_clients():
     # Elasticsearch
     try:
         from elasticsearch import Elasticsearch
-        es_client = Elasticsearch(["http://localhost:9200"])
+        es_client = Elasticsearch([runtime_config.elasticsearch_url])
         if es_client.ping():
             logger.info("✅ Elasticsearch connected")
         else:
@@ -71,10 +58,9 @@ def _init_db_clients():
     # Neo4j
     try:
         from neo4j import GraphDatabase
-        neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         neo4j_driver = GraphDatabase.driver(
-            "bolt://localhost:7687",
-            auth=(os.getenv("NEO4J_USERNAME", "neo4j"), neo4j_password)
+            runtime_config.neo4j_uri,
+            auth=(runtime_config.neo4j_user, runtime_config.neo4j_password)
         )
         with neo4j_driver.session() as session:
             session.run("RETURN 1")
@@ -86,7 +72,7 @@ def _init_db_clients():
     # Qdrant (仅用于健康检查，向量搜索需要embedding模型)
     try:
         from qdrant_client import QdrantClient
-        qdrant_client = QdrantClient(host="localhost", port=6333)
+        qdrant_client = QdrantClient(host=runtime_config.qdrant_host, port=runtime_config.qdrant_port)
         logger.info("✅ Qdrant connected (vector search disabled: no embedding model)")
     except Exception as e:
         logger.warning(f"❌ Qdrant init failed: {e}")
@@ -100,7 +86,7 @@ async def startup_event():
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(runtime_config.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -179,7 +165,7 @@ async def v1_search(request: V1SearchRequest):
     if es_client is not None:
         try:
             resp = es_client.search(
-                index="documents",
+                index=runtime_config.elasticsearch_index_name,
                 body={
                     "query": {
                         "multi_match": {
@@ -494,11 +480,16 @@ if __name__ == "__main__":
 ╔═══════════════════════════════════════════════════════════╗
 ║     RAG Dashboard Minimal Backend                         ║
 ║                                                           ║
-║     API:     http://localhost:8000                        ║
-║     Docs:    http://localhost:8000/docs                   ║
-║     Health:  http://localhost:8000/health                 ║
+║     API:     configured via runtime_config.api_host/port  ║
+║     Docs:    /docs                                        ║
+║     Health:  /health                                      ║
 ║                                                           ║
 ║     注意: 这是最小化测试版本，用于绕过AI模型依赖          ║
 ╚═══════════════════════════════════════════════════════════╝
     """)
-    uvicorn.run("main_minimal:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main_minimal:app",
+        host=runtime_config.api_host,
+        port=runtime_config.api_port,
+        reload=runtime_config.api_reload,
+    )

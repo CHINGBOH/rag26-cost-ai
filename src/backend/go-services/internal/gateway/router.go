@@ -16,7 +16,7 @@ func HealthCheckHandler(cfg *GatewayConfig) gin.HandlerFunc {
 		allHealthy := true
 
 		for name, svc := range cfg.Services {
-			client := &http.Client{Timeout: 5 * time.Second}
+			client := &http.Client{Timeout: cfg.HealthCheckTimeout}
 			resp, err := client.Get(svc.Health)
 			if err != nil {
 				servicesStatus[name] = "unhealthy"
@@ -60,7 +60,7 @@ func SetupRouter(cfg *GatewayConfig) *gin.Engine {
 
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.Use(otelgin.Middleware("go-gateway"))
+	router.Use(otelgin.Middleware(cfg.TelemetryServiceName))
 	router.Use(RequestIDMiddleware())
 	router.Use(CORSMiddleware())
 	router.Use(LoggingMiddleware())

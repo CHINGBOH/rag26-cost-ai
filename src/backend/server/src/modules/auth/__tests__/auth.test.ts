@@ -15,6 +15,14 @@ import {
 } from '../src'
 import { User } from '../../common/types'
 
+const testAuthConfig = {
+  secret: 'test-jwt-secret',
+  expiresIn: 3600,
+  refreshExpiresIn: 7 * 24 * 3600,
+  defaultAdminUsername: 'admin',
+  defaultAdminPassword: 'admin123'
+}
+
 describe('Auth 模块', () => {
   describe('Token 创建与验证', () => {
     it('应该创建 Token', async () => {
@@ -26,7 +34,7 @@ describe('Auth 模块', () => {
         createdAt: Date.now()
       }
       
-      const tokenFn = createToken()
+      const tokenFn = createToken(testAuthConfig)
       const authToken = await tokenFn(user)
       
       expect(authToken.token).toBeDefined()
@@ -43,10 +51,10 @@ describe('Auth 模块', () => {
         createdAt: Date.now()
       }
       
-      const tokenFn = createToken()
+      const tokenFn = createToken(testAuthConfig)
       const authToken = await tokenFn(user)
       
-      const verifyFn = verifyToken()
+      const verifyFn = verifyToken(testAuthConfig)
       const verifiedUser = await verifyFn(authToken.token)
       
       expect(verifiedUser.id).toBe(user.id)
@@ -54,7 +62,7 @@ describe('Auth 模块', () => {
     })
 
     it('应该拒绝无效 Token', async () => {
-      const verifyFn = verifyToken()
+      const verifyFn = verifyToken(testAuthConfig)
       
       await expect(verifyFn('invalid-token')).rejects.toThrow('Invalid token')
     })
@@ -62,7 +70,7 @@ describe('Auth 模块', () => {
 
   describe('用户认证', () => {
     it('应该成功认证有效用户', async () => {
-      const auth = authenticate()
+      const auth = authenticate(testAuthConfig)
       
       const user = await auth({
         username: 'admin',
@@ -74,7 +82,7 @@ describe('Auth 模块', () => {
     })
 
     it('应该拒绝无效凭据', async () => {
-      const auth = authenticate()
+      const auth = authenticate(testAuthConfig)
       
       await expect(auth({
         username: 'admin',
@@ -83,7 +91,7 @@ describe('Auth 模块', () => {
     })
 
     it('应该拒绝未知用户', async () => {
-      const auth = authenticate()
+      const auth = authenticate(testAuthConfig)
       
       await expect(auth({
         username: 'unknown',
@@ -179,22 +187,22 @@ describe('Auth 模块', () => {
         createdAt: Date.now()
       }
       
-      const createTokenFn = createToken()
+      const createTokenFn = createToken(testAuthConfig)
       const authToken = await createTokenFn(user)
       
-      const refreshFn = refreshToken()
+      const refreshFn = refreshToken(testAuthConfig)
       const newToken = await refreshFn(authToken.refreshToken!)
       
       expect(newToken.token).toBeDefined()
       // 验证新 Token 有效即可
-      const verifyFn = verifyToken()
+      const verifyFn = verifyToken(testAuthConfig)
       const verifiedUser = await verifyFn(newToken.token)
       expect(verifiedUser.id).toBe(user.id)
       expect(verifiedUser.username).toBe(user.username)
     })
 
     it('应该拒绝无效 Refresh Token', async () => {
-      const refreshFn = refreshToken()
+      const refreshFn = refreshToken(testAuthConfig)
       
       await expect(refreshFn('invalid-refresh-token')).rejects.toThrow('Invalid refresh token')
     })
@@ -208,7 +216,7 @@ describe('Auth 模块', () => {
         createdAt: Date.now()
       }
       
-      const createTokenFn = createToken()
+      const createTokenFn = createToken(testAuthConfig)
       const authToken = await createTokenFn(user)
       
       const revokeFn = revokeToken()
@@ -217,14 +225,14 @@ describe('Auth 模块', () => {
       expect(result).toBe(true)
       
       // 验证 Token 已失效
-      const verifyFn = verifyToken()
+      const verifyFn = verifyToken(testAuthConfig)
       await expect(verifyFn(authToken.token)).rejects.toThrow('Invalid token')
     })
   })
 
   describe('管道工厂', () => {
     it('应该创建认证管道', () => {
-      const pipeline = createAuthPipeline()
+      const pipeline = createAuthPipeline(testAuthConfig)
       
       expect(pipeline.authenticate).toBeDefined()
       expect(pipeline.createToken).toBeDefined()
@@ -236,7 +244,7 @@ describe('Auth 模块', () => {
     })
 
     it('应该使用管道进行认证流程', async () => {
-      const pipeline = createAuthPipeline()
+      const pipeline = createAuthPipeline(testAuthConfig)
       
       // 认证用户
       const user = await pipeline.authenticate({

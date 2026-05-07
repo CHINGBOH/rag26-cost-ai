@@ -26,6 +26,7 @@ from domain_models.retrieval_models import (
     RetrievalConfig,
     RetrievedDocument,
 )
+from config.runtime import read_runtime_config
 from infrastructure.adapters.unified import UnifiedStore
 
 # 可选导入
@@ -59,10 +60,11 @@ class UnifiedRetrievalPipeline:
     """
 
     def __init__(self, store: Optional[UnifiedStore] = None):
+        runtime_config = read_runtime_config()
         self.store = store or UnifiedStore()
         self.request_count = 0
         self.total_latency_ms = 0.0
-        self.enable_query_analysis = os.getenv("ENABLE_QUERY_ANALYSIS", "false").lower() == "true"
+        self.enable_query_analysis = runtime_config.query_analysis_enabled
 
         self.query_analyzer = QueryAnalysisAgent() if QUERY_ANALYSIS_AVAILABLE else None
 

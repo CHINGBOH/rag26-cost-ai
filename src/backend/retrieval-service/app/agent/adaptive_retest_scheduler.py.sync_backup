@@ -1,0 +1,383 @@
+"""
+Adaptive Retest Scheduler - 统一调度 Learning 系统的重测请求
+
+解决问题：
+  - 7 个独立触发源 (timer, followup, feedback, repeated, contract, manual, patch)
+  - 无协调机制，导致重复重测和资源浪费
+  - 无退避策略，失败的问题会被无限重测
+
+设计：
+  - Exponential backoff: 5min → 15min → 1hr → 4hr → 24hr (max)
+  - Priority queue: manual=10, feedback=8, repeated=7, followup=6, timer=5
+  - PostgreSQL backed queue for persistence
+  - Deduplication by question_hash
+  - Feature Flag: LEARNING_USE_ADAPTIVE_SCHEDULER
+"""
+
+import hashlib
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import IntEnum
+from typing import Optional, List
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+logger = logging.getLogger(__name__)
+
+
+class RetestPriority(IntEnum):
+    """重测优先级"""
+    TIMER = 5           # 定时任务触发
+    FOLLOWUP = 6        # 追问点击触发
+    REPEATED = 7        # 重复问题触发
+    FEEDBACK = 8        # 用户反馈触发
+    MANUAL = 10         # 手动触发
+
+
+class RetestStatus(str):
+    """重测状态"""
+    PENDING = "pending"           # 等待调度
+    SCHEDULED = "scheduled"       # 已调度，等待执行
+    RUNNING = "running"           # 执行中
+    SUCCESS = "success"           # 成功
+    FAILED = "failed"             # 失败
+    CANCELLED = "cancelled"       # 已取消
+
+
+@dataclass
+class RetestRequest:
+    """重测请求"""
+    question: str                           # 问题文本
+    source: str                             # 触发源 (timer, followup, feedback, etc.)
+    priority: RetestPriority                # 优先级
+    metadata: dict                          # 额外元数据
+    question_hash: Optional[str] = None     # 问题哈希（去重）
+    retry_count: int = 0                    # 当前重试次数
+    next_retry_at: Optional[datetime] = None  # 下次重试时间
+
+
+class AdaptiveRetestScheduler:
+    """
+    自适应重测调度器
+    
+    核心功能：
+      1. 请求去重：基于 question_hash 防止重复调度
+      2. 优先级队列：高优先级请求优先执行
+      3. 指数退避：失败后延迟重试 (5min, 15min, 1hr, 4hr, 24hr)
+      4. 持久化：使用 PostgreSQL 存储队列状态
+      5. 并发控制：限制同时执行的重测任务数
+    """
+    
+    # 退避策略：重试次数 → 延迟时间（秒）
+    BACKOFF_SCHEDULE = [
+        5 * 60,      # 0: 5 minutes
+        15 * 60,     # 1: 15 minutes
+        60 * 60,     # 2: 1 hour
+        4 * 60 * 60, # 3: 4 hours
+        24 * 60 * 60 # 4+: 24 hours (max)
+    ]
+    
+    def __init__(self, db_pool, max_concurrent: int = 3):
+        """
+        Args:
+            db_pool: asyncpg connection pool
+            max_concurrent: 最大并发执行数
+        """
+        self.db_pool = db_pool
+        self.max_concurrent = max_concurrent
+    
+    @staticmethod
+    def _compute_question_hash(question: str) -> str:
+        """计算问题哈希用于去重"""
+        normalized = question.strip().lower()
+        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+    
+    def _get_backoff_delay(self, retry_count: int) -> int:
+        """获取退避延迟时间（秒）"""
+        if retry_count >= len(self.BACKOFF_SCHEDULE):
+            return self.BACKOFF_SCHEDULE[-1]
+        return self.BACKOFF_SCHEDULE[retry_count]
+    
+    def request_retest(self, request: RetestRequest) -> bool:
+        """
+        请求重测（核心入口）
+        
+        Returns:
+            True if request was queued, False if duplicate
+        """
+        # 计算问题哈希
+        if not request.question_hash:
+            request.question_hash = self._compute_question_hash(request.question)
+        
+        # 检查是否已存在待处理/进行中的重测
+        if self._is_duplicate(request.question_hash):
+            logger.info(
+                f"[AdaptiveScheduler] Duplicate retest request ignored: "
+                f"question_hash={request.question_hash[:8]}... source={request.source}"
+            )
+            return False
+        
+        # 计算下次执行时间
+        if request.next_retry_at is None:
+            # 新请求：立即执行（或稍后，取决于优先级队列）
+            request.next_retry_at = datetime.utcnow()
+        
+        # 插入队列
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO retest_queue (
+                    question, question_hash, source, priority, 
+                    retry_count, next_retry_at, status, metadata, created_at
+                ) VALUES (
+                    %(question)s, %(question_hash)s, %(source)s, %(priority)s,
+                    %(retry_count)s, %(next_retry_at)s, %(status)s, %(metadata)s, NOW()
+                )
+            """, {
+                "question": request.question,
+                "question_hash": request.question_hash,
+                "source": request.source,
+                "priority": int(request.priority),
+                "retry_count": request.retry_count,
+                "next_retry_at": request.next_retry_at,
+                "status": RetestStatus.PENDING,
+                "metadata": str(request.metadata)  # JSONB in real impl
+            })
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(
+                f"[AdaptiveScheduler] Retest queued: "
+                f"question_hash={request.question_hash[:8]}... "
+                f"source={request.source} priority={request.priority} "
+                f"next_retry_at={request.next_retry_at.isoformat()}"
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to queue retest: {e}")
+            return False
+    
+    def _is_duplicate(self, question_hash: str) -> bool:
+        """检查是否存在待处理/进行中的重测"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT COUNT(*) as count FROM retest_queue
+                WHERE question_hash = %s
+                  AND status IN ('pending', 'scheduled', 'running')
+            """, (question_hash,))
+            
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return result["count"] > 0 if result else False
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Duplicate check failed: {e}")
+            return True  # 保守策略：出错时认为是重复
+    
+    def get_next_batch(self, batch_size: int = 10) -> List[dict]:
+        """
+        获取下一批待执行的重测任务
+        
+        按优先级和 next_retry_at 排序
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # 限制并发执行数
+            cursor.execute("""
+                SELECT COUNT(*) as running_count FROM retest_queue
+                WHERE status = 'running'
+            """)
+            running_count = cursor.fetchone()["running_count"]
+            
+            available_slots = max(0, self.max_concurrent - running_count)
+            if available_slots == 0:
+                logger.debug("[AdaptiveScheduler] Max concurrent limit reached")
+                cursor.close()
+                conn.close()
+                return []
+            
+            # 获取待执行任务（优先级高 + 到期时间早）
+            actual_batch_size = min(batch_size, available_slots)
+            cursor.execute("""
+                SELECT * FROM retest_queue
+                WHERE status = 'pending'
+                  AND next_retry_at <= NOW()
+                ORDER BY priority DESC, next_retry_at ASC
+                LIMIT %s
+            """, (actual_batch_size,))
+            
+            tasks = cursor.fetchall()
+            
+            # 标记为 scheduled
+            if tasks:
+                task_ids = [t["id"] for t in tasks]
+                cursor.execute("""
+                    UPDATE retest_queue
+                    SET status = 'scheduled', updated_at = NOW()
+                    WHERE id = ANY(%s)
+                """, (task_ids,))
+                conn.commit()
+            
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"[AdaptiveScheduler] Fetched {len(tasks)} tasks for execution")
+            return tasks
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to fetch next batch: {e}")
+            return []
+    
+    def mark_success(self, task_id: int):
+        """标记任务成功"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE retest_queue
+                SET status = 'success', 
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (task_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"[AdaptiveScheduler] Task {task_id} marked as success")
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to mark success: {e}")
+    
+    def mark_failure(self, task_id: int, error_message: str):
+        """
+        标记任务失败并重新调度
+        
+        应用指数退避策略
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # 获取当前任务
+            cursor.execute("SELECT * FROM retest_queue WHERE id = %s", (task_id,))
+            task = cursor.fetchone()
+            
+            if not task:
+                logger.warning(f"[AdaptiveScheduler] Task {task_id} not found")
+                cursor.close()
+                conn.close()
+                return
+            
+            # 增加重试次数
+            new_retry_count = task["retry_count"] + 1
+            
+            # 计算下次重试时间
+            backoff_delay = self._get_backoff_delay(new_retry_count)
+            next_retry_at = datetime.utcnow() + timedelta(seconds=backoff_delay)
+            
+            # 更新任务状态
+            cursor.execute("""
+                UPDATE retest_queue
+                SET status = 'pending',
+                    retry_count = %s,
+                    next_retry_at = %s,
+                    last_error = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (new_retry_count, next_retry_at, error_message, task_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(
+                f"[AdaptiveScheduler] Task {task_id} rescheduled: "
+                f"retry_count={new_retry_count} next_retry_at={next_retry_at.isoformat()} "
+                f"backoff_delay={backoff_delay}s"
+            )
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to mark failure: {e}")
+    
+    def cancel(self, question_hash: str) -> bool:
+        """取消某个问题的所有待处理重测"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE retest_queue
+                SET status = 'cancelled', updated_at = NOW()
+                WHERE question_hash = %s
+                  AND status IN ('pending', 'scheduled')
+            """, (question_hash,))
+            
+            affected_rows = cursor.rowcount
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"[AdaptiveScheduler] Cancelled {affected_rows} tasks for question_hash={question_hash[:8]}...")
+            return affected_rows > 0
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to cancel: {e}")
+            return False
+    
+    def get_stats(self) -> dict:
+        """获取调度器统计信息"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    AVG(retry_count) as avg_retry_count
+                FROM retest_queue
+                GROUP BY status
+            """)
+            
+            stats_by_status = {row["status"]: dict(row) for row in cursor.fetchall()}
+            
+            cursor.execute("""
+                SELECT 
+                    source,
+                    COUNT(*) as count
+                FROM retest_queue
+                WHERE status IN ('pending', 'scheduled', 'running')
+                GROUP BY source
+            """)
+            
+            stats_by_source = {row["source"]: row["count"] for row in cursor.fetchall()}
+            
+            cursor.close()
+            conn.close()
+            
+            return {
+                "by_status": stats_by_status,
+                "by_source": stats_by_source,
+                "max_concurrent": self.max_concurrent
+            }
+            
+        except Exception as e:
+            logger.error(f"[AdaptiveScheduler] Failed to get stats: {e}")
+            return {}

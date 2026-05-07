@@ -11,9 +11,7 @@ from typing import TypedDict, List, Optional, Any
 import httpx
 from langgraph.graph import StateGraph, END
 
-from dotenv import load_dotenv
-from pathlib import Path
-load_dotenv(Path(__file__).parents[4] / ".env")
+from app.runtime_config import read_runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +36,16 @@ def make_retrieve_node(pipeline):
 
         try:
             from domain_models.retrieval import RetrievalRequest, RetrievalConfig
-
+            # Phase 1+ Task 1: Externalize top_k parameters
+            from config.param_registry import param
+            
             req = RetrievalRequest(
                 query=state["query"],
-                config=RetrievalConfig(vector_top_k=30, keyword_top_k=20, graph_top_k=10),
+                config=RetrievalConfig(
+                    vector_top_k=param("retrieval_vector_top_k", default=20),
+                    keyword_top_k=param("retrieval_keyword_top_k", default=12),
+                    graph_top_k=param("retrieval_graph_top_k", default=8)
+                ),
             )
             resp = pipeline.retrieve(req)
             chunks = []
@@ -214,9 +218,10 @@ print(f"利润:       {{利润:.4f}} 万元")
 
 def generate_node(state: RAGState) -> RAGState:
     """用 LLM API 生成答案；无配置时返回检索摘要"""
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-    model = os.getenv("LLM_MODEL", "deepseek-chat")
+    runtime = read_runtime_config()
+    api_key = runtime.llm_api_key
+    base_url = runtime.llm_base_url
+    model = runtime.llm_model
 
     chunks = state["chunks"]
     context_text = "\n\n".join(

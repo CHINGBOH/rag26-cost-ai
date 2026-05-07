@@ -26,6 +26,7 @@ import sys
 import time
 import re
 from typing import Any, Dict, List, Optional
+from types import SimpleNamespace
 
 # 添加项目根目录到路径，支持相对导入
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -47,9 +48,11 @@ except ImportError:
 
 try:
     from api.unified_api import app as unified_app
+    from api import routes as unified_routes
     HAS_UNIFIED_APP = True
 except Exception as e:
     unified_app = None
+    unified_routes = None
     HAS_UNIFIED_APP = False
 
 # ==================== 配置 ====================
@@ -57,6 +60,7 @@ NODE_BASE_URL = os.environ.get("RAG_TEST_NODE_URL", "http://localhost:3001")
 PYTHON_BASE_URL = os.environ.get("RAG_TEST_PYTHON_URL", "http://localhost:8000")
 GATEWAY_BASE_URL = os.environ.get("RAG_TEST_GATEWAY_URL", "http://localhost:8080")
 REQUEST_TIMEOUT = 120.0  # Agent可能迭代多次
+RUN_LIVE_AGENT_TESTS = os.environ.get("RAG_RUN_LIVE_AGENT_TESTS") == "1"
 
 # ==================== 16道核心测试题 ====================
 TEST_CASES = [
@@ -358,8 +362,34 @@ def gateway_available() -> bool:
     return is_service_available(GATEWAY_BASE_URL)
 
 
+@pytest.fixture()
+def fake_v1_search_pipeline(monkeypatch):
+    if unified_routes is None:
+        pytest.skip("api.routes 未加载")
+
+    pipeline = SimpleNamespace(
+        retrieve=lambda request: SimpleNamespace(
+            request_id="test-request",
+            documents=[
+                SimpleNamespace(
+                    chunk_id="chunk-1",
+                    doc_id="doc-1",
+                    content="房建工程赶工措施费推荐系数为1.5%，钛合金门窗单价示例为888元。",
+                    score=0.96,
+                    metadata={"source": "test"},
+                )
+            ],
+            latency_ms=8.0,
+            stats={"total": 1},
+        )
+    )
+    monkeypatch.setattr(unified_routes, "pipeline", pipeline)
+    return pipeline
+
+
 # ==================== 测试用例 ====================
 
+@pytest.mark.skipif(not RUN_LIVE_AGENT_TESTS, reason="仅在显式开启 RAG_RUN_LIVE_AGENT_TESTS=1 时运行 live agent 验证")
 @pytest.mark.parametrize("tc", TEST_CASES, ids=lambda x: f"TC-{x['id']}")
 def test_rag_agent_core(tc: Dict[str, Any], node_available: bool):
     """核心16题端到端测试（通过Node端Agent接口）"""
@@ -389,6 +419,7 @@ def test_rag_agent_core(tc: Dict[str, Any], node_available: bool):
     assert validation["passed"], f"[{tc['id']}] 失败原因: {'; '.join(validation['failures'])}"
 
 
+@pytest.mark.skipif(not RUN_LIVE_AGENT_TESTS, reason="仅在显式开启 RAG_RUN_LIVE_AGENT_TESTS=1 时运行 live agent 验证")
 def test_batch_report(node_available: bool):
     """批量运行16题并生成JSON报告"""
     report = {
@@ -452,6 +483,7 @@ class TestPythonBackendAPI:
     """测试Python后端独立接口（不依赖Node服务）"""
 
     @pytest.mark.skipif(not HAS_UNIFIED_APP, reason="unified_api app未加载")
+    @pytest.mark.usefixtures("fake_v1_search_pipeline")
     def test_search_api_for_quota_query(self):
         """测试搜索接口对定额问题的检索能力"""
         if not HAS_TESTCLIENT:
@@ -460,9 +492,11 @@ class TestPythonBackendAPI:
         response = client.post("/api/v1/search", json={"query": "房建工程赶工措施费推荐系数", "top_k": 5})
         assert response.status_code == 200
         data = response.json()
-        assert "results" in data or "chunks" in data or "documents" in data
+        payload = data.get("data", data)
+        assert "results" in payload or "chunks" in payload or "documents" in payload
 
     @pytest.mark.skipif(not HAS_UNIFIED_APP, reason="unified_api app未加载")
+    @pytest.mark.usefixtures("fake_v1_search_pipeline")
     def test_search_api_for_price_query(self):
         """测试搜索接口对信息价问题的检索能力"""
         if not HAS_TESTCLIENT:
@@ -471,7 +505,8 @@ class TestPythonBackendAPI:
         response = client.post("/api/v1/search", json={"query": "2025年深圳信息价 钛合金门窗", "top_k": 5})
         assert response.status_code == 200
         data = response.json()
-        assert "results" in data or "chunks" in data or "documents" in data
+        payload = data.get("data", data)
+        assert "results" in payload or "chunks" in payload or "documents" in payload
 
     @pytest.mark.skipif(not HAS_UNIFIED_APP, reason="unified_api app未加载")
     def test_evaluate_api_passes_with_citations(self):

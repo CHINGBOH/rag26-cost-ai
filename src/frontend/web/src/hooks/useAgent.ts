@@ -22,6 +22,7 @@ import {
   FollowupSuggestion,
 } from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
+import { getApiBaseUrl } from '../config/runtime';
 
 export interface ChatMessage {
   id: string;
@@ -89,7 +90,7 @@ const useChatStore = create<ChatStore>()(
   )
 );
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = getApiBaseUrl();
 
 function buildPresentationFallbackText(presentation: PresentationPayload | null | undefined): string {
   if (!presentation) return '';

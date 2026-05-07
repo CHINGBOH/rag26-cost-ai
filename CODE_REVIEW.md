@@ -206,7 +206,6 @@ except Exception as e:
 | `RecursionController.ts` | 40, 75, 112, 140, 143, 151, 210, 228 |
 | `AuthService.ts` | 68, 96, 107, 113, 120, 157, 248 |
 | `YoloCodeGenerator.ts` | 42, 96, 103 |
-| `EventBusService.ts` | 36, 54 |
 
 ```typescript
 // ❌ 应使用统一 logger

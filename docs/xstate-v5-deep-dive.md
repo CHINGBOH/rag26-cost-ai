@@ -437,7 +437,7 @@ on: {
 
 ### 8.1 RecursionController 问题
 
-查看 [StateMachine.ts](file:///home/l/rag-dashboard/src/backend/server/src/core/StateMachine.ts) 发现的问题：
+查看当时的 `StateMachine.ts` 原型实现发现的问题（该文件现已删除）：
 
 1. **类型断言风险**：大量使用 `as RecursionContext` 和 `as any`
 2. **invoke input 类型**：直接传递 context 而非 `{ input: context }`
@@ -445,7 +445,7 @@ on: {
 
 ### 8.2 RAGMachine 改进建议
 
-查看 [machine.ts](file:///home/l/rag-dashboard/src/backend/server/src/modules/rag/machine.ts) 发现：
+查看当时的 `machine.ts` 原型实现发现（该文件现已删除）：
 
 1. **✅ 良好的类型定义**：使用了 Zod schema
 2. **✅ 完整的错误处理**：所有 invoke 都有 onError

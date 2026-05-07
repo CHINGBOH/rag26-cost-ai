@@ -50,15 +50,8 @@ export interface LLMConfig {
 export class LLMService {
   private config: LLMConfig;
 
-  constructor(config?: Partial<LLMConfig>) {
-    this.config = {
-      provider: config?.provider || (process.env.LLM_PROVIDER as any) || 'kimi',
-      baseUrl: config?.baseUrl || process.env.LLM_BASE_URL || 'https://api.kimi.com/coding/v1',
-      apiKey: config?.apiKey || process.env.LLM_API_KEY || '',
-      model: config?.model || process.env.LLM_MODEL || 'kimi-for-coding',
-      temperature: config?.temperature ?? 0.7,
-      maxTokens: config?.maxTokens || 2000
-    };
+  constructor(config: LLMConfig) {
+    this.config = config;
   }
 
   /**

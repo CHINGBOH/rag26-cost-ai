@@ -20,27 +20,13 @@ import asyncpg
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter
 
-# 配置
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_DB = int(os.getenv("REDIS_DB", 0))
-
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
-POSTGRES_DB = os.getenv("POSTGRES_DB", "rag_db")
-POSTGRES_USER = os.getenv("POSTGRES_USER", "rag_user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "rag_password")
-
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-
-# TEI 配置
-EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "tei")  # local or tei
-TEI_URL = os.getenv("TEI_URL", "http://localhost:8003")
+from config.runtime import read_runtime_config
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+DOCUMENT_CHUNKS_COLLECTION = "document_chunks"
 
 @dataclass
 class EmbeddingResult:
@@ -56,6 +42,7 @@ class EmbeddingService:
     """Embedding服务"""
     
     def __init__(self):
+        self.runtime_config = read_runtime_config()
         self.embedding_models = {}
         self.current_model = None
         self.redis_client = None
@@ -67,36 +54,37 @@ class EmbeddingService:
     async def initialize(self):
         """初始化服务"""
         logger.info("初始化Embedding服务...")
-        logger.info(f"使用后端: {EMBEDDING_BACKEND}")
+        logger.info(f"使用后端: {self.runtime_config.embedding_backend}")
         
         # 初始化Redis客户端（异步）
         self.redis_client = redis.asyncio.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB,
+            host=self.runtime_config.redis_host,
+            port=self.runtime_config.redis_port,
+            db=self.runtime_config.redis_db,
             decode_responses=True
         )
         
         # 初始化Qdrant客户端
         self.qdrant_client = QdrantClient(
-            url=f"http://{QDRANT_HOST}:{QDRANT_PORT}"
+            url=f"http://{self.runtime_config.qdrant_host}:{self.runtime_config.qdrant_port}",
+            timeout=self.runtime_config.qdrant_timeout,
         )
         
         # 初始化PostgreSQL连接池
         self.postgres_pool = await asyncpg.create_pool(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
+            host=self.runtime_config.postgres_host,
+            port=self.runtime_config.postgres_port,
+            database=self.runtime_config.postgres_db,
+            user=self.runtime_config.postgres_user,
+            password=self.runtime_config.postgres_password or "rag_password",
             min_size=2,
-            max_size=10
+            max_size=min(self.runtime_config.postgres_max_connections, 10),
         )
         
         # 初始化TEI客户端
-        if EMBEDDING_BACKEND == "tei":
-            self.tei_client = httpx.AsyncClient(base_url=TEI_URL, timeout=30.0)
-            logger.info(f"TEI客户端初始化完成: {TEI_URL}")
+        if self.runtime_config.embedding_backend == "tei":
+            self.tei_client = httpx.AsyncClient(base_url=self.runtime_config.tei_url, timeout=30.0)
+            logger.info(f"TEI客户端初始化完成: {self.runtime_config.tei_url}")
         else:
             # 加载本地模型
             await self._load_models()
@@ -104,14 +92,14 @@ class EmbeddingService:
         # 确保 Qdrant 集合存在（只创建一次，不删已有数据）
         try:
             collections = [c.name for c in self.qdrant_client.get_collections().collections]
-            if "document_chunks" not in collections:
+            if DOCUMENT_CHUNKS_COLLECTION not in collections:
                 self.qdrant_client.create_collection(
-                    collection_name="document_chunks",
+                    collection_name=DOCUMENT_CHUNKS_COLLECTION,
                     vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
                 )
-                logger.info("Created Qdrant collection: document_chunks")
+                logger.info(f"Created Qdrant collection: {DOCUMENT_CHUNKS_COLLECTION}")
             else:
-                logger.info("Qdrant collection exists: document_chunks")
+                logger.info(f"Qdrant collection exists: {DOCUMENT_CHUNKS_COLLECTION}")
         except Exception as e:
             logger.warning(f"Qdrant collection check failed: {e}")
         
@@ -151,7 +139,7 @@ class EmbeddingService:
         start_time = datetime.now()
         
         try:
-            if EMBEDDING_BACKEND == "tei":
+            if self.runtime_config.embedding_backend == "tei":
                 # 使用TEI服务
                 response = await self.tei_client.post(
                     "/embed",
@@ -190,7 +178,7 @@ class EmbeddingService:
         start_time = datetime.now()
         
         try:
-            if EMBEDDING_BACKEND == "tei":
+            if self.runtime_config.embedding_backend == "tei":
                 # 使用TEI服务批量处理
                 response = await self.tei_client.post(
                     "/embed",
@@ -306,7 +294,7 @@ class EmbeddingService:
             )
             
             self.qdrant_client.upsert(
-                collection_name=collection_name,
+                collection_name=DOCUMENT_CHUNKS_COLLECTION,
                 points=[point]
             )
             
@@ -424,7 +412,7 @@ class EmbeddingService:
             
             # 在Qdrant中搜索
             search_results = self.qdrant_client.search(
-                collection_name="document_chunks",
+                collection_name=DOCUMENT_CHUNKS_COLLECTION,
                 query_vector=query_embedding.vector,
                 limit=top_k,
                 score_threshold=score_threshold,

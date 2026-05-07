@@ -96,6 +96,15 @@ from app.agent.tools import (
     chart_spec,
     proactive_explore,
 )
+
+# Phase 1: Import RetrievalPresets for unified top_k (#116)
+import sys
+from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from config.retrieval_presets import RetrievalPresets
+
 from app.agent.evaluator import evaluate_retrieval_quality
 from app.agent.presentation_payloads import (
     _build_presentation_payload,
@@ -2959,6 +2968,35 @@ def navigator_node(state: RAGAgentState) -> dict:
     else:
         logger.info("[navigator] no catalog matches, proceeding without path constraint")
 
+    # Phase 1+ Task 2: Observability integration for retrieval strategy decision
+    try:
+        from config.observability import log_decision, DecisionType
+        log_decision(
+            decision_type=DecisionType.RETRIEVAL_STRATEGY,
+            context={
+                "query": query[:100],
+                "query_type": query_type,
+                "keywords_tried": list(tried)[:5]
+            },
+            params_used={
+                "catalog_top_k": 8,
+                "max_roadmap_paths": len(roadmap) if roadmap else 0
+            },
+            outcome={
+                "strategy": "catalog_constrained" if roadmap else "unconstrained",
+                "roadmap_paths": [r["path"] for r in roadmap],
+                "workspace_size": len(hits) if hits else 0
+            },
+            reason=f"Catalog search with {len(kw_candidates)} keywords → {len(roadmap)} path constraints",
+            confidence=0.9 if roadmap else 0.5,
+            metadata={
+                "best_keyword": best_kw if roadmap and 'best_kw' in locals() else None,
+                "total_candidate_hits": len(all_candidate_hits)
+            }
+        )
+    except Exception as e:
+        logger.warning(f"[navigator] Observability logging failed: {e}")
+
     return {"roadmap": roadmap, "workspace": []}
 
 
@@ -3405,6 +3443,42 @@ def executor_node(state: RAGAgentState) -> dict:
             patched_calls = list(response.tool_calls)
         patched_response = AIMessage(content=response.content or "", tool_calls=patched_calls)
         logger.info(f"[executor] tool calls: {[tc['name'] for tc in patched_calls]}")
+        
+        # Phase 1+ Task 2: Observability integration for tool selection
+        try:
+            from config.observability import log_decision, DecisionType
+            log_decision(
+                decision_type=DecisionType.TOOL_SELECTION,
+                context={
+                    "plan_step": step_hint[:100] if step_hint else "",
+                    "iteration": iteration,
+                    "max_iterations": max_iter,
+                    "current_step": current_step + 1,
+                    "total_steps": len(plan)
+                },
+                params_used={
+                    "tool_choice": tool_choice,
+                    "available_tools": [t.name for t in REACT_TOOLS] if REACT_TOOLS else [],
+                    "roadmap_enabled": bool(roadmap)
+                },
+                outcome={
+                    "selected_tools": [tc['name'] for tc in patched_calls],
+                    "tool_args_summary": {tc['name']: list(tc.get('args', {}).keys()) for tc in patched_calls},
+                    "path_constraint_injected": any(
+                        tc['name'] in _PATH_CONSTRAINT_TOOLS and tc.get('args', {}).get('path_constraint')
+                        for tc in patched_calls
+                    )
+                },
+                reason=f"LLM selected {len(patched_calls)} tool(s) for step {current_step+1}/{len(plan)}",
+                confidence=0.85,
+                metadata={
+                    "llm_runtime_ms": runtime.get("elapsed_ms", 0) if runtime else 0,
+                    "llm_model": runtime.get("model", "unknown") if runtime else "unknown"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[executor] Observability logging failed: {e}")
+        
         return {
             "messages": [step_msg, patched_response],
             "iterations": iteration + 1,
@@ -3753,8 +3827,10 @@ def _score_followup_coverage(question: str) -> tuple[float, int]:
     if not question or len(question) < 4:
         return (0.0, 0)
     try:
+        from config.param_registry import param
+        probe_top_k = RetrievalPresets.NARROW  # Phase 1 #116: use semantic preset instead of hardcoded 3
         from app.agent.tools import text_search as _ts
-        raw = _ts.invoke({"query": question, "top_k": 3}) if hasattr(_ts, "invoke") else _ts(query=question, top_k=3)
+        raw = _ts.invoke({"query": question, "top_k": probe_top_k}) if hasattr(_ts, "invoke") else _ts(query=question, top_k=probe_top_k)
         rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
         if not isinstance(rows, list) or not rows:
             return (0.0, 0)
@@ -3796,9 +3872,13 @@ def _score_followup_coverage(question: str) -> tuple[float, int]:
 
 
 def _coverage_tier(score: float) -> str:
-    if score >= 0.65:
+    """Phase 1 #116: Externalized thresholds via param()"""
+    from config.param_registry import param
+    high_thresh = param("followup_coverage_high", default=0.65)
+    med_thresh = param("followup_coverage_med", default=0.45)
+    if score >= high_thresh:
         return "high"
-    if score >= 0.45:
+    if score >= med_thresh:
         return "med"
     return "low"
 
@@ -3884,6 +3964,9 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
         return []
     try:
         from concurrent.futures import ThreadPoolExecutor
+        from config.observability import log_decision, DecisionType  # Phase 1 #115: Add observability
+        from config.param_registry import param
+        
         candidates = out[: max_n * 3]  # over-collect, then prune
         with ThreadPoolExecutor(max_workers=min(6, len(candidates))) as ex:
             scored = list(ex.map(lambda c: _score_followup_coverage(c["question"]), candidates))
@@ -3891,10 +3974,22 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
             c["coverage_score"] = s
             c["coverage_tier"] = _coverage_tier(s)
             c["coverage_chunks"] = n
-        # keep high+med; if none survive, keep up to 2 low-tier so UI shows "可能不在 KB"
+        
+        # Phase 1 #115: Log followup filtering decision
+        high_thresh = param("followup_coverage_high", default=0.65)
+        med_thresh = param("followup_coverage_med", default=0.45)
         kept = [c for c in candidates if c["coverage_tier"] != "low"]
         if not kept:
             kept = candidates[:2]
+        log_decision(
+            decision_type=DecisionType.FOLLOWUP_FILTER,
+            rationale=f"Filtered {len(candidates)} candidates → {len(kept)} kept (high≥{high_thresh}, med≥{med_thresh})",
+            inputs={"query": query, "candidates_count": len(candidates)},
+            outputs={"kept_count": len(kept), "tier_distribution": {t: sum(1 for c in candidates if c["coverage_tier"] == t) for t in ["high", "med", "low"]}},
+            confidence=sum(c["coverage_score"] for c in kept) / len(kept) if kept else 0.0,
+            metadata={"max_n": max_n, "answer_len": len(answer or "")}
+        )
+        
         kept.sort(key=lambda c: c.get("coverage_score", 0.0), reverse=True)
         return kept[:max_n]
     except Exception as e:
@@ -3905,8 +4000,11 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
 
 def contract_verifier_node(state: RAGAgentState) -> dict:
     """Aggregate all 4 node contracts; set quality_converged and root_cause_node."""
+    from config.observability import log_decision, DecisionType  # Phase 1 #115
+    from config.param_registry import param
+    
     outer_iter = state.get("outer_iteration", 0)
-    max_outer = state.get("max_outer_iterations", 3)
+    max_outer = param("contract_max_outer_iterations", default=3)  # Phase 1 #116
 
     all_results = [
         verify_query_analysis_contract(state),
@@ -3918,6 +4016,14 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
 
     if all_passed:
         logger.info("[contract_verifier] all contracts passed")
+        log_decision(
+            decision_type=DecisionType.CONTRACT_CONVERGENCE,
+            rationale=f"All 4 contracts passed at iteration {outer_iter}/{max_outer}",
+            inputs={"outer_iter": outer_iter, "max_outer": max_outer},
+            outputs={"converged": True, "passed_nodes": 4},
+            confidence=1.0,
+            metadata={"contracts": [r["node"] for r in all_results]}
+        )
         return {
             "contract_results": all_results,
             "quality_converged": True,
@@ -3925,6 +4031,49 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
 
     if outer_iter >= max_outer:
         logger.warning(f"[contract_verifier] max_outer_iterations ({max_outer}) reached, forcing output")
+        
+        # Sprint 2: Trigger learning for persistent contract failures (#117)
+        failed_nodes = [r["node"] for r in all_results if not r["passed"]]
+        if failed_nodes:
+            query = state.get("query", "")
+            try:
+                from config.feature_flags import is_feature_enabled
+                
+                # Get AdaptiveRetestScheduler from main.py global
+                from main import get_adaptive_retest_scheduler
+                adaptive_scheduler = get_adaptive_retest_scheduler()
+                
+                if is_feature_enabled("LEARNING_USE_ADAPTIVE_SCHEDULER") and adaptive_scheduler:
+                    # 新路径：通过 AdaptiveRetestScheduler
+                    from app.agent.adaptive_retest_scheduler import RetestRequest, RetestPriority
+                    from datetime import datetime, timezone
+                    
+                    question_hash = await adaptive_scheduler.request_retest(RetestRequest(
+                        question=query,
+                        source="contract",
+                        priority=RetestPriority.REPEATED_QUESTION,
+                        metadata={
+                            "trigger": "contract_violation",
+                            "outer_iter": outer_iter,
+                            "max_outer": max_outer,
+                            "failed_nodes": failed_nodes,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ))
+                    
+                    logger.info(f"✅ Contract violation queued for learning: {query[:50]}... (hash={question_hash[:8]}...)")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to queue contract violation for learning: {e}")
+        
+        log_decision(
+            decision_type=DecisionType.CONTRACT_CONVERGENCE,
+            rationale=f"Forced convergence: max iterations {max_outer} reached",
+            inputs={"outer_iter": outer_iter, "max_outer": max_outer},
+            outputs={"converged": False, "failed_nodes": failed_nodes},
+            confidence=0.3,
+            metadata={"forced": True, "learning_triggered": len(failed_nodes) > 0}
+        )
         return {
             "contract_results": all_results,
             "quality_converged": True,
@@ -3935,6 +4084,15 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
         f"[contract_verifier] outer_iter={outer_iter}/{max_outer} "
         f"failed_nodes={[r['node'] for r in all_results if not r['passed']]} "
         f"root_cause={root}"
+    )
+    
+    log_decision(
+        decision_type=DecisionType.CONTRACT_ITERATION,
+        rationale=f"Contracts not met, retry iteration {outer_iter+1}/{max_outer}",
+        inputs={"outer_iter": outer_iter, "max_outer": max_outer, "root_cause": root},
+        outputs={"failed_nodes": [r["node"] for r in all_results if not r["passed"]]},
+        confidence=0.5,
+        metadata={"root_cause_node": root}
     )
 
     return {

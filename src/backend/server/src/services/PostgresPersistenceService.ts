@@ -4,6 +4,7 @@
  */
 
 import { Pool, PoolClient } from 'pg';
+import { runtimeConfig } from '../config/runtime';
 
 export interface PersistedSession {
   sessionId: string;
@@ -17,6 +18,7 @@ export interface PersistedSession {
 }
 
 export interface PostgresConfig {
+  enabled?: boolean;
   connectionString?: string;
   host?: string;
   port?: number;
@@ -31,20 +33,31 @@ export class PostgresPersistenceService {
   private isConnected = false;
 
   constructor(config?: PostgresConfig) {
-    const connectionString = config?.connectionString || process.env.DATABASE_URL;
+    const hasExplicitConfig = Boolean(config?.connectionString || config?.host);
+    const enabled =
+      config?.enabled ?? (hasExplicitConfig || runtimeConfig.persistence.enabled);
+    const connectionString =
+      config?.connectionString || runtimeConfig.persistence.connectionString;
+
+    if (!enabled && !hasExplicitConfig) {
+      console.warn('[PostgresPersistence] No PostgreSQL configuration provided; persistence disabled.');
+      return;
+    }
+
     if (connectionString) {
-      this.pool = new Pool({ connectionString, ssl: config?.ssl ?? false });
-    } else if (config?.host) {
       this.pool = new Pool({
-        host: config.host,
-        port: config.port || 5432,
-        database: config.database || 'rag_dashboard',
-        user: config.user || 'postgres',
-        password: config.password || '',
-        ssl: config?.ssl ?? false,
+        connectionString,
+        ssl: config?.ssl ?? runtimeConfig.persistence.ssl,
       });
     } else {
-      console.warn('[PostgresPersistence] No PostgreSQL configuration provided; persistence disabled.');
+      this.pool = new Pool({
+        host: config?.host ?? runtimeConfig.databases.postgresHost,
+        port: config?.port ?? runtimeConfig.databases.postgresPort,
+        database: config?.database ?? runtimeConfig.databases.postgresDatabase,
+        user: config?.user ?? runtimeConfig.databases.postgresUser,
+        password: config?.password ?? runtimeConfig.databases.postgresPassword,
+        ssl: config?.ssl ?? runtimeConfig.persistence.ssl,
+      });
     }
   }
 

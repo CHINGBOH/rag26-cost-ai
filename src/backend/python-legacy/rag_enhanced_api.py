@@ -11,6 +11,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -18,7 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # 添加项目路径
-sys.path.insert(0, '/home/l/rag-dashboard/src/backend/python-legacy')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from config.runtime import read_runtime_config
 
 from rag_llm_pipeline import (
     RAGLLMPipeline,
@@ -26,9 +29,11 @@ from rag_llm_pipeline import (
     GenerationResult
 )
 
+runtime_config = read_runtime_config()
+
 # 日志配置
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, runtime_config.log_level, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -90,7 +95,7 @@ app = FastAPI(
 # 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(runtime_config.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -194,7 +199,7 @@ async def root():
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8001,
-        log_level="info"
+        host=runtime_config.api_host,
+        port=runtime_config.enhanced_api_port,
+        log_level=runtime_config.log_level.lower(),
     )

@@ -1,61 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { getLearningDashboard, LearningDashboard, reconcileLearningProjections } from '../../services/metricsApi';
 import './DashboardPanel.css';
 
-interface HealthMetrics {
-  status: 'good' | 'warning' | 'critical';
-  score: number;
-  last_check: number;
-}
-
-interface KeyMetrics {
-  last_run: number | null;
-  next_run: number | null;
-  running: boolean;
-  pending_approvals: number;
-}
-
-interface Alert {
-  severity: 'warning' | 'critical';
-  message: string;
-  created_at: number;
-  acknowledged: boolean;
-}
-
-interface TrendData {
-  date: string;
-  rate: number;
-  problems: number;
-  fixed: number;
-}
-
-interface RecentEvent {
-  timestamp: number | null;
-  route: string;
-  description: string;
-  status: 'verified' | 'applied' | 'reverted' | 'pending';
-}
-
-interface DashboardData {
-  health: HealthMetrics;
-  key_metrics: KeyMetrics;
-  improvement_trend: TrendData[];
-  alerts: Alert[];
-  recent_events: RecentEvent[];
-}
-
 export const DashboardPanel: React.FC = () => {
-  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [dashboard, setDashboard] = useState<LearningDashboard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileNote, setReconcileNote] = useState<string | null>(null);
 
   const fetchDashboard = async () => {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('/api/v1/learning/dashboard');
-      if (!response.ok) throw new Error('Failed to fetch dashboard');
-      const data = await response.json();
+      const data = await getLearningDashboard();
+      if (!data) throw new Error('Failed to fetch dashboard');
       setDashboard(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -63,6 +23,24 @@ export const DashboardPanel: React.FC = () => {
       console.error('Dashboard fetch error:', message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleReconcile = async () => {
+    try {
+      setReconciling(true);
+      setReconcileNote(null);
+      const result = await reconcileLearningProjections();
+      if (!result) {
+        setReconcileNote('修复请求失败，请稍后重试。');
+        return;
+      }
+      setReconcileNote(
+        `已重建 ${result.rebuilt_total} 条投影记录，剩余 drift ${result.remaining_drift_count}。`,
+      );
+      await fetchDashboard();
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -84,7 +62,7 @@ export const DashboardPanel: React.FC = () => {
 
   if (loading || !dashboard) return <div className="loading">⏳ 加载看板中...</div>;
 
-  const { health, key_metrics, improvement_trend, alerts, recent_events } = dashboard;
+  const { health, key_metrics, improvement_trend, alerts, recent_events, projection_drift } = dashboard;
 
   const healthColor = 
     health.status === 'good' ? '#2ecc71' : 
@@ -141,7 +119,59 @@ export const DashboardPanel: React.FC = () => {
           </span>
           <span className="hint">当前状态</span>
         </div>
+        <div className="metric-card">
+          <span className="label">Projection Drift</span>
+          <span className={`value ${(projection_drift?.total_drift_count || 0) > 0 ? 'warning' : ''}`}>
+            {projection_drift?.total_drift_count ?? 0}
+          </span>
+          <span className="hint">
+            {(projection_drift?.drifted_projections?.length || 0) > 0
+              ? `${projection_drift?.drifted_projections.length} 个读面受影响`
+              : '无漂移'}
+          </span>
+        </div>
       </div>
+
+      {projection_drift && (
+        <div className="drift-section">
+          <div className="drift-section-head">
+            <h3>🧭 Canonical Projection Drift</h3>
+            <div className="drift-section-actions">
+              <span className={`drift-total ${(projection_drift.total_drift_count || 0) > 0 ? 'warning' : 'healthy'}`}>
+                {projection_drift.total_drift_count || 0}
+              </span>
+              <button
+                type="button"
+                className="drift-reconcile-btn"
+                onClick={handleReconcile}
+                disabled={reconciling}
+              >
+                {reconciling ? '修复中…' : 'Reconcile'}
+              </button>
+            </div>
+          </div>
+          {reconcileNote && <p className="drift-note">{reconcileNote}</p>}
+          {(projection_drift.drifted_projections || []).length === 0 ? (
+            <p className="drift-empty">当前三张核心 projection 与 canonical ledger 保持一致。</p>
+          ) : (
+            <div className="drift-grid">
+              {Object.entries(projection_drift.projections || {}).map(([name, detail]) => (
+                <div key={name} className={`drift-card ${(detail.drift_count || 0) > 0 ? 'has-drift' : ''}`}>
+                  <div className="drift-card-title">{name}</div>
+                  <div className="drift-card-count">{detail.drift_count || 0}</div>
+                  <div className="drift-card-meta">
+                    <span>ledger {detail.ledger_count ?? 0}</span>
+                    <span>projection {detail.projection_count ?? 0}</span>
+                    <span>missing {(detail.missing_in_projection || []).length}</span>
+                    <span>stale {(detail.stale_in_projection || []).length}</span>
+                    <span>mismatch {(detail.mismatches || []).length}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 告警 */}
       {alerts.length > 0 && (
@@ -233,7 +263,10 @@ export const DashboardPanel: React.FC = () => {
                 </div>
                 <div className={`event-status status-${event.status}`}>
                   {event.status === 'verified' && '✅ 已验证'}
+                  {event.status === 'pending_review' && '📋 待审核'}
+                  {event.status === 'approved' && '🕓 已批准'}
                   {event.status === 'applied' && '📝 已应用'}
+                  {event.status === 'rejected' && '🚫 已拒绝'}
                   {event.status === 'reverted' && '↩️ 已撤销'}
                   {event.status === 'pending' && '⏳ 待处理'}
                 </div>

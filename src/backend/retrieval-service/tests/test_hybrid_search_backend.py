@@ -68,7 +68,7 @@ def test_hybrid_search_prefers_milvus_dense_leg(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(tools, "_query_fee_comparison_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_appendix_standard_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_fill_requirement_text_chunks", lambda conn, query, top_k=10: [])
-    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10, path_constraint="": [])
     monkeypatch.setattr(tools, "_should_include_structured_tables", lambda query: False)
 
     result = json.loads(tools.hybrid_search.func("企业管理费计算规则", top_k=3))
@@ -123,7 +123,7 @@ def test_hybrid_search_keeps_pgvector_when_path_constraint_present(monkeypatch: 
     monkeypatch.setattr(tools, "_query_fee_comparison_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_appendix_standard_text_chunks", lambda conn, query, top_k=10: [])
     monkeypatch.setattr(tools, "_query_fill_requirement_text_chunks", lambda conn, query, top_k=10: [])
-    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10, path_constraint="": [])
     monkeypatch.setattr(tools, "_should_include_structured_tables", lambda query: False)
 
     result = json.loads(
@@ -133,3 +133,63 @@ def test_hybrid_search_keeps_pgvector_when_path_constraint_present(monkeypatch: 
     assert result[0]["source_db"] == "hybrid_vector"
     assert result[0]["metadata"]["vector_backend"] == "pgvector"
     assert result[0]["retrieval_path"] == "vector"
+
+
+def test_hybrid_search_runtime_override_can_disable_rrf(monkeypatch: pytest.MonkeyPatch) -> None:
+    class PgCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=None) -> None:
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            if "embedding <=>" in self.query:
+                return [(21, "doc-v", 3, "PG vector hit", 0.79)]
+            if "ts_rank" in self.query:
+                return [(22, "doc-t", 4, "PG text hit", 0.61)]
+            return []
+
+    class PgConn:
+        def cursor(self):
+            return PgCursor()
+
+        def rollback(self):
+            return None
+
+    monkeypatch.setattr(
+        tools,
+        "AppConfig",
+        lambda: SimpleNamespace(vector_store=SimpleNamespace(type="qdrant")),
+    )
+    monkeypatch.setattr(
+        tools,
+        "get_runtime_override",
+        lambda key, default, refresh=False: False if key == "rerank_enabled" else default,
+    )
+    monkeypatch.setattr(tools, "_milvus_vector_results", lambda query, top_k: [])
+    monkeypatch.setattr(tools, "_get_embedding", lambda text: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(tools, "_get_pg_conn", lambda: PgConn())
+    monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
+    monkeypatch.setattr(tools, "_table_available", lambda conn, name: False)
+    monkeypatch.setattr(tools, "_resolve_text_search_config", lambda conn: "chinese")
+    monkeypatch.setattr(tools, "_table_has_column", lambda conn, table, column: False)
+    monkeypatch.setattr(
+        tools,
+        "_rrf_fuse_chunks",
+        lambda ranked_lists, rank_constant=60: (_ for _ in ()).throw(AssertionError("RRF should be skipped")),
+    )
+    monkeypatch.setattr(tools, "_query_fee_formula_text_chunks", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_fee_comparison_text_chunks", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_appendix_standard_text_chunks", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_fill_requirement_text_chunks", lambda conn, query, top_k=10: [])
+    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10, path_constraint="": [])
+    monkeypatch.setattr(tools, "_should_include_structured_tables", lambda query: False)
+
+    result = json.loads(tools.hybrid_search.func("企业管理费计算规则", top_k=3))
+
+    assert [item["source_db"] for item in result[:2]] == ["hybrid_vector", "hybrid_text"]

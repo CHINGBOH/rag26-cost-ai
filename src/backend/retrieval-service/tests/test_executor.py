@@ -5,6 +5,7 @@
 """
 
 import json
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
@@ -20,6 +21,15 @@ from app.agent.executor import (
 
 class TestPatchValidation:
     """补丁验证测试"""
+
+    def test_executor_resolves_repo_paths_from_repo_root(self):
+        """Executor should resolve repo-relative paths from the actual repository root."""
+        executor = PatchExecutor()
+
+        expected_repo_root = Path(__file__).resolve().parents[4]
+        assert executor.repo_root == expected_repo_root
+        assert executor.config_path == expected_repo_root / "config" / "config.yaml"
+        assert executor.test_script == expected_repo_root / "tests" / "test_agent_16.py"
 
     def test_validate_patch_missing_id(self):
         """测试缺少 patch_id 的补丁"""
@@ -163,6 +173,15 @@ class TestPatchApplication:
 
                     assert patch.status == PatchStatus.FAILED
                     assert patch.error_msg is not None
+
+    async def test_health_check_uses_current_graph_entrypoint(self):
+        """Executor health check should use the current graph factory."""
+        executor = PatchExecutor()
+
+        with mock_patch("app.agent.graph.get_agent_graph", return_value=MagicMock()) as mock_get_graph:
+            await executor._health_check()
+
+        mock_get_graph.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -402,6 +421,64 @@ class TestDatabaseOperations:
 
                 assert rate == 0.5  # 默认值
 
+    async def test_record_application_writes_improvement_event_to_ledger(self):
+        executor = PatchExecutor()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        patch = PatchApplication(
+            patch_id="test_apply_event",
+            event_id=8,
+            affected_route="R1_navigator_dict",
+            patch_type="prompt",
+            patch_payload={"gap_key": "gap_001", "description": "Apply safer navigator rule"},
+            status=PatchStatus.APPLIED,
+        )
+
+        with mock_patch.object(executor, "_get_db_conn", return_value=mock_conn), mock_patch.object(
+            executor, "_put_db_conn"
+        ), mock_patch("app.agent.executor.update_knowledge_gap_status"):
+            await executor._record_application(patch)
+
+        sql_calls = [call.args[0] for call in mock_cursor.execute.call_args_list]
+        assert any("UPDATE improvement_events" in sql for sql in sql_calls)
+        assert any("INSERT INTO event_ledger" in sql for sql in sql_calls)
+
+    async def test_record_verification_moves_gap_to_observing(self):
+        """Successful verification should move the gap into observing, not resolved."""
+        executor = PatchExecutor()
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value = mock_cursor
+
+        patch = PatchApplication(
+            patch_id="test_gap_observing",
+            event_id=9,
+            affected_route="R4_rerank_weights",
+            patch_type="weight",
+            patch_payload={"gap_key": "gap_001", "description": "Rebalance rerank weights"},
+            status=PatchStatus.APPLIED,
+            applied_at=1234567890.0,
+        )
+
+        with mock_patch.object(executor, "_get_db_conn", return_value=mock_conn), mock_patch.object(
+            executor, "_put_db_conn"
+        ), mock_patch("app.agent.executor.update_knowledge_gap_status") as mock_update:
+            await executor._record_verification(
+                patch,
+                {"success_rate": 0.75, "passed": 12, "failed": 4},
+                0.5,
+                0.75,
+            )
+
+        assert mock_update.call_args.args[1] == "observing"
+        assert (
+            mock_update.call_args.kwargs["metadata_patch"]["observation_window_days"] == 7
+        )
+        sql_calls = [call.args[0] for call in mock_cursor.execute.call_args_list]
+        assert any("INSERT INTO event_ledger" in sql for sql in sql_calls)
+
 
 @pytest.mark.asyncio
 class TestPatchRoutes:
@@ -508,6 +585,10 @@ async def test_execute_improvement_event_full_flow():
         1,
         "R4_rerank_weights",
         {"weights": {"bm25": 0.3, "semantic": 0.7}},
+        None,
+        None,
+        None,
+        None,
     )
 
     with mock_patch("app.agent.executor.PatchExecutor") as MockExecutor:
@@ -545,3 +626,137 @@ async def test_execute_improvement_event_full_flow():
         assert result["success"] is True
         assert result["status"] == "verified"
         assert "verification_result" in result
+
+
+@pytest.mark.asyncio
+async def test_execute_improvement_event_resumes_verification_without_reapply():
+    """已应用未验证的事件应直接恢复验证，不重复应用补丁。"""
+    from datetime import datetime, timezone
+
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    applied_at = datetime.now(timezone.utc)
+
+    mock_pool.getconn.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (
+        1,
+        "R4_rerank_weights",
+        {"type": "ranking_optimization", "review": {"status": "approved"}},
+        applied_at,
+        None,
+        None,
+        None,
+    )
+
+    with mock_patch("app.agent.executor.PatchExecutor") as MockExecutor:
+        mock_executor = MagicMock()
+        MockExecutor.return_value = mock_executor
+
+        async def mock_verify(*args, **kwargs):
+            patch = args[0]
+            patch.status = PatchStatus.VERIFIED
+            patch.verified_at = time.time()
+            patch.verification_result = {"after_rate": 0.8}
+            return patch
+
+        mock_executor.verify_patch = mock_verify
+        mock_executor.apply_patch = AsyncMock(side_effect=AssertionError("apply_patch should not be called"))
+        mock_executor._get_db_conn = MagicMock(return_value=mock_conn)
+        mock_executor._put_db_conn = MagicMock()
+
+        result = await execute_improvement_event(1, pool=mock_pool)
+
+        assert result["success"] is True
+        assert result["status"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_execute_improvement_event_refuses_unapproved_event():
+    """未批准事件不应进入 executor。"""
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+
+    mock_pool.getconn.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (
+        1,
+        "R4_rerank_weights",
+        {"type": "ranking_optimization", "review": {"status": "pending_review"}},
+        None,
+        None,
+        None,
+        None,
+    )
+
+    result = await execute_improvement_event(1, pool=mock_pool)
+
+    assert result["success"] is False
+    assert result["status"] == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_execute_improvement_event_returns_failed_without_retrying_failed_record():
+    """Failed verification metadata should short-circuit executor retries."""
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+
+    mock_pool.getconn.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (
+        1,
+        "R4_rerank_weights",
+        {"type": "ranking_optimization", "review": {"status": "approved"}},
+        None,
+        None,
+        None,
+        {"success": False, "status": "failed", "error": "timeout"},
+    )
+
+    with mock_patch.object(PatchExecutor, "apply_patch", new=AsyncMock(side_effect=AssertionError("apply_patch should not run"))), \
+         mock_patch.object(PatchExecutor, "verify_patch", new=AsyncMock(side_effect=AssertionError("verify_patch should not run"))):
+        result = await execute_improvement_event(1, pool=mock_pool)
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["error"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_execute_improvement_event_persists_failed_state():
+    """Executor failures should be persisted so events do not stay stuck in applied/approved."""
+    mock_pool = MagicMock()
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+
+    mock_pool.getconn.return_value = mock_conn
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (
+        1,
+        "R4_rerank_weights",
+        {"type": "ranking_optimization", "review": {"status": "approved"}},
+        None,
+        None,
+        None,
+        None,
+    )
+
+    async def _mock_apply(self, patch):
+        patch.status = PatchStatus.APPLIED
+        patch.applied_at = time.time()
+        return patch
+
+    async def _mock_verify(self, patch):
+        raise Exception("Test suite timeout (>10min)")
+
+    with mock_patch.object(PatchExecutor, "apply_patch", _mock_apply), \
+         mock_patch.object(PatchExecutor, "verify_patch", _mock_verify), \
+         mock_patch.object(PatchExecutor, "_record_failure", new=AsyncMock()) as mock_record_failure:
+        result = await execute_improvement_event(1, pool=mock_pool)
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    mock_record_failure.assert_awaited_once()

@@ -3,6 +3,8 @@
  * 所有工具已通过 shell 验证
  */
 
+import { runtimeConfig } from '../config/runtime'
+
 // ==================== 类型定义 ====================
 
 export interface ToolContext {
@@ -140,10 +142,10 @@ export interface OCRDocument {
 }
 
 const defaultOCRConfig: OCRConfig = {
-  ocrServiceUrl: process.env.OCR_SERVICE_URL || 'http://localhost:8001',
-  language: 'ch',
-  dpi: 300,
-  timeout: 300000
+  ocrServiceUrl: runtimeConfig.services.ocrApiUrl,
+  language: runtimeConfig.ocr.language,
+  dpi: runtimeConfig.ocr.dpi,
+  timeout: runtimeConfig.ocr.timeoutMs
 }
 
 /** PDF OCR 工具 - 已验证 */
@@ -242,9 +244,9 @@ export interface ChunkConfig {
 }
 
 const defaultChunkConfig: ChunkConfig = {
-  chunkSize: 512,
-  chunkOverlap: 50,
-  minChunkSize: 100
+  chunkSize: runtimeConfig.ocr.chunkSize,
+  chunkOverlap: runtimeConfig.ocr.chunkOverlap,
+  minChunkSize: runtimeConfig.ocr.minChunkSize
 }
 
 /** 提取文本工具 */
@@ -324,9 +326,9 @@ export interface VectorDocument {
 }
 
 const defaultEmbeddingConfig: EmbeddingConfig = {
-  model: 'BAAI/bge-m3',
-  dimensions: 1024,
-  batchSize: 32
+  model: runtimeConfig.embeddings.model,
+  dimensions: runtimeConfig.embeddings.dimensions,
+  batchSize: runtimeConfig.embeddings.batchSize
 }
 
 /** 生成嵌入向量工具 - 模拟实现 */
@@ -388,13 +390,14 @@ export interface StoreConfig {
 }
 
 const defaultStoreConfig: StoreConfig = {
-  qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
-  collectionName: 'documents'
+  qdrantUrl: runtimeConfig.databases.qdrantUrl,
+  collectionName: runtimeConfig.retrieval.documentsCollection
 }
 
 /** 存储到向量库工具 - 模拟实现 */
 export const storeVectors = (config?: Partial<StoreConfig>): Tool<VectorDocument[], boolean> =>
   async (documents: VectorDocument[], context?: Partial<ToolContext>) => {
+    const cfg = { ...defaultStoreConfig, ...config }
     const start = Date.now()
     
     // 实际应调用 Qdrant API
@@ -404,7 +407,7 @@ export const storeVectors = (config?: Partial<StoreConfig>): Tool<VectorDocument
       data: true,
       context: createContext({ 
         storedCount: documents.length,
-        collection: defaultStoreConfig.collectionName
+        collection: cfg.collectionName
       }),
       duration: Date.now() - start
     }

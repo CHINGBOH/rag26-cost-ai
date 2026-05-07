@@ -5,8 +5,9 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { runtimeConfig } from '../config/runtime';
 
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 interface LogEntry {
   timestamp: string;
@@ -17,12 +18,13 @@ interface LogEntry {
   sessionId?: string;
 }
 
-interface LoggerConfig {
+export interface LoggerConfig {
   level: LogLevel;
   outputFile?: string;
   enableConsole: boolean;
   enableFile: boolean;
   prettyPrint: boolean;
+  flushIntervalMs: number;
 }
 
 class Logger {
@@ -36,7 +38,8 @@ class Logger {
       outputFile: config?.outputFile || './logs/app.log',
       enableConsole: config?.enableConsole ?? true,
       enableFile: config?.enableFile ?? false,
-      prettyPrint: config?.prettyPrint ?? false
+      prettyPrint: config?.prettyPrint ?? false,
+      flushIntervalMs: config?.flushIntervalMs ?? 5000
     };
 
     if (this.config.enableFile) {
@@ -65,7 +68,7 @@ class Logger {
   private startFlushTimer(): void {
     this.flushTimer = setInterval(() => {
       this.flush();
-    }, 5000); // 5秒刷新一次
+    }, this.config.flushIntervalMs);
   }
 
   /**
@@ -194,10 +197,12 @@ class Logger {
 
 // 创建全局logger实例
 export const logger = new Logger({
-  level: (process.env.LOG_LEVEL as LogLevel) || 'info',
-  enableConsole: true,
-  enableFile: process.env.ENABLE_FILE_LOG === 'true',
-  prettyPrint: process.env.NODE_ENV === 'development'
+  level: runtimeConfig.logging.level,
+  outputFile: runtimeConfig.logging.outputFile,
+  enableConsole: runtimeConfig.logging.enableConsole,
+  enableFile: runtimeConfig.logging.enableFile,
+  prettyPrint: runtimeConfig.logging.prettyPrint,
+  flushIntervalMs: runtimeConfig.logging.flushIntervalMs,
 });
 
 export { Logger };

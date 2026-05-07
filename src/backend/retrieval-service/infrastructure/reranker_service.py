@@ -3,10 +3,10 @@ Reranker 服务
 使用Cross-Encoder对候选结果进行精排
 """
 
-import os
 import logging
 from typing import List, Tuple
 import numpy as np
+from app.runtime_config import resolve_local_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -24,22 +24,10 @@ class RerankerService:
         """加载Reranker模型"""
         try:
             from sentence_transformers import CrossEncoder
-            import glob
 
-            # 动态计算模型目录
-            models_dir = os.environ.get("MODELS_DIR")
-            if not models_dir:
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                project_root = os.path.abspath(os.path.join(current_dir, "../../../.."))
-                models_dir = os.path.join(project_root, "models")
+            model_path = resolve_local_model_path(self.model_name)
 
-            # 关键：传本地快照路径而非模型名，绕过 transformers 的网络调用 bug
-            cache_model_name = self.model_name.replace("/", "--")
-            snapshot_pattern = os.path.join(models_dir, f"models--{cache_model_name}", "snapshots", "*")
-            snapshots = sorted(glob.glob(snapshot_pattern))
-
-            if snapshots:
-                model_path = snapshots[-1]  # 取最新快照
+            if model_path != self.model_name:
                 logger.info(f"Loading reranker from local snapshot: {model_path}")
             else:
                 model_path = self.model_name

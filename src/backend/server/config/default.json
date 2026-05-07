@@ -1,0 +1,152 @@
+{
+  "runtime": {
+    "app": {
+      "environment": "production"
+    },
+    "logging": {
+      "level": "info",
+      "outputFile": "./logs/app.log",
+      "enableConsole": true,
+      "enableFile": false,
+      "prettyPrint": false,
+      "flushIntervalMs": 5000
+    },
+    "telemetry": {
+      "endpoint": "",
+      "serviceName": "node-orchestrator"
+    },
+    "databases": {
+      "qdrantUrl": "http://localhost:6333",
+      "neo4jUrl": "bolt://localhost:7687",
+      "neo4jUsername": "neo4j",
+      "neo4jPassword": "",
+      "elasticsearchUrl": "http://localhost:9200",
+      "elasticsearchUsername": "",
+      "elasticsearchPassword": "",
+      "postgresHost": "localhost",
+      "postgresPort": 5432,
+      "postgresDatabase": "rag_db",
+      "postgresUser": "rag_user",
+      "postgresPassword": "rag_password"
+    },
+    "embeddings": {
+      "model": "text-embedding-ada-002",
+      "dimensions": 1536,
+      "batchSize": 32
+    },
+    "retrieval": {
+      "sessionContextCollection": "session_context",
+      "documentsCollection": "documents",
+      "documentsIndexName": "documents",
+      "timeoutMs": 30000,
+      "defaultTopK": 10,
+      "enableRerank": true,
+      "enableFusion": true,
+      "vectorWeight": 0.6,
+      "textWeight": 0.4,
+      "rerankWeight": 0.5,
+      "graphWeight": 0.0
+    },
+    "cascadeRetrieval": {
+      "enableNeo4j": false,
+      "enableElasticsearch": false,
+      "enablePostgres": false,
+      "defaultTopK": 10,
+      "vectorWeight": 0.5,
+      "graphWeight": 0.3,
+      "keywordWeight": 0.2
+    },
+    "ocr": {
+      "language": "ch",
+      "dpi": 300,
+      "timeoutMs": 300000,
+      "useGpu": false,
+      "chunkSize": 512,
+      "chunkOverlap": 50,
+      "minChunkSize": 100
+    },
+    "storage": {
+      "queueName": "queue:default",
+      "storeKeyPrefix": "store:",
+      "redisMaxRetriesPerRequest": 3,
+      "redisRetryMaxDelayMs": 3000
+    },
+    "persistence": {
+      "enabled": false,
+      "connectionString": "",
+      "ssl": false
+    },
+    "expertJudgment": {
+      "baseUrl": "https://api.kimi.com/coding/v1",
+      "apiKey": "",
+      "model": "kimi-for-coding",
+      "temperature": 0.3,
+      "maxTokens": 2000
+    },
+    "server": {
+      "host": "0.0.0.0",
+      "port": 3001,
+      "corsOrigins": [
+        "http://localhost:3000"
+      ],
+      "wsPublicUrl": "ws://localhost:8081/ws",
+      "requestTimeoutMs": 30000,
+      "connectionTimeoutMs": 30000
+    },
+    "rateLimit": {
+      "max": 100,
+      "timeWindow": "1 minute"
+    },
+    "heartbeat": {
+      "broadcastIntervalMs": 3000,
+      "silenceThresholdMs": 30000,
+      "statusLogIntervalMs": 60000
+    },
+    "llm": {
+      "provider": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "apiKey": "",
+      "deepseekApiKey": "",
+      "openaiApiKey": "",
+      "temperature": 0.7,
+      "maxTokens": 2000
+    },
+    "services": {
+      "redisUrl": "redis://localhost:6379",
+      "pythonApiUrl": "http://localhost:8000",
+      "ocrApiUrl": "http://localhost:8001",
+      "retrievalApiUrl": "http://localhost:8002",
+      "wsBroadcastUrl": "http://localhost:8081/broadcast"
+    },
+    "cache": {
+      "defaultTtlSeconds": 3600,
+      "keyPrefix": "rag:"
+    },
+    "taskQueue": {
+      "concurrency": 3,
+      "evaluationConcurrency": 5,
+      "ocrConcurrency": 2
+    },
+    "pipeline": {
+      "uploadDir": "/tmp/rag-uploads",
+      "maxConcurrent": 5,
+      "processingLoopIntervalMs": 1000
+    },
+    "recursion": {
+      "cleanupIntervalMs": 600000,
+      "completedSessionMaxAgeMs": 86400000,
+      "hardSessionMaxAgeMs": 604800000,
+      "requestTimeoutMs": 120000
+    },
+    "auth": {
+      "serviceSecret": "",
+      "jwtSecret": "",
+      "tokenExpirySeconds": 86400,
+      "jwtExpiresInSeconds": 3600,
+      "jwtRefreshExpiresInSeconds": 604800,
+      "defaultAdminUsername": "admin",
+      "defaultAdminPassword": ""
+    }
+  }
+}

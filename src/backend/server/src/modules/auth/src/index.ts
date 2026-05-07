@@ -5,11 +5,14 @@
 
 import { User, AuthCredentials, AuthToken } from '../../common/types'
 import { SignJWT, jwtVerify } from 'jose'
+import { createRuntimeConfig } from '../../../config/runtime'
 
 export interface AuthConfig {
   secret: string
   expiresIn: number
   refreshExpiresIn: number
+  defaultAdminUsername: string
+  defaultAdminPassword: string
 }
 
 export interface Permission {
@@ -17,33 +20,44 @@ export interface Permission {
   action: string
 }
 
-const defaultConfig: AuthConfig = {
-  secret: process.env.JWT_SECRET || '',
-  expiresIn: 3600, // 1小时
-  refreshExpiresIn: 7 * 24 * 3600 // 7天
+function resolveAuthConfig(config?: Partial<AuthConfig>): AuthConfig {
+  const runtimeConfig = createRuntimeConfig()
+  const resolvedConfig: AuthConfig = {
+    secret: config?.secret ?? runtimeConfig.auth.jwtSecret,
+    expiresIn: config?.expiresIn ?? runtimeConfig.auth.jwtExpiresInSeconds,
+    refreshExpiresIn: config?.refreshExpiresIn ?? runtimeConfig.auth.jwtRefreshExpiresInSeconds,
+    defaultAdminUsername: config?.defaultAdminUsername ?? runtimeConfig.auth.defaultAdminUsername,
+    defaultAdminPassword: config?.defaultAdminPassword ?? runtimeConfig.auth.defaultAdminPassword
+  }
+
+  if (!resolvedConfig.secret) {
+    throw new Error('JWT secret must be configured')
+  }
+
+  return resolvedConfig
 }
 
-// 验证JWT_SECRET必须设置
-if (!defaultConfig.secret) {
-  throw new Error('JWT_SECRET environment variable must be set')
+function createUserStore(config: AuthConfig): Map<string, User & { password: string }> {
+  if (!config.defaultAdminPassword) {
+    return new Map()
+  }
+
+  return new Map([
+    [config.defaultAdminUsername, {
+      id: '1',
+      username: config.defaultAdminUsername,
+      password: config.defaultAdminPassword,
+      roles: ['admin'],
+      permissions: ['*:*'],
+      createdAt: Date.now()
+    }]
+  ])
 }
 
 // 获取密钥字节
 function getSecretKey(secret: string): Uint8Array {
   return new TextEncoder().encode(secret)
 }
-
-// 模拟用户数据库 - 生产环境应使用真实数据库
-const users: Map<string, User & { password: string }> = new Map([
-  ['admin', {
-    id: '1',
-    username: 'admin',
-    password: process.env.DEFAULT_ADMIN_PASSWORD || 'admin123', // 从环境变量读取
-    roles: ['admin'],
-    permissions: ['*:*'],
-    createdAt: Date.now()
-  }]
-])
 
 // 会话存储
 const sessions: Map<string, AuthToken> = new Map()
@@ -52,6 +66,9 @@ const sessions: Map<string, AuthToken> = new Map()
  * 认证用户
  */
 export function authenticate(config?: Partial<AuthConfig>) {
+  const resolvedConfig = resolveAuthConfig(config)
+  const users = createUserStore(resolvedConfig)
+
   return async function auth(credentials: AuthCredentials): Promise<User> {
     const user = users.get(credentials.username)
 
@@ -68,7 +85,7 @@ export function authenticate(config?: Partial<AuthConfig>) {
  * 创建Token - 使用jose库实现真正的JWT
  */
 export function createToken(config?: Partial<AuthConfig>) {
-  const cfg = { ...defaultConfig, ...config }
+  const cfg = resolveAuthConfig(config)
 
   return async function generate(user: User): Promise<AuthToken> {
     const secretKey = getSecretKey(cfg.secret)
@@ -110,7 +127,7 @@ export function createToken(config?: Partial<AuthConfig>) {
  * 验证Token
  */
 export function verifyToken(config?: Partial<AuthConfig>) {
-  const cfg = { ...defaultConfig, ...config }
+  const cfg = resolveAuthConfig(config)
 
   return async function verify(token: string): Promise<User> {
     const session = sessions.get(token)
@@ -182,8 +199,10 @@ export function hasRole(role: string) {
  * 刷新Token
  */
 export function refreshToken(config?: Partial<AuthConfig>) {
+  const cfg = resolveAuthConfig(config)
+
   return async function refresh(refreshTokenValue: string): Promise<AuthToken> {
-    const secretKey = getSecretKey(defaultConfig.secret)
+    const secretKey = getSecretKey(cfg.secret)
 
     // 验证刷新令牌
     try {
@@ -219,13 +238,15 @@ export function revokeToken() {
  * 创建认证管道
  */
 export function createAuthPipeline(config?: Partial<AuthConfig>) {
+  const resolvedConfig = resolveAuthConfig(config)
+
   return {
-    authenticate: authenticate(config),
-    createToken: createToken(config),
-    verifyToken: verifyToken(config),
+    authenticate: authenticate(resolvedConfig),
+    createToken: createToken(resolvedConfig),
+    verifyToken: verifyToken(resolvedConfig),
     authorize: (permission: string) => authorize(permission),
     hasRole: (role: string) => hasRole(role),
-    refreshToken: refreshToken(config),
+    refreshToken: refreshToken(resolvedConfig),
     revokeToken: revokeToken()
   }
 }

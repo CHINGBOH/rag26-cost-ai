@@ -17,21 +17,25 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from sentence_transformers import SentenceTransformer
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+runtime_config = read_runtime_config()
 
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-EMBEDDING_MODEL = "/home/l/rag-dashboard/models/BAAI/bge-m3"
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+EMBEDDING_MODEL = runtime_config.embedding_model_path
 EMBEDDING_DIM = 1024
 CHUNK_SIZE = 300
 CHUNK_OVERLAP = 50
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
+QDRANT_HOST = runtime_config.qdrant_host
+QDRANT_PORT = runtime_config.qdrant_port
 COLLECTION_NAME = "document_chunks"
 
 class OCREmbedImporter:
@@ -83,7 +87,7 @@ class OCREmbedImporter:
             try:
                 from onnxruntime import InferenceSession
 
-                onnx_path = "/home/l/rag-dashboard/models/BAAI/bge-m3/onnx/model.onnx"
+                onnx_path = str(Path(runtime_config.models_dir) / "BAAI" / "bge-m3" / "onnx" / "model.onnx")
                 if os.path.exists(onnx_path):
                     logger.info(f"使用ONNX模型: {onnx_path}")
                     self.onnx_session = InferenceSession(onnx_path)

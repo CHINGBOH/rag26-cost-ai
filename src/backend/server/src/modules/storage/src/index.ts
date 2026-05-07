@@ -6,6 +6,7 @@
 
 import { CacheAdapter, QueueAdapter, StoreAdapter } from '../../common/types'
 import Redis from 'ioredis'
+import { runtimeConfig } from '../../../config/runtime'
 
 // ==================== 内存缓存实现 ====================
 
@@ -297,17 +298,17 @@ let redisClient: Redis | null = null
 export function getRedisClient(): Redis | null {
   if (redisClient) return redisClient
 
-  const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
-
   try {
-    redisClient = new Redis(redisUrl, {
-      maxRetriesPerRequest: 3,
+    redisClient = new Redis(runtimeConfig.services.redisUrl, {
+      maxRetriesPerRequest: runtimeConfig.storage.redisMaxRetriesPerRequest,
       retryStrategy: (times) => {
-        if (times > 3) {
-          console.warn('[Redis] Connection failed after 3 retries')
+        if (times > runtimeConfig.storage.redisMaxRetriesPerRequest) {
+          console.warn(
+            `[Redis] Connection failed after ${runtimeConfig.storage.redisMaxRetriesPerRequest} retries`,
+          )
           return null
         }
-        return Math.min(times * 100, 3000)
+        return Math.min(times * 100, runtimeConfig.storage.redisRetryMaxDelayMs)
       }
     })
 
@@ -346,7 +347,7 @@ export function createCache<T>(type: 'memory' | 'redis' = 'memory'): CacheAdapte
 
   const client = getRedisClient()
   if (client) {
-    return new RedisCache<T>(client)
+    return new RedisCache<T>(client, runtimeConfig.cache.keyPrefix)
   }
 
   // 如果 Redis 连接失败，降级到内存
@@ -361,7 +362,7 @@ export function createQueue<T>(type: 'memory' | 'redis' = 'memory'): QueueAdapte
 
   const client = getRedisClient()
   if (client) {
-    return new RedisQueue<T>(client)
+    return new RedisQueue<T>(client, runtimeConfig.storage.queueName)
   }
 
   console.warn('[Storage] Redis unavailable, falling back to memory queue')
@@ -375,7 +376,7 @@ export function createStore<T>(type: 'memory' | 'redis' | 'file' = 'memory'): St
 
   const client = getRedisClient()
   if (client) {
-    return new RedisStore<T>(client)
+    return new RedisStore<T>(client, runtimeConfig.storage.storeKeyPrefix)
   }
 
   console.warn('[Storage] Redis unavailable, falling back to memory store')

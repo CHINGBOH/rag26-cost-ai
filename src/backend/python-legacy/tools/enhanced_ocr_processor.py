@@ -14,24 +14,18 @@ from datetime import datetime
 import asyncpg
 import hashlib
 
-# 添加项目路径
-sys.path.insert(0, '/home/l/rag-dashboard/src/backend/python-legacy')
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
 
-# 配置
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-PROCESSED_LOG = "/home/l/rag-dashboard/data/ocr_outputs/processed_documents.log"
-MODEL_PATH = "/home/l/rag-dashboard/models"
+from config.runtime import read_runtime_config, tool_pg_config
 
-# 数据库配置
-POSTGRES_HOST = "localhost"
-POSTGRES_PORT = 5432
-POSTGRES_DB = "rag_db"
-POSTGRES_USER = "rag_user"
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "rag_password")
-
-# Qdrant配置
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
+runtime_config = read_runtime_config()
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+PROCESSED_LOG = str(Path(runtime_config.ocr_output_dir) / "processed_documents.log")
+MODEL_PATH = runtime_config.models_dir
+PG_CONFIG = tool_pg_config()
+QDRANT_HOST = runtime_config.qdrant_host
+QDRANT_PORT = runtime_config.qdrant_port
 
 # 日志配置
 logging.basicConfig(
@@ -359,11 +353,7 @@ class EnhancedOCRProcessor:
         
         # 连接数据库
         conn = await asyncpg.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD
+            **PG_CONFIG
         )
         
         try:
@@ -424,11 +414,7 @@ class EnhancedOCRProcessor:
 async def get_statistics():
     """获取统计信息"""
     conn = await asyncpg.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        database=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD
+        **PG_CONFIG
     )
     
     try:
@@ -490,11 +476,7 @@ async def main():
         ocr_files = processor.get_ocr_files()
         if ocr_files:
             conn = await asyncpg.connect(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD
+                **PG_CONFIG
             )
             
             try:

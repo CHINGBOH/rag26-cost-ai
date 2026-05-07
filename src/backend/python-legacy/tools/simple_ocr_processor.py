@@ -14,16 +14,15 @@ from datetime import datetime
 import asyncpg
 import hashlib
 
-# 配置
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-PROCESSED_LOG = "/home/l/rag-dashboard/data/ocr_outputs/processed_documents.log"
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
 
-# 数据库配置
-POSTGRES_HOST = "localhost"
-POSTGRES_PORT = 5432
-POSTGRES_DB = "rag_db"
-POSTGRES_USER = "rag_user"
-POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "rag_password")
+from config.runtime import read_runtime_config, tool_pg_config
+
+runtime_config = read_runtime_config()
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+PROCESSED_LOG = str(Path(runtime_config.ocr_output_dir) / "processed_documents.log")
+PG_CONFIG = tool_pg_config()
 
 # 日志配置
 logging.basicConfig(
@@ -181,11 +180,7 @@ class SimpleOCRProcessor:
         
         # 连接数据库
         conn = await asyncpg.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD
+            **PG_CONFIG
         )
         
         try:
@@ -243,11 +238,7 @@ class SimpleOCRProcessor:
 async def get_statistics():
     """获取统计信息"""
     conn = await asyncpg.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        database=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD
+        **PG_CONFIG
     )
     
     try:
@@ -305,11 +296,7 @@ async def main():
         ocr_files = processor.get_ocr_files()
         if ocr_files:
             conn = await asyncpg.connect(
-                host=POSTGRES_HOST,
-                port=POSTGRES_PORT,
-                database=POSTGRES_DB,
-                user=POSTGRES_USER,
-                password=POSTGRES_PASSWORD
+                **PG_CONFIG
             )
             
             try:

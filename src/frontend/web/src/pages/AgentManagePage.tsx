@@ -13,9 +13,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { PageHeader } from '../components/common/PageHeader';
+import { getApiBaseUrl } from '../config/runtime';
 import './AgentManagePage.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = getApiBaseUrl();
 
 interface AgentSummary {
   id: string;

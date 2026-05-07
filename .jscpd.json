@@ -1,0 +1,19 @@
+{
+  "absolute": true,
+  "minLines": 8,
+  "output": "reports/jscpd",
+  "reporters": ["console", "json"],
+  "threshold": 100,
+  "ignore": [
+    "**/.agent/**",
+    "**/.claude/**",
+    "**/.copilot-tracking/**",
+    "**/archive/**",
+    "**/coverage/**",
+    "**/dist/**",
+    "**/llama.cpp/**",
+    "**/logs/**",
+    "**/node_modules/**",
+    "**/tests/reports/**"
+  ]
+}

@@ -17,6 +17,7 @@ from functools import lru_cache
 from typing import List
 
 import numpy as np
+from app.runtime_config import read_runtime_config, resolve_local_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,15 @@ class EmbeddingService:
     def __init__(
         self, model_name: str = "BAAI/bge-m3", device: str = "cpu", use_mock: bool = False
     ):
+        runtime = read_runtime_config()
         self.model_name = model_name
         self.device = device
         self.model = None
         self.dimension = 1024
-        self.backend = os.environ.get("EMBEDDING_BACKEND", "sentence_transformers")
-        self.llama_url = os.environ.get("LLAMA_CPP_EMBED_URL", "").rstrip("/")
-        self.llama_model = os.environ.get("LLAMA_CPP_EMBED_MODEL", "llama.cpp-embedding")
-        self.expected_dimension = int(os.environ.get("EMBEDDING_VECTOR_DIM", "0") or 0)
+        self.backend = runtime.embedding_backend
+        self.llama_url = runtime.llama_cpp_embed_url
+        self.llama_model = runtime.llama_cpp_embed_model
+        self.expected_dimension = runtime.embedding_vector_dim
 
         if use_mock:
             logger.info("Using mock embedding service")
@@ -77,16 +79,15 @@ class EmbeddingService:
             return
 
         try:
-            cache_dir = os.path.join(os.path.dirname(__file__), "../../../models")
+            runtime = read_runtime_config()
+            cache_dir = str(runtime.models_dir)
             os.makedirs(cache_dir, exist_ok=True)
 
             logger.info("Loading embedding model: %s", self.model_name)
 
-            local_model_path = os.path.join(
-                cache_dir, "models--BAAI--bge-m3", "snapshots", "5617a9f61b028005a4858fdac845db406aefb181"
-            )
+            local_model_path = resolve_local_model_path(self.model_name)
 
-            if os.path.exists(local_model_path):
+            if local_model_path != self.model_name and os.path.exists(local_model_path):
                 logger.info("Using local model: %s", local_model_path)
                 self.model = SentenceTransformer(local_model_path, device=self.device)
             else:

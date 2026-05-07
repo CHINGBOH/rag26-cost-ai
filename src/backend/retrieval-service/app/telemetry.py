@@ -23,19 +23,20 @@ metrics-generator turns into traces_service_graph_request_total{client,server}.
 from __future__ import annotations
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
+
+from app.runtime_config import read_runtime_config
 
 
 def init_telemetry(app, *, service_name: str = "retrieval-service") -> bool:
     """Initialise OTEL if endpoint configured. Returns True iff activated."""
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-    )
+    runtime = read_runtime_config()
+    endpoint = runtime.otel_endpoint
     if not endpoint:
         logger.info("OTEL disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
         return False
+    service_name = runtime.otel_service_name or service_name
 
     try:
         from opentelemetry import trace

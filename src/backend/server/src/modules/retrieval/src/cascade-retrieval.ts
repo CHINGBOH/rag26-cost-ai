@@ -13,6 +13,7 @@ import { QdrantClient } from '@qdrant/qdrant-js';
 import { Neo4jGraph } from '@langchain/community/graphs/neo4j_graph';
 import { Client as ElasticsearchClient } from '@elastic/elasticsearch';
 import { Pool as PgPool } from 'pg';
+import { runtimeConfig } from '../../../config/runtime';
 
 // ==================== 类型定义 ====================
 
@@ -58,11 +59,36 @@ export interface CascadeSearchOptions {
   neo4jPassword?: string;
   elasticUsername?: string;
   elasticPassword?: string;
+  collectionName?: string;
+  indexName?: string;
+  enableNeo4j?: boolean;
+  enableElasticsearch?: boolean;
+  enablePostgres?: boolean;
 
   topK?: number;
   vectorWeight?: number;
   graphWeight?: number;
   keywordWeight?: number;
+}
+
+interface ResolvedCascadeSearchOptions {
+  qdrantUrl: string;
+  neo4jUrl: string;
+  elasticsearchUrl: string;
+  postgresUrl: string;
+  neo4jUsername: string;
+  neo4jPassword: string;
+  elasticUsername: string;
+  elasticPassword: string;
+  collectionName: string;
+  indexName: string;
+  enableNeo4j: boolean;
+  enableElasticsearch: boolean;
+  enablePostgres: boolean;
+  topK: number;
+  vectorWeight: number;
+  graphWeight: number;
+  keywordWeight: number;
 }
 
 export interface CascadeSearchResult {
@@ -79,6 +105,45 @@ export interface CascadeSearchResult {
   };
 }
 
+function buildPostgresConnectionString(): string {
+  const { postgresUser, postgresPassword, postgresHost, postgresPort, postgresDatabase } =
+    runtimeConfig.databases;
+  const username = encodeURIComponent(postgresUser);
+  const password = encodeURIComponent(postgresPassword);
+
+  return `postgres://${username}:${password}@${postgresHost}:${postgresPort}/${postgresDatabase}`;
+}
+
+export function resolveCascadeSearchOptions(
+  options: CascadeSearchOptions = {},
+): ResolvedCascadeSearchOptions {
+  return {
+    qdrantUrl: options.qdrantUrl ?? runtimeConfig.databases.qdrantUrl,
+    neo4jUrl: options.neo4jUrl ?? runtimeConfig.databases.neo4jUrl,
+    elasticsearchUrl: options.elasticsearchUrl ?? runtimeConfig.databases.elasticsearchUrl,
+    postgresUrl: options.postgresUrl ?? buildPostgresConnectionString(),
+    neo4jUsername: options.neo4jUsername ?? runtimeConfig.databases.neo4jUsername,
+    neo4jPassword: options.neo4jPassword ?? runtimeConfig.databases.neo4jPassword,
+    elasticUsername: options.elasticUsername ?? runtimeConfig.databases.elasticsearchUsername,
+    elasticPassword: options.elasticPassword ?? runtimeConfig.databases.elasticsearchPassword,
+    collectionName: options.collectionName ?? runtimeConfig.retrieval.documentsCollection,
+    indexName: options.indexName ?? runtimeConfig.retrieval.documentsIndexName,
+    enableNeo4j: options.enableNeo4j ?? (options.neo4jUrl !== undefined
+      ? true
+      : runtimeConfig.cascadeRetrieval.enableNeo4j),
+    enableElasticsearch: options.enableElasticsearch ?? (options.elasticsearchUrl !== undefined
+      ? true
+      : runtimeConfig.cascadeRetrieval.enableElasticsearch),
+    enablePostgres: options.enablePostgres ?? (options.postgresUrl !== undefined
+      ? true
+      : runtimeConfig.cascadeRetrieval.enablePostgres),
+    topK: options.topK ?? runtimeConfig.cascadeRetrieval.defaultTopK,
+    vectorWeight: options.vectorWeight ?? runtimeConfig.cascadeRetrieval.vectorWeight,
+    graphWeight: options.graphWeight ?? runtimeConfig.cascadeRetrieval.graphWeight,
+    keywordWeight: options.keywordWeight ?? runtimeConfig.cascadeRetrieval.keywordWeight,
+  };
+}
+
 // ==================== 级联检索服务 ====================
 
 export class CascadeRetrievalService {
@@ -86,24 +151,28 @@ export class CascadeRetrievalService {
   private neo4jGraph?: Neo4jGraph;
   private elasticClient?: ElasticsearchClient;
   private pgPool?: PgPool;
+  private readonly resolvedOptions: ResolvedCascadeSearchOptions;
 
-  private collectionName: string = 'documents';
-  private indexName: string = 'documents';
+  private collectionName: string;
+  private indexName: string;
 
   constructor(private options: CascadeSearchOptions = {}) {
+    this.resolvedOptions = resolveCascadeSearchOptions(options);
+    this.collectionName = this.resolvedOptions.collectionName;
+    this.indexName = this.resolvedOptions.indexName;
     this.qdrantClient = new QdrantClient({
-      url: options.qdrantUrl || process.env.QDRANT_URL || 'http://localhost:6333',
+      url: this.resolvedOptions.qdrantUrl,
     });
   }
 
   async initialize(): Promise<void> {
     // 初始化 Neo4j
-    if (this.options.neo4jUrl) {
+    if (this.resolvedOptions.enableNeo4j && this.resolvedOptions.neo4jUrl) {
       try {
         this.neo4jGraph = await Neo4jGraph.initialize({
-          url: this.options.neo4jUrl,
-          username: this.options.neo4jUsername || 'neo4j',
-          password: this.options.neo4jPassword || process.env.NEO4J_PASSWORD || 'password',
+          url: this.resolvedOptions.neo4jUrl,
+          username: this.resolvedOptions.neo4jUsername,
+          password: this.resolvedOptions.neo4jPassword,
         });
         console.log('[CascadeRetrieval] Neo4j connected');
       } catch (e) {
@@ -112,12 +181,15 @@ export class CascadeRetrievalService {
     }
 
     // 初始化 Elasticsearch
-    if (this.options.elasticsearchUrl) {
+    if (this.resolvedOptions.enableElasticsearch && this.resolvedOptions.elasticsearchUrl) {
       try {
         this.elasticClient = new ElasticsearchClient({
-          node: this.options.elasticsearchUrl,
-          auth: this.options.elasticUsername && this.options.elasticPassword
-            ? { username: this.options.elasticUsername, password: this.options.elasticPassword }
+          node: this.resolvedOptions.elasticsearchUrl,
+          auth: this.resolvedOptions.elasticUsername && this.resolvedOptions.elasticPassword
+            ? {
+                username: this.resolvedOptions.elasticUsername,
+                password: this.resolvedOptions.elasticPassword,
+              }
             : undefined,
         });
         console.log('[CascadeRetrieval] Elasticsearch connected');
@@ -127,10 +199,10 @@ export class CascadeRetrievalService {
     }
 
     // 初始化 PostgreSQL
-    if (this.options.postgresUrl) {
+    if (this.resolvedOptions.enablePostgres && this.resolvedOptions.postgresUrl) {
       try {
         this.pgPool = new PgPool({
-          connectionString: this.options.postgresUrl,
+          connectionString: this.resolvedOptions.postgresUrl,
         });
         await this.pgPool.query('SELECT 1');
         console.log('[CascadeRetrieval] PostgreSQL connected');
@@ -403,13 +475,13 @@ export class CascadeRetrievalService {
   async search(
     queryEmbedding: number[],
     query: string,
-    topK: number = 10
+    topK: number = this.resolvedOptions.topK
   ): Promise<CascadeSearchResult> {
     const totalStart = Date.now();
     const weights = {
-      vector: this.options.vectorWeight ?? 0.5,
-      graph: this.options.graphWeight ?? 0.3,
-      keyword: this.options.keywordWeight ?? 0.2,
+      vector: this.options.vectorWeight ?? this.resolvedOptions.vectorWeight,
+      graph: this.options.graphWeight ?? this.resolvedOptions.graphWeight,
+      keyword: this.options.keywordWeight ?? this.resolvedOptions.keywordWeight,
     };
 
     console.log(`[CascadeRetrieval] Starting cascade search for: "${query.slice(0, 50)}..."`);

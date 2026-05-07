@@ -10,6 +10,7 @@ import { OpenAIEmbeddings } from '@langchain/openai'
 import { QdrantVectorStore } from '@langchain/qdrant'
 import { z } from 'zod'
 import { pipe } from '../../common/pipe'
+import { resolveLlmApiKey, runtimeConfig } from '../../../config/runtime'
 import { 
   RetrievedChunk, 
   SubQuery, 
@@ -19,20 +20,21 @@ import {
 // ==================== Schema 定义 ====================
 
 export const RetrievalConfigSchema = z.object({
-  qdrantUrl: z.string().default('http://localhost:6333'),
+  qdrantUrl: z.string().default(runtimeConfig.databases.qdrantUrl),
   openaiApiKey: z.string().optional(),
-  embeddingModel: z.string().default('text-embedding-3-small'),
-  timeout: z.number().default(30000)
+  embeddingModel: z.string().default(runtimeConfig.embeddings.model),
+  timeout: z.number().default(runtimeConfig.retrieval.timeoutMs),
+  sessionContextCollection: z.string().default(runtimeConfig.retrieval.sessionContextCollection)
 })
 
 export type RetrievalConfig = z.infer<typeof RetrievalConfigSchema>
 
 export const SearchOptionsSchema = z.object({
-  topK: z.number().default(10),
-  enableRerank: z.boolean().default(true),
-  enableFusion: z.boolean().default(true),
-  vectorWeight: z.number().default(0.6),
-  textWeight: z.number().default(0.4)
+  topK: z.number().default(runtimeConfig.retrieval.defaultTopK),
+  enableRerank: z.boolean().default(runtimeConfig.retrieval.enableRerank),
+  enableFusion: z.boolean().default(runtimeConfig.retrieval.enableFusion),
+  vectorWeight: z.number().default(runtimeConfig.retrieval.vectorWeight),
+  textWeight: z.number().default(runtimeConfig.retrieval.textWeight)
 })
 
 export type SearchOptions = z.infer<typeof SearchOptionsSchema>
@@ -46,8 +48,11 @@ class VectorStoreManager {
 
   constructor(config: Partial<RetrievalConfig> = {}) {
     this.config = RetrievalConfigSchema.parse({
-      qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
-      openaiApiKey: process.env.OPENAI_API_KEY,
+      qdrantUrl: runtimeConfig.databases.qdrantUrl,
+      openaiApiKey: resolveLlmApiKey(runtimeConfig.llm),
+      embeddingModel: runtimeConfig.embeddings.model,
+      timeout: runtimeConfig.retrieval.timeoutMs,
+      sessionContextCollection: runtimeConfig.retrieval.sessionContextCollection,
       ...config
     })
 
@@ -64,7 +69,7 @@ class VectorStoreManager {
         this.embeddings,
         {
           url: this.config.qdrantUrl,
-          collectionName: 'session_context'
+          collectionName: this.config.sessionContextCollection
         }
       )
     } catch (error) {
@@ -83,11 +88,11 @@ class VectorStoreManager {
 class RetrieverFactory {
   constructor(private storeManager: VectorStoreManager) {}
 
-  createVectorRetriever(topK: number = 10): BaseRetriever {
+  createVectorRetriever(topK: number = runtimeConfig.retrieval.defaultTopK): BaseRetriever {
     return this.storeManager.getQdrantStore().asRetriever({ k: topK }) as unknown as BaseRetriever
   }
 
-  createTextRetriever(topK: number = 5): BaseRetriever {
+  createTextRetriever(topK: number = runtimeConfig.retrieval.defaultTopK): BaseRetriever {
     // PG 全文检索替代 Neo4j（由 Python 后端实际执行）
     // 此处返回空检索器，实际检索通过 Python API 完成
     const retriever: BaseRetriever = {
@@ -180,7 +185,7 @@ export function vectorSearch(config?: Partial<RetrievalConfig> & { topK?: number
     await manager.initialize()
 
     const factory = new RetrieverFactory(manager)
-    const retriever = factory.createVectorRetriever(config?.topK || 10)
+    const retriever = factory.createVectorRetriever(config?.topK ?? runtimeConfig.retrieval.defaultTopK)
     
     const documents = await retriever.invoke(query)
     
@@ -219,11 +224,11 @@ export function textSearch(config?: Partial<RetrievalConfig> & { topK?: number }
 
 export function retrieve(config?: Partial<RetrievalConfig> & Partial<SearchOptions>) {
   const options = SearchOptionsSchema.parse({
-    topK: config?.topK || 10,
-    enableRerank: config?.enableRerank ?? true,
-    enableFusion: config?.enableFusion ?? true,
-    vectorWeight: config?.vectorWeight ?? 0.6,
-    textWeight: config?.textWeight ?? 0.4,
+    topK: config?.topK ?? runtimeConfig.retrieval.defaultTopK,
+    enableRerank: config?.enableRerank ?? runtimeConfig.retrieval.enableRerank,
+    enableFusion: config?.enableFusion ?? runtimeConfig.retrieval.enableFusion,
+    vectorWeight: config?.vectorWeight ?? runtimeConfig.retrieval.vectorWeight,
+    textWeight: config?.textWeight ?? runtimeConfig.retrieval.textWeight,
     ...config
   })
 
@@ -239,7 +244,7 @@ export function retrieve(config?: Partial<RetrievalConfig> & Partial<SearchOptio
 }
 
 export function rerank(config?: { apiKey?: string; topK?: number; model?: string }) {
-  const topK = config?.topK || 10
+  const topK = config?.topK ?? runtimeConfig.retrieval.defaultTopK
 
   return async function doRerank(
     query: string, 
@@ -256,19 +261,20 @@ export function rerank(config?: { apiKey?: string; topK?: number; model?: string
 }
 
 export const FusionWeightsSchema = z.object({
-  rerank: z.number().default(0.5),
-  vector: z.number().default(0.6),
-  text: z.number().default(0.4),
-  graph: z.number().default(0.0)
+  rerank: z.number().default(runtimeConfig.retrieval.rerankWeight),
+  vector: z.number().default(runtimeConfig.retrieval.vectorWeight),
+  text: z.number().default(runtimeConfig.retrieval.textWeight),
+  graph: z.number().default(runtimeConfig.retrieval.graphWeight)
 })
 
 export type FusionWeights = z.infer<typeof FusionWeightsSchema>
 
 export function fuseScores(weights?: Partial<FusionWeights>) {
   const w = FusionWeightsSchema.parse({
-    rerank: 0.5,
-    vector: 0.6,
-    text: 0.4,
+    rerank: runtimeConfig.retrieval.rerankWeight,
+    vector: runtimeConfig.retrieval.vectorWeight,
+    text: runtimeConfig.retrieval.textWeight,
+    graph: runtimeConfig.retrieval.graphWeight,
     ...weights
   })
 
@@ -363,7 +369,10 @@ export async function healthCheck(config?: Partial<RetrievalConfig>): Promise<{
   services: Record<string, boolean>
 }> {
   const cfg = RetrievalConfigSchema.parse({
-    qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
+    qdrantUrl: runtimeConfig.databases.qdrantUrl,
+    embeddingModel: runtimeConfig.embeddings.model,
+    timeout: runtimeConfig.retrieval.timeoutMs,
+    sessionContextCollection: runtimeConfig.retrieval.sessionContextCollection,
     ...config
   })
 

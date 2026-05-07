@@ -14,23 +14,21 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import execute_batch
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config, tool_pg_config, tool_pg_database
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+runtime_config = read_runtime_config()
 
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-
-POSTGRES_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'rag_dashboard',
-    'user': 'rag_user',
-    'password': os.environ.get('POSTGRES_PASSWORD', 'rag_password')
-}
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+POSTGRES_CONFIG = tool_pg_config()
+POSTGRES_CONFIG["database"] = tool_pg_database("rag_dashboard")
 
 class OCRPostgresTableImporter:
     """OCR表格数据PostgreSQL导入器"""

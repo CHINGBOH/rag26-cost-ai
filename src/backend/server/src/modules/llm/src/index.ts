@@ -4,6 +4,7 @@
  */
 
 import { LLMConfig, LLMResponse, EmbeddingConfig } from '../../common/types'
+import { resolveLlmApiKey, runtimeConfig } from '../../../config/runtime'
 
 export interface GenerationOptions {
   temperature?: number
@@ -13,19 +14,19 @@ export interface GenerationOptions {
 }
 
 const defaultLLMConfig: LLMConfig = {
-  model: process.env.LLM_MODEL || 'gpt-3.5-turbo',
-  temperature: 0.7,
-  maxTokens: 2048,
+  model: runtimeConfig.llm.model,
+  temperature: runtimeConfig.llm.temperature,
+  maxTokens: runtimeConfig.llm.maxTokens,
   topP: 1,
-  apiKey: process.env.OPENAI_API_KEY,
-  baseUrl: process.env.LLM_BASE_URL || 'https://api.openai.com/v1'
+  apiKey: resolveLlmApiKey(runtimeConfig.llm),
+  baseUrl: runtimeConfig.llm.baseUrl
 }
 
 const defaultEmbeddingConfig: EmbeddingConfig = {
-  model: process.env.EMBEDDING_MODEL || 'text-embedding-ada-002',
-  dimensions: 1536,
-  apiKey: process.env.OPENAI_API_KEY,
-  baseUrl: process.env.LLM_BASE_URL || 'https://api.openai.com/v1'
+  model: runtimeConfig.embeddings.model,
+  dimensions: runtimeConfig.embeddings.dimensions,
+  apiKey: resolveLlmApiKey(runtimeConfig.llm),
+  baseUrl: runtimeConfig.llm.baseUrl
 }
 
 /**

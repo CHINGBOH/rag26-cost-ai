@@ -19,6 +19,8 @@ from contextlib import asynccontextmanager
 import httpx
 from pydantic import BaseModel, Field
 
+from config.runtime import read_runtime_config
+
 # 日志配置
 logging.basicConfig(
     level=logging.INFO,
@@ -61,9 +63,10 @@ class LLMResponse:
 class VLLMEngine:
     """vLLM推理引擎 - 高性能GPU推理"""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
-        self.model_name = None
+    def __init__(self, base_url: str = None):
+        runtime_config = read_runtime_config()
+        self.base_url = base_url or runtime_config.vllm_api_url
+        self.model_name = runtime_config.vllm_model_name
         self.available = False
         
     async def initialize(self):
@@ -213,8 +216,9 @@ class LlamaCppEngine:
     """llama.cpp推理引擎 - CPU高效推理"""
     
     def __init__(self, executable_path: str = None, model_path: str = None):
-        self.executable_path = executable_path or os.getenv("LLAMA_CPP_PATH", "llama-cli")
-        self.model_path = model_path or os.getenv("LLAMA_MODEL_PATH", "/models/llama-3-8b-instruct-q4_k_m.gguf")
+        runtime_config = read_runtime_config()
+        self.executable_path = executable_path or runtime_config.llama_cpp_path
+        self.model_path = model_path or runtime_config.llama_model_path
         self.available = False
         
     async def initialize(self):
@@ -395,9 +399,10 @@ class OpenAIEngine:
     """OpenAI兼容API引擎 - 支持DeepSeek等兼容API"""
 
     def __init__(self, base_url: str = None, api_key: str = None, model: str = None):
-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com")
-        self.api_key = api_key or os.getenv("LLM_API_KEY", "")
-        self.model_name = model or os.getenv("LLM_MODEL", "deepseek-chat")
+        runtime_config = read_runtime_config()
+        self.base_url = base_url or runtime_config.llm_base_url
+        self.api_key = api_key or runtime_config.llm_api_key
+        self.model_name = model or runtime_config.llm_model
         self.available = False
 
     async def initialize(self):

@@ -1,0 +1,1731 @@
+{
+  "manifest_version": 1,
+  "project": {
+    "name": "RAG Dashboard",
+    "repository": "CHINGBOH/RAG26",
+    "path": ".",
+    "purpose": "Machine-readable index of reusable repo surfaces and capabilities for humans, AI agents, and tooling.",
+    "monorepo": true,
+    "stacks": [
+      "Python",
+      "TypeScript",
+      "Go",
+      "React",
+      "FastAPI",
+      "Fastify",
+      "Gin",
+      "Vite"
+    ],
+    "last_updated": "2026-05-06"
+  },
+  "status_legend": {
+    "canonical": "Preferred active surface for new work or discovery.",
+    "legacy": "Still present or active, but not the preferred surface when a newer canonical path exists.",
+    "internal-only": "Useful for maintainers or tooling, but not intended as a primary external surface.",
+    "supporting": "Important supporting surface such as docs, scripts, templates, or optional infrastructure."
+  },
+  "maintenance": {
+    "update_when": [
+      "A major service, shared package, config entrypoint, important script, or key doc is added, removed, renamed, or cut over.",
+      "Routing ownership changes between Vite proxy, Go gateway, Node orchestrator, Python legacy, retrieval-service, or Go WebSocket.",
+      "A surface changes lifecycle status between canonical, legacy, internal-only, or supporting."
+    ],
+    "authoring_rules": [
+      "Keep all paths repo-relative.",
+      "Prefer updating an existing resource entry over adding aliases for the same responsibility.",
+      "If an older surface remains runtime-active but is no longer preferred, mark it legacy instead of canonical.",
+      "Keep executable config ownership attached to real code paths such as config loaders, proxy maps, and compose files.",
+      "Populate notable_exports for key reusable code surfaces so humans and AI can find callable entrypoints without grepping blindly.",
+      "Run npm run check:resource-index after editing this manifest, docs/project-resource-index.md, or the README reuse-first entry section."
+    ]
+  },
+  "topology": {
+    "routing_entrypoints": [
+      "src/frontend/web/vite.config.ts",
+      "src/backend/go-services/config/runtime.go",
+      "src/backend/go-services/internal/gateway/proxy.go"
+    ],
+    "notes": [
+      "Current dev routing split: /api/agent goes directly to Node on 3001, /api/v1 goes directly to retrieval-service on 8002, /api plus /health plus /metrics go to the Go gateway on 8080, and /ws goes to the Go WebSocket gateway on 8081.",
+      "Canonical search routing is Go gateway -> retrieval-service for /api/search; Python legacy is not the canonical search backend."
+    ],
+    "connections": [
+      {
+        "from": "frontend-web",
+        "to": "node-orchestrator",
+        "via": "vite-dev-proxy",
+        "paths": [
+          "/api/agent"
+        ],
+        "note": "Direct in dev until the gateway fully owns that prefix."
+      },
+      {
+        "from": "frontend-web",
+        "to": "retrieval-service",
+        "via": "vite-dev-proxy",
+        "paths": [
+          "/api/v1"
+        ],
+        "note": "Direct in dev per current Vite config."
+      },
+      {
+        "from": "frontend-web",
+        "to": "go-api-gateway",
+        "via": "vite-dev-proxy",
+        "paths": [
+          "/api",
+          "/health",
+          "/metrics"
+        ]
+      },
+      {
+        "from": "frontend-web",
+        "to": "go-websocket-gateway",
+        "via": "vite-dev-proxy",
+        "paths": [
+          "/ws"
+        ]
+      },
+      {
+        "from": "go-api-gateway",
+        "to": "node-orchestrator",
+        "via": "prefix-route-map",
+        "paths": [
+          "/api/sessions",
+          "/api/activity",
+          "/api/heartbeat",
+          "/api/auth",
+          "/api/llm/chat",
+          "/api/cache",
+          "/api/queue",
+          "/api/system",
+          "/api/pipeline",
+          "/api/agent"
+        ]
+      },
+      {
+        "from": "go-api-gateway",
+        "to": "python-legacy-api",
+        "via": "prefix-route-map",
+        "paths": [
+          "/api/v1/embedding",
+          "/api/v1/documents",
+          "/api/stats",
+          "/api/v1/stats"
+        ]
+      },
+      {
+        "from": "go-api-gateway",
+        "to": "retrieval-service",
+        "via": "prefix-route-map",
+        "paths": [
+          "/api/search",
+          "/api/retrieval",
+          "/api/v1/search",
+          "/api/v1/rerank",
+          "/api/v1/rag",
+          "/api/v1/agent",
+          "/api/v1/system-kb",
+          "/api/v1/architecture",
+          "/api/v1/collections"
+        ]
+      },
+      {
+        "from": "go-api-gateway",
+        "to": "ocr-service",
+        "via": "prefix-route-map",
+        "paths": [
+          "/api/ocr"
+        ]
+      },
+      {
+        "from": "node-orchestrator",
+        "to": "go-websocket-gateway",
+        "via": "broadcast-client",
+        "paths": [
+          "/broadcast"
+        ],
+        "note": "WebSocketManager and related services push realtime updates through the Go WS gateway."
+      }
+    ]
+  },
+  "resources": [
+    {
+      "id": "go-api-gateway",
+      "kind": "service",
+      "name": "Go API Gateway",
+      "path": "src/backend/go-services",
+      "languages": [
+        "Go"
+      ],
+      "stack": [
+        "Gin",
+        "net/http reverse proxy",
+        "OpenTelemetry"
+      ],
+      "purpose": "Canonical HTTP ingress and reverse proxy across backend services.",
+      "status": "canonical",
+      "ports": [
+        8080
+      ],
+      "entrypoints": [
+        "src/backend/go-services/cmd/gateway/main.go",
+        "src/backend/go-services/config/runtime.go",
+        "src/backend/go-services/config/default.json",
+        "src/backend/go-services/internal/gateway/proxy.go"
+      ],
+      "notable_exports": [
+        "LoadConfig",
+        "SetupRouter",
+        "getRouteMapping",
+        "findTargetService",
+        "ProxyHandler"
+      ],
+      "capabilities": [
+        "http-ingress",
+        "route-mapping",
+        "aggregated-health",
+        "prometheus-metrics",
+        "request-tracing"
+      ],
+      "key_commands": [
+        "cd src/backend/go-services && go build -o gateway ./cmd/gateway/main.go",
+        "cd src/backend/go-services && ./gateway --port 8080"
+      ],
+      "usage_cues": [
+        "Add new frontend-visible API prefixes to internal/gateway/proxy.go:getRouteMapping().",
+        "Gateway runtime values now flow through src/backend/go-services/config/runtime.go with precedence embedded defaults -> optional JSON config file -> env -> CLI."
+      ],
+      "tags": [
+        "backend",
+        "gateway",
+        "routing",
+        "proxy"
+      ]
+    },
+    {
+      "id": "go-websocket-gateway",
+      "kind": "service",
+      "name": "Go WebSocket Gateway",
+      "path": "src/backend/go-services",
+      "languages": [
+        "Go"
+      ],
+      "stack": [
+        "Go",
+        "WebSocket hub"
+      ],
+      "purpose": "Canonical realtime fan-out gateway for browser websocket clients.",
+      "status": "canonical",
+      "ports": [
+        8081
+      ],
+      "entrypoints": [
+        "src/backend/go-services/cmd/websocket/main.go",
+        "src/backend/go-services/config/runtime.go",
+        "src/backend/go-services/config/default.json",
+        "src/backend/go-services/internal/websocket/server.go",
+        "src/backend/go-services/internal/websocket/hub.go"
+      ],
+      "capabilities": [
+        "websocket-hub",
+        "broadcast-fanout",
+        "realtime-status-streams"
+      ],
+      "key_commands": [
+        "cd src/backend/go-services && go build -o websocket ./cmd/websocket/main.go",
+        "cd src/backend/go-services && ./websocket --port 8081"
+      ],
+      "usage_cues": [
+        "Frontend /ws traffic is proxied here in dev.",
+        "Node-side broadcast clients send updates to this gateway rather than speaking websocket directly to the browser.",
+        "WebSocket port, upgrader buffer sizes, and origin policy are centralized in src/backend/go-services/config/runtime.go."
+      ],
+      "tags": [
+        "backend",
+        "websocket",
+        "realtime"
+      ]
+    },
+    {
+      "id": "node-orchestrator",
+      "kind": "service",
+      "name": "Node Orchestrator",
+      "path": "src/backend/server",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "Fastify",
+        "XState v5",
+        "Vitest"
+      ],
+      "purpose": "Fastify/XState runtime for sessions, agent orchestration, auth, and pipeline coordination.",
+      "status": "canonical",
+      "ports": [
+        3001
+      ],
+      "entrypoints": [
+        "src/backend/server/src/index.ts",
+        "src/backend/server/package.json"
+      ],
+      "notable_exports": [
+        "AgentFactory.create",
+        "ReactAgent.run",
+        "createFourDatabaseTools",
+        "createVectorSearchTool"
+      ],
+      "capabilities": [
+        "session-runtime",
+        "xstate-orchestration",
+        "agent-api",
+        "auth",
+        "pipeline-control",
+        "websocket-broadcast-client"
+      ],
+      "key_commands": [
+        "cd src/backend/server && npx tsx src/index.ts",
+        "cd src/backend/server && npm run build",
+        "cd src/backend/server && npm test"
+      ],
+      "usage_cues": [
+        "Startup/runtime defaults now live in src/backend/server/config/default.json and are resolved through src/backend/server/src/config/runtime.ts using config + dotenv + commander.",
+        "Frontend reaches many Node routes through the Go gateway, but /api/agent is still direct in Vite dev."
+      ],
+      "tags": [
+        "backend",
+        "node",
+        "xstate",
+        "orchestrator"
+      ]
+    },
+    {
+      "id": "node-runtime-config",
+      "kind": "config-entrypoint",
+      "name": "Node runtime config",
+      "path": "src/backend/server/src/config/runtime.ts",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "config",
+        "dotenv",
+        "commander",
+        "zod"
+      ],
+      "purpose": "Canonical Node startup/runtime config resolver with precedence default.json -> environment -> CLI, including auth bootstrap, websocket public URL, startup-path service connectivity, queue settings, pipeline settings, recursion thresholds, logging, telemetry, database helper settings, Neo4j/Elasticsearch settings, embeddings, retrieval module defaults, cascade retrieval flags/weights, OCR defaults, storage helper settings, persistence enablement, expert-judgment settings, request-path LLM behavior, agent helper behavior, and dev/prod runtime mode.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/server/src/config/runtime.ts",
+        "src/backend/server/src/config/bootstrap-env.ts",
+        "src/backend/server/config/default.json"
+      ],
+      "notable_exports": [
+        "createRuntimeConfig",
+        "runtimeConfig",
+        "resolveLlmApiKey"
+      ],
+      "capabilities": [
+        "node-startup-config",
+        "auth-bootstrap-config",
+        "service-connectivity-config",
+        "queue-threshold-config",
+        "pipeline-path-config",
+        "request-path-llm-config",
+        "agent-helper-config",
+        "logging-config",
+        "telemetry-config",
+        "database-helper-config",
+        "embedding-config",
+        "retrieval-module-config",
+        "cascade-retrieval-config",
+        "ocr-module-config",
+        "storage-helper-config",
+        "persistence-config",
+        "expert-judgment-config",
+        "dev-error-behavior-config",
+        "dotenv-bootstrap",
+        "cli-overrides",
+        "validated-runtime-defaults"
+      ],
+      "key_commands": [
+        "cd src/backend/server && npx tsx src/index.ts --port 3311 --host 127.0.0.1",
+        "cd src/backend/server && npx vitest run src/__tests__/runtime-config.test.ts"
+      ],
+      "usage_cues": [
+        "Add new Node startup/runtime values here instead of parsing process.env ad hoc in entrypoints or services.",
+        "AuthService bootstrap now consumes runtimeConfig.auth so default admin password fallback no longer lives in code.",
+        "CacheService, TaskQueueService, PipelineService, WebSocketManager, and RecursionController startup values now enter through runtimeConfig instead of class-local env fallbacks.",
+        "Main-entry LLM key resolution and dev-only error detail exposure now read runtimeConfig instead of process.env directly.",
+        "modules/agent/src/tools.ts now reads shared runtimeConfig instead of helper-local env fallbacks.",
+        "LoggerService and telemetry.ts now read shared runtimeConfig instead of helper-local env fallbacks.",
+        "modules/llm/src/index.ts, modules/retrieval/src/index.ts, modules/ocr/src/index.ts, modules/storage/src/index.ts, tools/index.ts, and PostgresPersistenceService.ts now read shared runtimeConfig instead of module-local env fallbacks.",
+        "modules/retrieval/src/cascade-retrieval.ts now reads shared runtimeConfig for Qdrant, Neo4j, Elasticsearch, PostgreSQL, collection/index defaults, and cascade enable flags/weights instead of helper-local env fallbacks.",
+        "Repo-root .env is loaded through bootstrap-env.ts without overriding already-exported environment variables."
+      ],
+      "tags": [
+        "config",
+        "node",
+        "runtime",
+        "canonical"
+      ]
+    },
+    {
+      "id": "retrieval-service",
+      "kind": "service",
+      "name": "Retrieval Service",
+      "path": "src/backend/retrieval-service",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "FastAPI",
+        "LangGraph",
+        "Qdrant",
+        "PostgreSQL",
+        "Neo4j",
+        "Elasticsearch"
+      ],
+      "purpose": "Canonical retrieval, rerank, evaluation, and RAG agent backend.",
+      "status": "canonical",
+      "ports": [
+        8002
+      ],
+      "entrypoints": [
+        "src/backend/retrieval-service/main.py",
+        "src/backend/retrieval-service/app/api.py",
+        "src/backend/retrieval-service/app/runtime_config.py",
+        "src/backend/retrieval-service/requirements.txt"
+      ],
+      "notable_exports": [
+        "SearchRequest",
+        "RerankRequest",
+        "RetrievalResponse",
+        "UnifiedRetrievalPipeline",
+        "UnifiedStore"
+      ],
+      "capabilities": [
+        "search",
+        "rerank",
+        "rag-agent",
+        "evaluation",
+        "system-kb",
+        "architecture-live"
+      ],
+      "key_commands": [
+        "cd src/backend/retrieval-service && python -m uvicorn main:app --host 0.0.0.0 --port 8002"
+      ],
+      "usage_cues": [
+        "Owns /api/search through the Go gateway and most /api/v1/* retrieval endpoints.",
+        "Provides /api/v1/architecture/live, which powers scripts/sync_arch_docs.py.",
+        "Startup/API runtime values now centralize in src/backend/retrieval-service/app/runtime_config.py instead of per-module env parsing.",
+        "Guide-agent runtime adjustments now persist through PostgreSQL runtime_config_overrides instead of process env mutation."
+      ],
+      "tags": [
+        "backend",
+        "python",
+        "retrieval",
+        "rag",
+        "agent"
+      ]
+    },
+    {
+      "id": "python-legacy-api",
+      "kind": "service",
+      "name": "Python Legacy API",
+      "path": "src/backend/python-legacy",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "FastAPI",
+        "legacy unified API"
+      ],
+      "purpose": "Legacy FastAPI backend still used for embedding, ingestion, and some stats/document routes.",
+      "status": "legacy",
+      "ports": [
+        8000
+      ],
+      "entrypoints": [
+        "src/backend/python-legacy/main.py",
+        "src/backend/python-legacy/rag_api_service.py",
+        "src/backend/python-legacy/api/unified_api.py",
+        "src/backend/python-legacy/config/runtime.py"
+      ],
+      "notable_exports": [
+        "api.unified_api.app",
+        "read_runtime_config",
+        "tool_pg_config",
+        "tool_pg_database"
+      ],
+      "capabilities": [
+        "embedding",
+        "document-ingestion",
+        "legacy-unified-api",
+        "legacy-stats"
+      ],
+      "key_commands": [
+        "cd src/backend/python-legacy && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+      ],
+      "usage_cues": [
+        "Still serves /api/v1/embedding, /api/v1/documents, /api/stats, and /api/v1/stats.",
+        "Do not treat it as the canonical /api/search backend; search now routes to retrieval-service.",
+        "LLM/API/startup defaults for this legacy service now centralize in src/backend/python-legacy/config/runtime.py."
+      ],
+      "tags": [
+        "backend",
+        "python",
+        "legacy",
+        "ingestion",
+        "embedding"
+      ]
+    },
+    {
+      "id": "ocr-service",
+      "kind": "service",
+      "name": "OCR Service",
+      "path": "src/backend/ocr-service",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "FastAPI",
+        "PaddleOCR",
+        "PPStructure",
+        "PyMuPDF"
+      ],
+      "purpose": "Standalone OCR microservice for PDFs and images.",
+      "status": "canonical",
+      "ports": [
+        8001
+      ],
+      "entrypoints": [
+        "src/backend/ocr-service/ocr_service.py",
+        "src/backend/ocr-service/requirements.txt"
+      ],
+      "notable_exports": [
+        "OCRTextBlock",
+        "OCRPageResult",
+        "OCRDocumentResult",
+        "AsyncJobStatus"
+      ],
+      "capabilities": [
+        "ocr",
+        "pdf-processing",
+        "image-processing",
+        "table-detection",
+        "async-jobs"
+      ],
+      "key_commands": [
+        "cd src/backend/ocr-service && python -m uvicorn ocr_service:app --port 8001"
+      ],
+      "usage_cues": [
+        "Go gateway exposes this service at /api/ocr.",
+        "Output directories are controlled by OCR_OUTPUT_DIR and related environment variables."
+      ],
+      "tags": [
+        "backend",
+        "python",
+        "ocr",
+        "documents"
+      ]
+    },
+    {
+      "id": "frontend-web",
+      "kind": "service",
+      "name": "Web Frontend",
+      "path": "src/frontend/web",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "React 18",
+        "Vite",
+        "Zustand"
+      ],
+      "purpose": "Canonical browser UI for chat, operations, and learning workflows.",
+      "status": "canonical",
+      "ports": [
+        3000
+      ],
+      "entrypoints": [
+        "src/frontend/web/src/main.tsx",
+        "src/frontend/web/vite.config.ts",
+        "src/frontend/web/package.json"
+      ],
+      "capabilities": [
+        "react-ui",
+        "agent-chat-ui",
+        "operations-ui",
+        "learning-ui",
+        "vite-dev-server"
+      ],
+      "key_commands": [
+        "cd src/frontend/web && npm run dev",
+        "cd src/frontend/web && npm run build"
+      ],
+      "usage_cues": [
+        "Proxy behavior lives in vite.config.ts and is part of the runtime topology.",
+        "Uses @rag/shared via dist when available and falls back to packages/shared/src in dev.",
+        "Build-time env-backed frontend runtime values are centralized in src/frontend/web/src/config/runtime.ts."
+      ],
+      "tags": [
+        "frontend",
+        "react",
+        "vite",
+        "ui"
+      ]
+    },
+    {
+      "id": "shared-package",
+      "kind": "package",
+      "name": "@rag/shared",
+      "path": "packages/shared",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "TypeScript"
+      ],
+      "purpose": "Canonical shared TypeScript package consumed by the web frontend and Node orchestrator.",
+      "status": "canonical",
+      "entrypoints": [
+        "packages/shared/src/index.ts",
+        "packages/shared/package.json"
+      ],
+      "notable_exports": [
+        "InfrastructureOverview",
+        "RecursionSession",
+        "ExpertDecision",
+        "OCRDocumentResult",
+        "ChatMessage"
+      ],
+      "capabilities": [
+        "shared-types",
+        "shared-exports"
+      ],
+      "key_commands": [
+        "cd packages/shared && npm run build",
+        "cd packages/shared && npm run dev"
+      ],
+      "usage_cues": [
+        "Build this package before compiling server or web when dist artifacts are required.",
+        "Vite dev can resolve packages/shared/src directly if dist has not been built yet."
+      ],
+      "tags": [
+        "shared",
+        "typescript",
+        "package"
+      ]
+    },
+    {
+      "id": "root-workspace-package",
+      "kind": "workspace",
+      "name": "Root package.json workspace hub",
+      "path": "package.json",
+      "languages": [
+        "JSON"
+      ],
+      "stack": [
+        "npm workspaces",
+        "TypeScript"
+      ],
+      "purpose": "Canonical JS/TS workspace command hub and top-level cross-stack script entrypoint.",
+      "status": "canonical",
+      "entrypoints": [
+        "package.json"
+      ],
+      "capabilities": [
+        "workspace-build",
+        "workspace-dev",
+        "node-tests",
+        "python-tests",
+        "typecheck",
+        "resource-index-validation"
+      ],
+      "key_commands": [
+        "npm run build",
+        "npm run dev",
+        "npm test",
+        "npm run typecheck",
+        "npm run check:resource-index"
+      ],
+      "usage_cues": [
+        "Workspaces include packages/*, src/frontend/*, src/backend/server, and src/backend/ocr-service.",
+        "Root test shortcuts call Node tests and Python legacy pytest from one place.",
+        "Resource-index anti-drift checks run here through ajv-cli plus remark-validate-links."
+      ],
+      "tags": [
+        "workspace",
+        "npm",
+        "build",
+        "test"
+      ]
+    },
+    {
+      "id": "root-python-project",
+      "kind": "workspace",
+      "name": "Root pyproject.toml",
+      "path": "pyproject.toml",
+      "languages": [
+        "TOML"
+      ],
+      "stack": [
+        "PEP 621",
+        "Black",
+        "Ruff",
+        "Mypy",
+        "Pytest"
+      ],
+      "purpose": "Canonical root Python dependency and style configuration for repo Python code.",
+      "status": "canonical",
+      "entrypoints": [
+        "pyproject.toml"
+      ],
+      "capabilities": [
+        "python-dependencies",
+        "lint-config",
+        "typecheck-config",
+        "pytest-config"
+      ],
+      "key_commands": [
+        "python -m pytest tests/ -v",
+        "ruff check src/backend/python-legacy/",
+        "mypy src/backend/python-legacy/"
+      ],
+      "usage_cues": [
+        "Defines Black and Ruff line length 100 and mypy strict mode.",
+        "Applies to the root Python project; retrieval-service and OCR service also keep service-local requirements files."
+      ],
+      "tags": [
+        "python",
+        "workspace",
+        "lint",
+        "typing"
+      ]
+    },
+    {
+      "id": "python-runtime-config-loader",
+      "kind": "config-entrypoint",
+      "name": "Canonical Python config loader",
+      "path": "config/loader.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Pydantic Settings",
+        "YAML",
+        "Environment variables"
+      ],
+      "purpose": "Canonical typed runtime configuration loader for Python services and scripts.",
+      "status": "canonical",
+      "entrypoints": [
+        "config/loader.py"
+      ],
+      "notable_exports": [
+        "RAGConfig",
+        "get_config",
+        "reload_config"
+      ],
+      "capabilities": [
+        "typed-settings",
+        "yaml-load",
+        "nested-env-overrides",
+        "reload-config"
+      ],
+      "key_commands": [
+        "python config/loader.py"
+      ],
+      "usage_cues": [
+        "Prefer get_config() and reload_config() here over ad hoc config parsing.",
+        "Precedence inside the loader is RAG__SECTION__KEY env -> config/.env -> config/config.yaml -> code defaults."
+      ],
+      "tags": [
+        "config",
+        "python",
+        "canonical",
+        "externalization"
+      ]
+    },
+    {
+      "id": "legacy-python-settings-module",
+      "kind": "config-entrypoint",
+      "name": "Legacy Python settings module",
+      "path": "config/settings.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Pydantic",
+        "YAML"
+      ],
+      "purpose": "Older AppConfig loader that coexists with the canonical config loader.",
+      "status": "legacy",
+      "entrypoints": [
+        "config/settings.py"
+      ],
+      "capabilities": [
+        "legacy-appconfig"
+      ],
+      "usage_cues": [
+        "Prefer config/loader.py for new config work and executable config ownership.",
+        "Keep this status updated if the older loader is removed or fully cut over."
+      ],
+      "tags": [
+        "config",
+        "python",
+        "legacy"
+      ]
+    },
+    {
+      "id": "retrieval-runtime-config",
+      "kind": "config-entrypoint",
+      "name": "Retrieval-service runtime config",
+      "path": "src/backend/retrieval-service/app/runtime_config.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "python-dotenv",
+        "YAML",
+        "Environment variables"
+      ],
+      "purpose": "Canonical retrieval-service runtime config accessor for repo-root .env bootstrap, localhost proxy sanitization, and runtime settings across startup/API/helper layers such as PostgreSQL, Redis, Qdrant, OCR, Elasticsearch, TEI, service health URLs, learning artifact paths, OCR output directories, eval/report/trace paths, hybrid tuning, embedding backend flags, model cache paths, and pipeline directories.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/retrieval-service/app/runtime_config.py",
+        "src/backend/retrieval-service/main.py",
+        "src/backend/retrieval-service/app/api.py",
+        "src/backend/retrieval-service/app/agent/tools.py",
+        "src/backend/retrieval-service/app/agent/graph.py",
+        "src/backend/retrieval-service/app/agent/trace.py",
+        "src/backend/retrieval-service/app/agent/signal_collector.py",
+        "src/backend/retrieval-service/app/eval/ragas_pipeline.py",
+        "src/backend/retrieval-service/infrastructure/embedding_service.py",
+        "src/backend/retrieval-service/infrastructure/reranker_service.py",
+        "src/backend/retrieval-service/infrastructure/elasticsearch_store.py",
+        "src/backend/retrieval-service/infrastructure/adapters/unified/store_config.py"
+      ],
+      "notable_exports": [
+        "bootstrap_runtime_environment",
+        "bootstrap_llm_proxy_environment",
+        "read_runtime_config",
+        "postgres_connection_kwargs",
+        "redis_connection_kwargs",
+        "resolve_local_model_path"
+      ],
+      "capabilities": [
+        "dotenv-bootstrap",
+        "retrieval-service-connectivity-config",
+        "pipeline-path-config",
+        "llm-proxy-config",
+        "postgres-dsn-config",
+        "retrieval-helper-runtime-config",
+        "retrieval-model-path-resolution",
+        "retrieval-eval-trace-path-config",
+        "retrieval-api-runtime-config"
+      ],
+      "key_commands": [
+        "cd src/backend/retrieval-service && python -m pytest tests/test_runtime_config.py tests/test_embedding_service.py tests/test_signal_collector.py tests/test_price_query_text_fallback.py tests/test_fee_rate_calculation_flow.py tests/test_learning_runs_unified_api.py -q",
+        "cd src/backend/retrieval-service && python -m uvicorn main:app --host 0.0.0.0 --port 8002"
+      ],
+      "usage_cues": [
+        "Import read_runtime_config(), postgres_connection_kwargs(), redis_connection_kwargs(), or resolve_local_model_path() instead of reading DATABASE_URL, POSTGRES_*, PG_*, REDIS_*, QDRANT_*, OCR_SERVICE_URL, TEI_URL, ES_*, service URL envs, learning artifact paths, OCR output paths, hybrid tuning envs, tracing dirs, or model cache paths directly in retrieval-service runtime code.",
+        "Pair this accessor with app/runtime_overrides.py when a retrieval-service runtime value is operator-adjustable at runtime."
+      ],
+      "tags": [
+        "config",
+        "python",
+        "retrieval",
+        "runtime",
+        "canonical"
+      ]
+    },
+    {
+      "id": "retrieval-runtime-overrides",
+      "kind": "config-entrypoint",
+      "name": "Retrieval-service runtime overrides",
+      "path": "src/backend/retrieval-service/app/runtime_overrides.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "PostgreSQL",
+        "Runtime override state",
+        "Audit trail"
+      ],
+      "purpose": "Canonical executable runtime override surface for guide-agent adjustments such as top_k, score_threshold, rerank_enabled, keyword backend, and vector backend, backed by runtime_config_overrides plus runtime_config_audit.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/retrieval-service/app/runtime_overrides.py",
+        "src/backend/retrieval-service/app/api.py",
+        "src/backend/retrieval-service/app/agent/tools.py"
+      ],
+      "notable_exports": [
+        "get_runtime_override",
+        "apply_runtime_override",
+        "validate_runtime_override"
+      ],
+      "capabilities": [
+        "runtime-override-read",
+        "runtime-override-apply",
+        "audit-log",
+        "persistent-operator-tuning"
+      ],
+      "key_commands": [
+        "cd src/backend/retrieval-service && python -m pytest tests/test_vector_search_backend.py tests/test_hybrid_search_backend.py -q",
+        "cd src/backend/retrieval-service && python -m uvicorn main:app --host 0.0.0.0 --port 8002"
+      ],
+      "usage_cues": [
+        "Use get_runtime_override() in retrieval-service readers instead of reading RAG_* / KEYWORD_BACKEND / VECTOR_BACKEND process env variables directly.",
+        "Use apply_runtime_override() from guide control paths so changes leave both a current-state row and an audit trail."
+      ],
+      "tags": [
+        "config",
+        "python",
+        "retrieval",
+        "runtime",
+        "overrides"
+      ]
+    },
+    {
+      "id": "python-legacy-runtime-config",
+      "kind": "config-entrypoint",
+      "name": "Python-legacy runtime config",
+      "path": "src/backend/python-legacy/config/runtime.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "python-dotenv",
+        "YAML",
+        "Environment variables"
+      ],
+      "purpose": "Canonical runtime accessor for python-legacy API/service/helper/tool defaults such as API host/port, enhanced/simple API ports, logging level, CORS origins, OCR/knowledge-base paths, database and search-store connectivity, embedding/rerank model names and local paths, model cache roots, query-analysis flags, llama.cpp paths, vLLM URL/model, and OpenAI-compatible API settings.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/python-legacy/config/runtime.py",
+        "src/backend/python-legacy/api/unified_api.py",
+        "src/backend/python-legacy/main_minimal.py",
+        "src/backend/python-legacy/rag_unified_api.py",
+        "src/backend/python-legacy/rag_llm_pipeline.py",
+        "src/backend/python-legacy/rag_enhanced_api.py",
+        "src/backend/python-legacy/simple_llm_service.py",
+        "src/backend/python-legacy/index_documents.py",
+        "src/backend/python-legacy/services/llm_service.py",
+        "src/backend/python-legacy/services/rerank_service.py",
+        "src/backend/python-legacy/services/document_processor.py",
+        "src/backend/python-legacy/services/model_caller.py",
+        "src/backend/python-legacy/unified_llm_service.py",
+        "src/backend/python-legacy/retrieval/unified_pipeline.py",
+        "src/backend/python-legacy/retrieval/multi_stage_retriever.py",
+        "src/backend/python-legacy/retrieval/vector_store.py",
+        "src/backend/python-legacy/tools/complete_rag_service.py",
+        "src/backend/python-legacy/tools/test_real_models.py",
+        "src/backend/python-legacy/tools/ocr_import_pg_precision.py"
+      ],
+      "notable_exports": [
+        "bootstrap_runtime_environment",
+        "read_runtime_config",
+        "tool_pg_config",
+        "tool_pg_database"
+      ],
+      "capabilities": [
+        "dotenv-bootstrap",
+        "legacy-api-runtime-config",
+        "legacy-llm-runtime-config",
+        "legacy-model-caller-config",
+        "legacy-embedding-runtime-config",
+        "legacy-store-runtime-config",
+        "legacy-helper-runtime-config",
+        "legacy-standalone-runtime-config",
+        "legacy-tools-runtime-config",
+        "legacy-advanced-tools-runtime-config"
+      ],
+      "key_commands": [
+        "cd src/backend/python-legacy && python -m pytest tests/test_runtime_config_legacy.py -q",
+        "cd src/backend/python-legacy && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+      ],
+      "usage_cues": [
+        "Import read_runtime_config(), tool_pg_config(), or tool_pg_database() instead of reading API_HOST, API_PORT, ENHANCED_API_PORT, SIMPLE_LLM_PORT, LOG_LEVEL, CORS_ORIGINS, RAG_API, OCR_API, OCR_OUTPUT_DIR, KB_DIR, ENABLE_QUERY_ANALYSIS, ES_*, NEO4J_*, LLAMA_CPP_PATH, VLLM_API_URL, LLM_BASE_URL, OPENAI_API_BASE, POSTGRES_*, PG_*, REDIS_*, QDRANT_*, TEI_URL, MODELS_DIR, SENTENCE_TRANSFORMERS_HOME, HF_HOME, RERANK_MODEL_NAME, RERANK_BATCH_SIZE, or RERANK_MODEL_PATH directly in python-legacy runtime code.",
+        "Constructor arguments and request-time inputs should still win over runtime config when a caller passes explicit values."
+      ],
+      "tags": [
+        "config",
+        "python",
+        "legacy",
+        "runtime",
+        "canonical"
+      ]
+    },
+    {
+      "id": "python-runtime-config-yaml",
+      "kind": "config-entrypoint",
+      "name": "Default Python runtime config",
+      "path": "config/config.yaml",
+      "languages": [
+        "YAML"
+      ],
+      "stack": [
+        "YAML"
+      ],
+      "purpose": "Default structured runtime values consumed by config/loader.py.",
+      "status": "canonical",
+      "entrypoints": [
+        "config/config.yaml"
+      ],
+      "capabilities": [
+        "repo-defaults",
+        "service-defaults",
+        "retrieval-defaults"
+      ],
+      "usage_cues": [
+        "Edit this file for repo-default values; environment variables override it.",
+        "Keep keys aligned with the config classes in config/loader.py."
+      ],
+      "tags": [
+        "config",
+        "yaml",
+        "defaults"
+      ]
+    },
+    {
+      "id": "python-env-template",
+      "kind": "config-entrypoint",
+      "name": "Environment template",
+      "path": "config/.env.example",
+      "languages": [
+        "dotenv"
+      ],
+      "stack": [
+        "Environment variables"
+      ],
+      "purpose": "Non-secret local setup template for environment-driven configuration.",
+      "status": "supporting",
+      "entrypoints": [
+        "config/.env.example"
+      ],
+      "capabilities": [
+        "env-template",
+        "local-setup"
+      ],
+      "key_commands": [
+        "cp config/.env.example .env"
+      ],
+      "usage_cues": [
+        "Use as a starting point for a repo-root .env during local development.",
+        "Do not commit real secrets."
+      ],
+      "tags": [
+        "config",
+        "env",
+        "template"
+      ]
+    },
+    {
+      "id": "frontend-runtime-config",
+      "kind": "config-entrypoint",
+      "name": "Frontend runtime config",
+      "path": "src/frontend/web/src/config/runtime.ts",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "Vite",
+        "React"
+      ],
+      "purpose": "Canonical frontend runtime config resolver for Vite env-backed API base URLs, WebSocket URLs, reconnect timing, active provider selection, provider endpoints/keys, and frontend retrieval request defaults.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/frontend/web/src/config/runtime.ts",
+        "src/frontend/web/src/config/index.ts",
+        "src/frontend/web/.env.example"
+      ],
+      "notable_exports": [
+        "frontendRuntimeConfig",
+        "getApiBaseUrl",
+        "resolveWebSocketUrl"
+      ],
+      "capabilities": [
+        "frontend-api-base-config",
+        "frontend-websocket-config",
+        "frontend-provider-config",
+        "frontend-retrieval-request-config"
+      ],
+      "key_commands": [
+        "cd packages/shared && npm run build",
+        "cd src/frontend/web && npm run build"
+      ],
+      "usage_cues": [
+        "Import getApiBaseUrl() and resolveWebSocketUrl() instead of reading import.meta.env directly in services, hooks, or components.",
+        "Use frontendRuntimeConfig.activeProvider and provider settings to keep UI/runtime defaults centralized."
+      ],
+      "tags": [
+        "config",
+        "frontend",
+        "runtime",
+        "canonical"
+      ]
+    },
+    {
+      "id": "frontend-vite-proxy-config",
+      "kind": "config-entrypoint",
+      "name": "Frontend Vite proxy config",
+      "path": "src/frontend/web/vite.config.ts",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "Vite"
+      ],
+      "purpose": "Canonical frontend dev proxy and @rag/shared alias configuration.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/frontend/web/vite.config.ts"
+      ],
+      "capabilities": [
+        "vite-proxy",
+        "shared-package-resolution",
+        "dev-port-config"
+      ],
+      "key_commands": [
+        "cd src/frontend/web && npm run dev"
+      ],
+      "usage_cues": [
+        "Current dev split is /api/agent -> 3001, /api/v1 -> 8002, /api -> 8080, and /ws -> 8081.",
+        "If frontend routing is unclear, check this file before changing API calls."
+      ],
+      "tags": [
+        "config",
+        "frontend",
+        "routing",
+        "proxy"
+      ]
+    },
+    {
+      "id": "go-gateway-runtime-config",
+      "kind": "config-entrypoint",
+      "name": "Go gateway runtime config",
+      "path": "src/backend/go-services/config/runtime.go",
+      "languages": [
+        "Go"
+      ],
+      "stack": [
+        "Embedded JSON defaults",
+        "JSON config overlay",
+        "Environment variables",
+        "CLI flags"
+      ],
+      "purpose": "Canonical Go runtime config loader for gateway service connectivity, telemetry, aggregated-health timeout, websocket startup settings, and CLI/env/config-file precedence.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/go-services/config/runtime.go",
+        "src/backend/go-services/config/default.json"
+      ],
+      "notable_exports": [
+        "LoadGatewayConfig",
+        "LoadWebSocketConfig"
+      ],
+      "capabilities": [
+        "port-config",
+        "service-url-config",
+        "timeout-config",
+        "otel-config",
+        "websocket-buffer-config",
+        "config-file-overlay"
+      ],
+      "usage_cues": [
+        "Use GO_SERVICES_CONFIG_FILE or --config for JSON overlays, then env, then CLI flags for final runtime values.",
+        "Gateway and websocket startup values, OTEL endpoint/service name, service URLs/timeouts, and websocket upgrader settings are normalized here before the binaries start."
+      ],
+      "tags": [
+        "config",
+        "go",
+        "gateway",
+        "runtime"
+      ]
+    },
+    {
+      "id": "go-gateway-route-map",
+      "kind": "config-entrypoint",
+      "name": "Go gateway route map",
+      "path": "src/backend/go-services/internal/gateway/proxy.go",
+      "languages": [
+        "Go"
+      ],
+      "stack": [
+        "Static route mapping"
+      ],
+      "purpose": "Canonical HTTP prefix-to-service mapping for externally reachable backend routes.",
+      "status": "canonical",
+      "entrypoints": [
+        "src/backend/go-services/internal/gateway/proxy.go"
+      ],
+      "notable_exports": [
+        "getRouteMapping",
+        "findTargetService",
+        "ProxyHandler",
+        "createReverseProxy"
+      ],
+      "capabilities": [
+        "route-map",
+        "longest-prefix-match"
+      ],
+      "usage_cues": [
+        "Register new externally reachable API prefixes in getRouteMapping().",
+        "Current canonical search path is /api/search -> retrieval service, not Python legacy."
+      ],
+      "tags": [
+        "config",
+        "go",
+        "gateway",
+        "routing"
+      ]
+    },
+    {
+      "id": "node-custom-env-loader",
+      "kind": "config-entrypoint",
+      "name": "Node custom env bootstrap",
+      "path": "src/backend/server/src/index.ts",
+      "languages": [
+        "TypeScript"
+      ],
+      "stack": [
+        "Node fs/path bootstrap"
+      ],
+      "purpose": "Internal Node bootstrap that manually loads the repo-root .env before telemetry starts.",
+      "status": "internal-only",
+      "entrypoints": [
+        "src/backend/server/src/index.ts"
+      ],
+      "capabilities": [
+        "manual-env-load",
+        "server-bootstrap"
+      ],
+      "usage_cues": [
+        "Only sets environment variables that are currently undefined.",
+        "Must run from src/backend/server or the relative .env path may resolve incorrectly."
+      ],
+      "tags": [
+        "config",
+        "node",
+        "internal"
+      ]
+    },
+    {
+      "id": "start-all-script",
+      "kind": "script",
+      "name": "start-all.sh",
+      "path": "start-all.sh",
+      "languages": [
+        "Bash"
+      ],
+      "stack": [
+        "Bash",
+        "docker-compose"
+      ],
+      "purpose": "Primary convenience script for starting the local stack or docker-compose stack.",
+      "status": "canonical",
+      "entrypoints": [
+        "start-all.sh"
+      ],
+      "capabilities": [
+        "local-stack-start",
+        "docker-stack-start"
+      ],
+      "key_commands": [
+        "./start-all.sh local",
+        "./start-all.sh docker"
+      ],
+      "usage_cues": [
+        "Local mode checks infrastructure ports and starts Python legacy, retrieval-service, Node, Go WebSocket, and Go gateway if needed.",
+        "Docker mode delegates to docker-compose up -d."
+      ],
+      "tags": [
+        "script",
+        "dev",
+        "operations"
+      ]
+    },
+    {
+      "id": "stop-all-script",
+      "kind": "script",
+      "name": "stop-all.sh",
+      "path": "stop-all.sh",
+      "languages": [
+        "Bash"
+      ],
+      "stack": [
+        "Bash",
+        "docker-compose"
+      ],
+      "purpose": "Primary convenience script for stopping the local stack or docker-compose stack.",
+      "status": "canonical",
+      "entrypoints": [
+        "stop-all.sh"
+      ],
+      "capabilities": [
+        "local-stack-stop",
+        "docker-stack-stop"
+      ],
+      "key_commands": [
+        "./stop-all.sh",
+        "./stop-all.sh docker"
+      ],
+      "usage_cues": [
+        "Local mode stops services bound to ports 8080, 8081, 3001, 8002, and 8000.",
+        "Docker mode delegates to docker-compose down."
+      ],
+      "tags": [
+        "script",
+        "dev",
+        "operations"
+      ]
+    },
+    {
+      "id": "topology-health-script",
+      "kind": "script",
+      "name": "topology_health.py",
+      "path": "scripts/topology_health.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Python",
+        "PostgreSQL",
+        "JSON output"
+      ],
+      "purpose": "Machine-readable topology and runtime invariant checker.",
+      "status": "canonical",
+      "entrypoints": [
+        "scripts/topology_health.py"
+      ],
+      "capabilities": [
+        "topology-invariants",
+        "json-output",
+        "strict-exit"
+      ],
+      "key_commands": [
+        "python scripts/topology_health.py",
+        "python scripts/topology_health.py --json",
+        "python scripts/topology_health.py --strict"
+      ],
+      "usage_cues": [
+        "Uses DATABASE_URL or a localhost PostgreSQL default DSN.",
+        "Useful when checking closed-loop topology, feedback reachability, and evidence integrity."
+      ],
+      "tags": [
+        "script",
+        "topology",
+        "governance",
+        "health"
+      ]
+    },
+    {
+      "id": "governance-check-script",
+      "kind": "script",
+      "name": "check-governance.py",
+      "path": "scripts/check-governance.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Python",
+        "AST analysis"
+      ],
+      "purpose": "Repository governance scanner for config-code consistency, orphaned files, and related rules.",
+      "status": "supporting",
+      "entrypoints": [
+        "scripts/check-governance.py"
+      ],
+      "capabilities": [
+        "governance-scan",
+        "config-consistency",
+        "type-annotation-check"
+      ],
+      "key_commands": [
+        "python scripts/check-governance.py"
+      ],
+      "usage_cues": [
+        "Includes a check that config/config.yaml keys line up with config/loader.py.",
+        "Treat as a supporting audit surface rather than the runtime source of truth."
+      ],
+      "tags": [
+        "script",
+        "governance",
+        "audit"
+      ]
+    },
+    {
+      "id": "sync-architecture-docs-script",
+      "kind": "script",
+      "name": "sync_arch_docs.py",
+      "path": "scripts/sync_arch_docs.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Python",
+        "HTTP",
+        "Markdown patching"
+      ],
+      "purpose": "Syncs architecture summary blocks from the live retrieval endpoint into marked docs.",
+      "status": "supporting",
+      "entrypoints": [
+        "scripts/sync_arch_docs.py"
+      ],
+      "capabilities": [
+        "architecture-sync",
+        "drift-check",
+        "live-topology-reflection"
+      ],
+      "key_commands": [
+        "python scripts/sync_arch_docs.py",
+        "python scripts/sync_arch_docs.py --check"
+      ],
+      "usage_cues": [
+        "Reads /api/v1/architecture/live from retrieval-service by default.",
+        "Currently patches marker blocks in AGENTS.md."
+      ],
+      "tags": [
+        "script",
+        "docs",
+        "architecture",
+        "sync"
+      ]
+    },
+    {
+      "id": "index-system-kb-script",
+      "kind": "script",
+      "name": "index_system_kb.py",
+      "path": "scripts/index_system_kb.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Python",
+        "TEI",
+        "Qdrant"
+      ],
+      "purpose": "Indexes docs/rag-system-internals content into the rag_system_kb vector collection.",
+      "status": "supporting",
+      "entrypoints": [
+        "scripts/index_system_kb.py"
+      ],
+      "capabilities": [
+        "docs-indexing",
+        "tei-embeddings",
+        "qdrant-upsert"
+      ],
+      "key_commands": [
+        "python scripts/index_system_kb.py"
+      ],
+      "usage_cues": [
+        "Uses TEI_URL and QDRANT_URL, defaulting to localhost services.",
+        "Feeds the curated system knowledge base from docs/rag-system-internals."
+      ],
+      "tags": [
+        "script",
+        "kb",
+        "indexing",
+        "qdrant"
+      ]
+    },
+    {
+      "id": "index-self-docs-script",
+      "kind": "script",
+      "name": "index_self_docs.py",
+      "path": "scripts/index_self_docs.py",
+      "languages": [
+        "Python"
+      ],
+      "stack": [
+        "Python",
+        "TEI",
+        "Qdrant"
+      ],
+      "purpose": "Indexes selected repo docs into the rag_self_docs vector collection.",
+      "status": "supporting",
+      "entrypoints": [
+        "scripts/index_self_docs.py"
+      ],
+      "capabilities": [
+        "repo-doc-indexing",
+        "tei-embeddings",
+        "qdrant-upsert"
+      ],
+      "key_commands": [
+        "python scripts/index_self_docs.py",
+        "python scripts/index_self_docs.py --recreate"
+      ],
+      "usage_cues": [
+        "Indexes selected top-level docs, docs/**, .kimi/*.md, and selected .agent markdown files.",
+        "Excludes large/generated trees such as node_modules and qdrant_storage."
+      ],
+      "tags": [
+        "script",
+        "kb",
+        "indexing",
+        "docs"
+      ]
+    },
+    {
+      "id": "main-docker-compose",
+      "kind": "infrastructure",
+      "name": "Main docker-compose stack",
+      "path": "docker-compose.yml",
+      "languages": [
+        "YAML"
+      ],
+      "stack": [
+        "Docker Compose"
+      ],
+      "purpose": "Primary compose stack for core infrastructure and application services.",
+      "status": "canonical",
+      "entrypoints": [
+        "docker-compose.yml"
+      ],
+      "capabilities": [
+        "local-infra",
+        "app-orchestration",
+        "milvus-profile"
+      ],
+      "key_commands": [
+        "docker-compose up -d",
+        "docker-compose down"
+      ],
+      "usage_cues": [
+        "Defines Postgres, Redis, Qdrant, Elasticsearch, Neo4j, application services, and an opt-in Milvus profile.",
+        "Use this as the main compose source of truth for local full-stack deployment."
+      ],
+      "tags": [
+        "infrastructure",
+        "docker",
+        "compose"
+      ]
+    },
+    {
+      "id": "langfuse-compose",
+      "kind": "infrastructure",
+      "name": "Langfuse observability compose stack",
+      "path": "infrastructure/docker-compose.langfuse.yml",
+      "languages": [
+        "YAML"
+      ],
+      "stack": [
+        "Docker Compose",
+        "Langfuse",
+        "PostgreSQL"
+      ],
+      "purpose": "Optional compose stack for observability and trace review.",
+      "status": "supporting",
+      "entrypoints": [
+        "infrastructure/docker-compose.langfuse.yml"
+      ],
+      "capabilities": [
+        "langfuse-ui",
+        "trace-storage"
+      ],
+      "key_commands": [
+        "docker-compose -f infrastructure/docker-compose.langfuse.yml up -d"
+      ],
+      "usage_cues": [
+        "Runs a separate Langfuse Postgres and UI stack.",
+        "Keep secrets and public URLs environment-appropriate before using outside local development."
+      ],
+      "tags": [
+        "infrastructure",
+        "observability",
+        "docker",
+        "langfuse"
+      ]
+    },
+    {
+      "id": "architecture-overview-doc",
+      "kind": "doc",
+      "name": "Architecture overview",
+      "path": "docs/rag-system-internals/01-architecture.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "High-level system architecture, service roles, and request-chain reference.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/rag-system-internals/01-architecture.md"
+      ],
+      "usage_cues": [
+        "Good first stop for service/port orientation across the monorepo.",
+        "Human-readable reference only; executable routing truth still lives in Vite and Go gateway config."
+      ],
+      "tags": [
+        "docs",
+        "architecture",
+        "topology"
+      ]
+    },
+    {
+      "id": "agent-runtime-doc",
+      "kind": "doc",
+      "name": "Agent runtime internals",
+      "path": "docs/rag-system-internals/12-agent-runtime.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "Explains the ReAct loop, XState runtime, shared channel state, and trace expectations.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/rag-system-internals/12-agent-runtime.md"
+      ],
+      "usage_cues": [
+        "Use when modifying agent lifecycle, iteration limits, or runtime state handling.",
+        "Pairs well with the Node orchestrator and LangGraph reference surfaces."
+      ],
+      "tags": [
+        "docs",
+        "agent",
+        "runtime",
+        "xstate"
+      ]
+    },
+    {
+      "id": "system-config-doc",
+      "kind": "doc",
+      "name": "System config guide",
+      "path": "docs/rag-system-internals/14-system-config.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "Human-readable explanation of major config knobs, defaults, and tuning guidance.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/rag-system-internals/14-system-config.md"
+      ],
+      "usage_cues": [
+        "Use for context and parameter explanations.",
+        "Executable config ownership still belongs to config/loader.py, config/config.yaml, and environment variables."
+      ],
+      "tags": [
+        "docs",
+        "config",
+        "reference"
+      ]
+    },
+    {
+      "id": "usage-guide-doc",
+      "kind": "doc",
+      "name": "Usage guide",
+      "path": "docs/rag-system-internals/13-usage-guide.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "End-user and operator usage patterns for querying, calculations, and troubleshooting insufficient answers.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/rag-system-internals/13-usage-guide.md"
+      ],
+      "usage_cues": [
+        "Helpful when mapping UI capabilities to expected user workflows.",
+        "Also useful for support tooling that needs capability summaries."
+      ],
+      "tags": [
+        "docs",
+        "usage",
+        "capabilities"
+      ]
+    },
+    {
+      "id": "four-database-tools-spec-doc",
+      "kind": "doc",
+      "name": "Four-database tools specification",
+      "path": "docs/four-database-tools-spec.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "Tool-contract reference for vector, keyword, graph, structured, and calculator retrieval tools.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/four-database-tools-spec.md"
+      ],
+      "usage_cues": [
+        "Treat required fields such as chunk_id, doc_id, page_number, and source_db as contract cues for retrieval outputs.",
+        "Useful when aligning tool results across AI agents and backend services."
+      ],
+      "tags": [
+        "docs",
+        "tools",
+        "retrieval",
+        "contract"
+      ]
+    },
+    {
+      "id": "frontend-backend-integration-doc",
+      "kind": "doc",
+      "name": "Frontend-backend integration analysis",
+      "path": "docs/architecture-analysis/frontend-backend-integration.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "Detailed routing and dependency analysis for frontend/backend integration work.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/architecture-analysis/frontend-backend-integration.md"
+      ],
+      "usage_cues": [
+        "Use when debugging proxy alignment or gateway ownership questions.",
+        "Cross-check current code before assuming every recommendation in the report is still current."
+      ],
+      "tags": [
+        "docs",
+        "routing",
+        "integration",
+        "frontend",
+        "backend"
+      ]
+    },
+    {
+      "id": "langgraph-runtime-reference-doc",
+      "kind": "doc",
+      "name": "LangGraph runtime reference",
+      "path": "docs/langgraph-runtime-core.md",
+      "languages": [
+        "Markdown"
+      ],
+      "stack": [
+        "Documentation"
+      ],
+      "purpose": "Reference mental model for channels, checkpoints, and runtime loops used by agent work in this repo.",
+      "status": "supporting",
+      "entrypoints": [
+        "docs/langgraph-runtime-core.md"
+      ],
+      "usage_cues": [
+        "Useful when comparing LangGraph concepts to the Node/XState runtime context model.",
+        "Reference material, not an executable source of truth."
+      ],
+      "tags": [
+        "docs",
+        "langgraph",
+        "runtime",
+        "reference"
+      ]
+    }
+  ]
+}

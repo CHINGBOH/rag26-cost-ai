@@ -6,6 +6,8 @@ import os
 import uuid
 from typing import List, Dict, Any
 
+from config.runtime import read_runtime_config
+
 # 导入所需模块
 from domain_models.document import Document, DocumentChunk, DocumentMetadata, DocumentType, ChunkType
 from infrastructure.adapters.unified.unified_store import UnifiedStore
@@ -71,8 +73,8 @@ def main():
     """主函数"""
     print("🚀 开始索引知识库文档")
     print("=" * 60)
-    
-    knowledge_base_dir = '/home/l/rag-dashboard/data/knowledge_base'
+
+    knowledge_base_dir = read_runtime_config().knowledge_base_dir
     pdf_files = find_pdf_files(knowledge_base_dir)
     
     print(f"找到 {len(pdf_files)} 个PDF文件")

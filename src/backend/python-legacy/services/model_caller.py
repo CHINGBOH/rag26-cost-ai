@@ -18,6 +18,8 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import httpx
 import torch
 
+from config.runtime import read_runtime_config
+
 # 配置
 EMBEDDING_MODELS = {
     "default": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -33,13 +35,6 @@ RERANK_MODELS = {
     "multilingual": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
     "financial": "BAAI/bge-reranker-v2-m3"
 }
-
-# API配置
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-
-# 本地模型路径
-LOCAL_MODEL_DIR = os.getenv("LOCAL_MODEL_DIR", "/models")
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
@@ -75,6 +70,7 @@ class EmbeddingModelCaller:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.use_api = False
         self.api_client = None
+        self.runtime_config = read_runtime_config()
         
     async def initialize(
         self,
@@ -91,8 +87,8 @@ class EmbeddingModelCaller:
         if use_api:
             # 使用API调用
             self.api_client = httpx.AsyncClient(
-                base_url=api_base or OPENAI_API_BASE,
-                headers={"Authorization": f"Bearer {api_key or OPENAI_API_KEY}"},
+                base_url=api_base or self.runtime_config.openai_api_base,
+                headers={"Authorization": f"Bearer {api_key or self.runtime_config.openai_api_key}"},
                 timeout=60.0
             )
             logger.info("✓ 使用API调用Embedding模型")
@@ -101,8 +97,8 @@ class EmbeddingModelCaller:
             model_path = EMBEDDING_MODELS.get(model_name, model_name)
             
             # 检查是否是本地路径
-            if os.path.exists(os.path.join(LOCAL_MODEL_DIR, model_path)):
-                model_path = os.path.join(LOCAL_MODEL_DIR, model_path)
+            if os.path.exists(os.path.join(self.runtime_config.local_model_dir, model_path)):
+                model_path = os.path.join(self.runtime_config.local_model_dir, model_path)
             
             logger.info(f"加载模型: {model_path}")
             logger.info(f"使用设备: {self.device}")
@@ -323,6 +319,7 @@ class RerankModelCaller:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.use_api = False
         self.api_client = None
+        self.runtime_config = read_runtime_config()
         
     async def initialize(
         self,
@@ -339,8 +336,8 @@ class RerankModelCaller:
         if use_api:
             # 使用API调用
             self.api_client = httpx.AsyncClient(
-                base_url=api_base or OPENAI_API_BASE,
-                headers={"Authorization": f"Bearer {api_key or OPENAI_API_KEY}"},
+                base_url=api_base or self.runtime_config.openai_api_base,
+                headers={"Authorization": f"Bearer {api_key or self.runtime_config.openai_api_key}"},
                 timeout=60.0
             )
             logger.info("✓ 使用API调用Rerank模型")
@@ -349,8 +346,8 @@ class RerankModelCaller:
             model_path = RERANK_MODELS.get(model_name, model_name)
             
             # 检查是否是本地路径
-            if os.path.exists(os.path.join(LOCAL_MODEL_DIR, model_path)):
-                model_path = os.path.join(LOCAL_MODEL_DIR, model_path)
+            if os.path.exists(os.path.join(self.runtime_config.local_model_dir, model_path)):
+                model_path = os.path.join(self.runtime_config.local_model_dir, model_path)
             
             logger.info(f"加载模型: {model_path}")
             logger.info(f"使用设备: {self.device}")

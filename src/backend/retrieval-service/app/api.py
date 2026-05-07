@@ -9,7 +9,8 @@ import logging
 import os
 import time
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
 from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage
@@ -22,8 +23,50 @@ from app.models import (
     EvaluationRequest,
     DecomposeRequest,
 )
+from app.agent.learning_state import (
+    build_problem_gap_records,
+    build_learning_run_gap_records,
+    coerce_json_dict,
+    fetch_knowledge_gap_status_map,
+    fetch_knowledge_gaps,
+    link_knowledge_gap_event,
+    normalize_epoch_milliseconds,
+    summarize_knowledge_gaps,
+    update_knowledge_gap_status,
+    upsert_knowledge_gap_records,
+)
+from app.agent.event_ledger import record_interaction_run_terminal, record_projection_reconcile_event
+from app.agent.projections.rebuild import (
+    compare_canonical_projection_drift as compare_canonical_projection_drift_summary,
+    reconcile_canonical_projections as reconcile_canonical_projection_summary,
+)
+from app.agent.projections.learning_runs_view import fetch_learning_runs as fetch_learning_runs_projection
+from app.agent.run_context import build_run_context
+from app.agent.gaps.lifecycle import (
+    allowed_actions_for_status,
+    transition_status_for_action,
+)
+from app.agent.gaps.repository import KnowledgeGapRepository
+from app.agent.gaps.retest import (
+    GapRetestService,
+    call_consultation_endpoint as gap_call_consultation_endpoint,
+    detect_refusal_answer as gap_detect_refusal_answer,
+    extract_gap_retest_query as gap_extract_retest_query,
+    is_generic_consultation_answer as gap_is_generic_consultation_answer,
+    normalize_consultation_endpoint as gap_normalize_consultation_endpoint,
+)
+from app.agent.gaps.workbench import GapWorkbenchService
 from infrastructure.reranker_service import get_reranker_service
 from pydantic import BaseModel
+
+from app.runtime_config import REPO_ROOT, postgres_connection_kwargs, read_runtime_config, redis_connection_kwargs
+from app.runtime_overrides import (
+    ALLOWED_RUNTIME_OVERRIDES,
+    apply_runtime_override,
+    get_runtime_override,
+    legacy_default_runtime_override,
+    validate_runtime_override,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +81,24 @@ def set_services(pipeline_instance, store_instance):
     global pipeline, store
     pipeline = pipeline_instance
     store = store_instance
+
+
+def get_scheduler():
+    from app.agent.scheduler import get_scheduler as _get_scheduler
+
+    return _get_scheduler()
+
+
+def get_failure_monitor():
+    from app.agent.failure_monitor import get_failure_monitor as _get_failure_monitor
+
+    return _get_failure_monitor()
+
+
+def get_feedback_analyzer():
+    from app.agent.feedback_analyzer import get_feedback_analyzer as _get_feedback_analyzer
+
+    return _get_feedback_analyzer()
 
 
 @router.get("/health")
@@ -64,10 +125,21 @@ async def search(request: SearchRequest):
         raise HTTPException(status_code=503, detail="Pipeline not initialized")
 
     try:
+        # Phase 1+ Task 1: Externalize top_k parameters
+        from config.param_registry import param
+        
+        default_top_k = SearchRequest.model_fields["top_k"].default
+        effective_top_k = (
+            int(get_runtime_override("top_k", request.top_k))
+            if request.top_k == default_top_k
+            else request.top_k
+        )
         config = RetrievalConfig(
-            vector_top_k=30 if request.mode in ["vector", "hybrid"] else 0,
-            keyword_top_k=20 if request.mode in ["keyword", "hybrid"] else 0,
-            graph_top_k=10 if request.mode in ["graph", "hybrid"] else 0,
+            vector_top_k=param("retrieval_vector_top_k", default=20) if request.mode in ["vector", "hybrid"] else 0,
+            keyword_top_k=param("retrieval_keyword_top_k", default=12) if request.mode in ["keyword", "hybrid"] else 0,
+            graph_top_k=param("retrieval_graph_top_k", default=8) if request.mode in ["graph", "hybrid"] else 0,
+            score_threshold=float(get_runtime_override("score_threshold", RetrievalConfig().score_threshold)),
+            enable_rerank=bool(get_runtime_override("rerank_enabled", RetrievalConfig().enable_rerank)),
         )
 
         retrieval_request = RetrievalRequest(
@@ -90,7 +162,7 @@ async def search(request: SearchRequest):
                         "score": round(doc.score, 4),
                         "metadata": doc.metadata,
                     }
-                    for doc in response.documents[: request.top_k]
+                    for doc in response.documents[:effective_top_k]
                 ],
                 "latency_ms": round(response.latency_ms, 2),
                 "stats": response.stats,
@@ -360,9 +432,11 @@ async def agent_query(request: AgentRequest):
     import asyncio
     from app.agent.graph import get_agent_graph
 
+    run_context = build_run_context(query=request.query.strip(), session_id=request.session_id, channel="sync")
+
     try:
         graph = get_agent_graph()
-        thread_id = request.session_id or str(uuid.uuid4())
+        thread_id = run_context.session_id
         # 每次请求使用独立 thread_id，避免 MemorySaver 在同一 session 内
         # 累积历史消息（含上次未清理的 tool_calls），导致 DeepSeek HTTP 400
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
@@ -412,9 +486,22 @@ async def agent_query(request: AgentRequest):
             "root_cause_node": "",
             "tool_fallback_level": 0,
             "used_tool_categories": [],
+            "run_id": run_context.run_id,
+            "session_id": run_context.session_id,
         }
         result = await asyncio.to_thread(graph.invoke, initial_state, config=config)
+        record_interaction_run_terminal(
+            run_context=run_context,
+            query_type=result.get("query_type", ""),
+            final_answer=result.get("final_answer", ""),
+            evaluation=result.get("evaluation"),
+            runtime=result.get("llm_runtime"),
+            chunks=result.get("retrieved_chunks", []),
+            iterations=result.get("iterations", 0),
+            messages=result.get("messages", []),
+        )
         return {
+            "run_id": run_context.run_id,
             "session_id": thread_id,
             "query": result["query"],
             "query_type": result.get("query_type", ""),
@@ -428,6 +515,17 @@ async def agent_query(request: AgentRequest):
             "data_gaps": result.get("data_gaps") or [],
         }
     except Exception as e:
+        record_interaction_run_terminal(
+            run_context=run_context,
+            query_type="",
+            final_answer="",
+            evaluation=None,
+            runtime=None,
+            chunks=[],
+            iterations=0,
+            messages=[],
+            error_message=str(e),
+        )
         logger.error(f"Agent pipeline error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -472,7 +570,8 @@ async def agent_query_stream(request: AgentStreamRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query 不能为空")
 
-    session_id = request.session_id or str(uuid.uuid4())
+    run_context = build_run_context(query=request.query.strip(), session_id=request.session_id, channel="stream")
+    session_id = run_context.session_id
 
     async def event_generator():
         loop = asyncio.get_event_loop()
@@ -531,6 +630,8 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "root_cause_node": "",
                     "tool_fallback_level": 0,
                     "used_tool_categories": [],
+                    "run_id": run_context.run_id,
+                    "session_id": run_context.session_id,
                 }
                 for chunk in graph.stream(initial_state, config=config):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -556,10 +657,32 @@ async def agent_query_stream(request: AgentStreamRequest):
             try:
                 kind, payload = await asyncio.wait_for(queue.get(), timeout=150.0)
             except asyncio.TimeoutError:
+                record_interaction_run_terminal(
+                    run_context=run_context,
+                    query_type=current_query_type,
+                    final_answer=final_answer,
+                    evaluation=None,
+                    runtime=current_runtime,
+                    chunks=list(retrieved_chunks_accum or []),
+                    iterations=total_iterations,
+                    messages=[],
+                    error_message="TIMEOUT",
+                )
                 yield _sse_event("error", {"message": "请求超时，请稍后重试", "code": "TIMEOUT"})
                 break
 
             if kind == "error":
+                record_interaction_run_terminal(
+                    run_context=run_context,
+                    query_type=current_query_type,
+                    final_answer=final_answer,
+                    evaluation=None,
+                    runtime=current_runtime,
+                    chunks=list(retrieved_chunks_accum or []),
+                    iterations=total_iterations,
+                    messages=[],
+                    error_message=str(payload),
+                )
                 yield _sse_event("error", {"message": payload, "code": "AGENT_ERROR"})
                 break
 
@@ -590,6 +713,7 @@ async def agent_query_stream(request: AgentStreamRequest):
                     "done",
                     {
                         "answer": final_answer,
+                        "run_id": run_context.run_id,
                         "session_id": session_id,
                         "iterations": total_iterations,
                         "latency_ms": elapsed_ms,
@@ -602,27 +726,16 @@ async def agent_query_stream(request: AgentStreamRequest):
                         "data_gaps": data_gaps,
                     },
                 )
-                # Server-side conversation logging
-                try:
-                    import asyncpg as _apg
-                    _db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
-                    _conn = await _apg.connect(_db_url)
-                    try:
-                        _turn_idx = int(elapsed_ms // 1 + 1)  # use unique ts-based index
-                        await _conn.execute(
-                            """INSERT INTO conversation_turns
-                               (session_id, turn_index, user_content, assistant_content,
-                                message_id, source, status, latency_ms)
-                               VALUES ($1, (SELECT COALESCE(MAX(turn_index),0)+1 FROM conversation_turns WHERE session_id=$1),
-                               $2, $3, $4, 'agent', 'completed', $5)
-                            """,
-                            session_id, request.query, final_answer or "",
-                            str(uuid.uuid4()), elapsed_ms,
-                        )
-                    finally:
-                        await _conn.close()
-                except Exception as _log_err:
-                    logger.debug(f"[conv_log] skipped: {_log_err}")
+                record_interaction_run_terminal(
+                    run_context=run_context,
+                    query_type=current_query_type,
+                    final_answer=final_answer,
+                    evaluation=None,
+                    runtime=current_runtime,
+                    chunks=list(retrieved_chunks_accum or []),
+                    iterations=total_iterations,
+                    messages=[],
+                )
                 break
 
             # kind == "chunk"
@@ -879,11 +992,8 @@ async def submit_feedback(request: FeedbackRequest):
         "query": request.query,
         "answer_summary": request.answer_summary,
     }
-    _feedback_default = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
-    )
-    feedback_path = os.environ.get("FEEDBACK_LOG_PATH", _feedback_default)
+    runtime = read_runtime_config()
+    feedback_path = str(runtime.feedback_log_path)
     os.makedirs(os.path.dirname(os.path.abspath(feedback_path)), exist_ok=True)
     try:
         with open(feedback_path, "a") as f:
@@ -895,7 +1005,7 @@ async def submit_feedback(request: FeedbackRequest):
     # Also persist to PostgreSQL with upsert on (session_id, message_id)
     try:
         import asyncpg
-        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+        db_url = runtime.database_url
         conn = await asyncpg.connect(db_url)
         try:
             fb_id = await conn.fetchval(
@@ -1006,25 +1116,28 @@ async def health_detail():
     import httpx
     import time
     import asyncio
+    runtime = read_runtime_config()
+    postgres_config = postgres_connection_kwargs()
+    redis_config = redis_connection_kwargs()
     # Definition: each entry = (name, url, critical, role)
     http_services = [
-        ("retrieval",     "http://localhost:8002/health",  True,
+        ("retrieval",     f"{runtime.retrieval_service_url}/health",  True,
          "核心检索服务 (FastAPI)"),
-        ("go_gateway",    "http://localhost:8080/health",  True,
+        ("go_gateway",    f"{runtime.go_gateway_url}/health",  True,
          "API 路由网关"),
-        ("nodejs",        "http://localhost:3001/health",  False,
+        ("nodejs",        f"{runtime.nodejs_url}/health",  False,
          "Node 编排（可选）"),
-        ("python_legacy", "http://localhost:8000/health",  False,
+        ("python_legacy", f"{runtime.python_legacy_url}/health",  False,
          "旧 Python API（已被 retrieval 替代）"),
-        ("ocr",           "http://localhost:8001/health",  False,
+        ("ocr",           f"{runtime.ocr_service_url.rstrip('/')}/health",  False,
          "OCR 服务（按需）"),
-        ("qdrant",        "http://localhost:6333/healthz", True,
+        ("qdrant",        f"{runtime.qdrant_url.rstrip('/')}/healthz", True,
          "向量库"),
-        ("milvus",        "http://localhost:9091/healthz", False,
+        ("milvus",        runtime.milvus_health_url, False,
          "向量库 Milvus（可选，与 qdrant 二选一或 A/B）"),
-        ("elasticsearch", "http://localhost:9200/_cluster/health", True,
+        ("elasticsearch", f"{runtime.elasticsearch_url.rstrip('/')}/_cluster/health", True,
          "全文检索（IK 分词）"),
-        ("neo4j",         "http://localhost:7474/",         False,
+        ("neo4j",         runtime.neo4j_http_url,         False,
          "图谱库（可选）"),
     ]
     results: dict[str, dict] = {}
@@ -1065,7 +1178,8 @@ async def health_detail():
     t0 = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("localhost", 5432), timeout=2.0
+            asyncio.open_connection(str(postgres_config["host"]), int(postgres_config["port"])),
+            timeout=2.0,
         )
         writer.close()
         await writer.wait_closed()
@@ -1088,7 +1202,8 @@ async def health_detail():
     t0 = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("localhost", 6379), timeout=2.0
+            asyncio.open_connection(str(redis_config["host"]), int(redis_config["port"])),
+            timeout=2.0,
         )
         writer.close()
         await writer.wait_closed()
@@ -1216,9 +1331,10 @@ async def sandbox_health():
 async def metrics_llm():
     """Forward llama-server metrics."""
     import httpx
+    runtime = read_runtime_config()
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get("http://localhost:8003/metrics")
+            r = await client.get(f"{runtime.tei_url.rstrip('/')}/metrics")
             return {"raw": r.text[:2000], "status": "ok"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1226,55 +1342,173 @@ async def metrics_llm():
 
 # ── Learning Loop ─────────────────────────────────────────────────────────────
 
-import os as _os_learn
+def _fetch_recent_interaction_run_records(
+    *,
+    limit: int = 500,
+    quality: Optional[str] = None,
+    weak_or_failed_only: bool = False,
+    within_hours: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
 
-_LEARN_DIR = _os_learn.environ.get("AGENT_RUN_LOG_DIR", "/home/l/rag-dashboard/data/learning")
-_feedback_default_learn = _os_learn.path.join(
-    _os_learn.path.dirname(_os_learn.path.abspath(__file__)),
-    "..", "..", "..", "..", "data", "feedback", "rag_feedback.jsonl"
-)
-_FEEDBACK_PATH = _os_learn.environ.get("FEEDBACK_LOG_PATH", _feedback_default_learn)
-
-
-def _read_jsonl(path: str, limit: int = 500) -> list[dict]:
-    if not _os_learn.path.exists(path):
-        return []
-    rows: list[dict] = []
+    conn = None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    except Exception as e:
-        logger.warning(f"read jsonl failed {path}: {e}")
-        return []
-    return rows[-limit:]
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if quality:
+                clauses.append("quality = %s")
+                params.append(quality)
+            if weak_or_failed_only:
+                clauses.append("(quality IN ('weak', 'failure') OR refused = TRUE)")
+            if within_hours is not None:
+                clauses.append("completed_at >= NOW() - (%s * INTERVAL '1 hour')")
+                params.append(within_hours)
+
+            where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            params.append(max(int(limit), 1))
+            cur.execute(
+                f"""
+                SELECT
+                    run_id,
+                    session_id,
+                    query,
+                    query_type,
+                    channel,
+                    outcome_family,
+                    outcome_code,
+                    quality,
+                    refused,
+                    chunks_count,
+                    tools_used,
+                    evaluation,
+                    runtime,
+                    answer_preview,
+                    completed_at,
+                    iterations,
+                    latency_ms,
+                    learning_eligible
+                FROM agent_run_projection
+                {where_clause}
+                ORDER BY completed_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        records.append(
+            {
+                "ts": normalize_epoch_milliseconds(row[14]),
+                "run_id": row[0],
+                "session_id": row[1],
+                "query": row[2] or "",
+                "query_type": row[3] or "",
+                "channel": row[4] or "",
+                "outcome_family": row[5] or "",
+                "outcome_code": row[6] or "",
+                "quality": row[7] or "",
+                "refused": bool(row[8]),
+                "chunks_count": int(row[9] or 0),
+                "tools_used": row[10] or [],
+                "evaluation": coerce_json_dict(row[11]),
+                "runtime": coerce_json_dict(row[12]),
+                "answer": row[13] or "",
+                "iterations": int(row[15] or 0),
+                "latency_ms": int(row[16] or 0),
+                "learning_eligible": bool(row[17]),
+            }
+        )
+    return records
+
+
+def _fetch_recent_feedback_records(limit: int = 500) -> list[dict[str, Any]]:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT rating, overall_rating, tags, ts, created_at
+                FROM rag_feedback
+                ORDER BY COALESCE(created_at, to_timestamp(ts)) DESC
+                LIMIT %s
+                """,
+                (max(int(limit), 1),),
+            )
+            rows = cur.fetchall()
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
+
+    return [
+        {
+            "rating": row[0],
+            "overall_rating": row[1],
+            "tags": row[2] or [],
+            "ts": normalize_epoch_milliseconds(row[4] or row[3]),
+        }
+        for row in rows
+    ]
+
+
+def _count_recent_weak_or_failed_runs(hours: int = 24) -> int:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    conn = None
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM agent_run_projection
+                WHERE learning_eligible = TRUE
+                  AND quality IN ('weak', 'failure')
+                  AND completed_at >= NOW() - (%s * INTERVAL '1 hour')
+                """,
+                (max(int(hours), 1),),
+            )
+            row = cur.fetchone()
+            return int((row or [0])[0] or 0)
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn)
 
 
 @router.get("/api/v1/learning/runs")
-async def learning_runs(limit: int = 50, quality: Optional[str] = None):
-    """Recent agent runs from JSONL log. Filter by quality=failure|weak|good."""
-    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=max(limit * 4, 200))
-    if quality:
-        runs = [r for r in runs if r.get("quality") == quality]
-    runs.reverse()  # newest first
-    # Convert ts from Unix seconds to milliseconds for frontend
-    for run in runs[:limit]:
-        if run.get('ts') and isinstance(run['ts'], (int, float)):
-            run['ts'] = int(run['ts'] * 1000)
-    return {"runs": runs[:limit], "total_in_window": len(runs)}
+async def learning_runs(limit: int = 50, quality: Optional[str] = None, kind: str = "interaction"):
+    """Projection-backed interaction or learning-loop runs."""
+    return fetch_learning_runs_projection(limit=limit, quality=quality, kind=kind)
+
+
+@router.get("/api/v1/learning/projections/drift")
+async def learning_projection_drift(run_id: Optional[str] = None):
+    """Canonical projection drift diagnostics across core read models."""
+    return compare_canonical_projection_drift_summary(run_id=run_id)
+
+
+@router.post("/api/v1/learning/projections/reconcile")
+async def reconcile_learning_projections(run_id: Optional[str] = None):
+    """Manually reconcile canonical projection drift across core read models."""
+    summary = reconcile_canonical_projection_summary(run_id=run_id)
+    record_projection_reconcile_event(run_id=run_id, summary=summary)
+    return summary
 
 
 @router.get("/api/v1/learning/summary")
 async def learning_summary():
-    """Aggregate stats over recent agent runs + feedback."""
-    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
-    feedback = _read_jsonl(_FEEDBACK_PATH, limit=500)
+    """Aggregate stats over recent projection-backed runs + persisted feedback."""
+    runs = _fetch_recent_interaction_run_records(limit=500)
+    feedback = _fetch_recent_feedback_records(limit=500)
 
     total = len(runs)
     by_quality = {"good": 0, "weak": 0, "failure": 0}
@@ -1319,38 +1553,609 @@ async def learning_summary():
 
 
 @router.get("/api/v1/learning/gaps")
-async def learning_gaps(limit: int = 30):
-    """Distinct failed/weak queries — surface knowledge gaps."""
-    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
-    seen: set[str] = set()
-    gaps: list[dict] = []
-    for r in reversed(runs):
-        if r.get("quality") not in ("failure", "weak"):
+async def learning_gaps(
+    limit: int = 30,
+    status: Optional[str] = None,
+    active_only: bool = False,
+    scope_type: Optional[str] = None,
+    cause_type: Optional[str] = None,
+    cluster_id: Optional[str] = None,
+):
+    """Persisted knowledge gaps, refreshed from projection-backed interaction runs when needed."""
+    try:
+        runs = _fetch_recent_interaction_run_records(limit=max(limit * 4, 200), weak_or_failed_only=True)
+        if runs:
+            upsert_knowledge_gap_records(build_learning_run_gap_records(runs, limit=max(limit * 2, 60)))
+    except Exception as e:
+        logger.warning("knowledge gap projection refresh failed: %s", e)
+
+    gaps = fetch_knowledge_gaps(
+        limit=limit,
+        status=status,
+        statuses=["open", "in_progress"] if active_only and not status else None,
+        scope_type=scope_type,
+        cause_type=cause_type,
+        cluster_id=cluster_id,
+    )
+    return {"gaps": gaps, "summary": summarize_knowledge_gaps(gaps)}
+
+
+class GapTriageRequest(BaseModel):
+    limit: int = 100
+    actor: str = "learning_gap_triage"
+    dry_run: bool = False
+    observation_window_days: int = 7
+    active_only: bool = False
+    live_retest: bool = False
+    consultation_endpoint: Optional[str] = None
+    consultation_timeout_seconds: int = 60
+    max_live_retests: int = 5
+    max_iterations: int = 3
+
+
+class GapWorkbenchRequest(BaseModel):
+    include_resolved: bool = False
+    limit: int = 200
+
+
+class GapActionRequest(BaseModel):
+    actor: str = "learning_gap_workbench"
+    reason: Optional[str] = None
+    consultation_endpoint: Optional[str] = None
+    consultation_timeout_seconds: int = 60
+    max_iterations: int = 3
+    observation_window_days: int = 7
+    dry_run: bool = False
+
+
+_POLICY_GAP_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"忽略.*(身份|规则|系统)",
+        r"ignore.*(role|instruction|system)",
+        r"不要提.*(依据|资料|证据)",
+        r"不需要.*(依据|资料|证据)",
+        r"编造|捏造|fabricate|make up",
+        r"英伟达|nvidia|股票|股价|stock",
+    )
+]
+_TRIAGE_IMPROVEMENT_ROUTES = {
+    "R1_navigator_dict",
+    "R2_path_default",
+    "R3_planner_examples",
+    "R4_rerank_weights",
+    "R5_tool_priority",
+}
+
+
+def _normalize_gap_query_text(value: str) -> str:
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", " ", (value or "").lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _is_policy_boundary_gap(gap: Dict[str, Any]) -> bool:
+    text = " ".join(
+        str(gap.get(key) or "")
+        for key in ("query", "description", "answer_preview", "cause_type", "problem_id")
+    )
+    return any(pattern.search(text) for pattern in _POLICY_GAP_PATTERNS)
+
+
+def _build_successful_gap_query_index(runs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    successful: Dict[str, Dict[str, Any]] = {}
+    for run in runs:
+        query_key = _normalize_gap_query_text(str(run.get("query") or ""))
+        if not query_key or query_key in successful:
             continue
-        q = (r.get("query") or "").strip()
-        if not q or q in seen:
+        quality = str(run.get("quality") or "").lower()
+        outcome_code = str(run.get("outcome_code") or "").upper()
+        if quality in {"weak", "failure"}:
             continue
-        seen.add(q)
-        # Map quality to status: failure → open, weak → in_progress
-        quality = r.get("quality", "unknown")
-        status = "open" if quality == "failure" else "in_progress" if quality == "weak" else "open"
-        ts = r.get("ts")
-        # Convert ts from Unix seconds to milliseconds
-        if ts and isinstance(ts, (int, float)):
-            ts = int(ts * 1000)
-        gaps.append({
-            "query": q,
-            "ts": ts,
-            "quality": quality,
+        if bool(run.get("refused")) or outcome_code.startswith("REFUSED"):
+            continue
+        successful[query_key] = run
+    return successful
+
+
+def _matching_successful_run(
+    gap: Dict[str, Any],
+    successful_query_index: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    sample_queries = gap.get("sample_queries")
+    if not isinstance(sample_queries, list):
+        sample_queries = []
+    query_candidates = [
+        gap.get("query"),
+        gap.get("query_text"),
+        gap.get("description"),
+        *sample_queries,
+    ]
+    for query in query_candidates:
+        query_key = _normalize_gap_query_text(str(query or ""))
+        if query_key and query_key in successful_query_index:
+            return successful_query_index[query_key]
+    return None
+
+
+_REFUSAL_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"无法直接回答|无法回答|无法提供|无法分析|无法对比|无法计算",
+        r"不足以回答|未提供|均显示为N/A|无相关数据|未包含",
+        r"cannot answer|cannot provide|insufficient evidence|not enough information",
+    )
+]
+
+
+def _detect_refusal_answer(answer: str) -> bool:
+    return gap_detect_refusal_answer(answer)
+
+
+def _is_generic_consultation_answer(answer: str) -> bool:
+    return gap_is_generic_consultation_answer(answer)
+
+
+def _extract_gap_retest_query(gap: Dict[str, Any]) -> str:
+    return gap_extract_retest_query(gap)
+
+
+def _normalize_consultation_endpoint(endpoint: Optional[str]) -> str:
+    return gap_normalize_consultation_endpoint(endpoint)
+
+
+def _call_consultation_endpoint(
+    *,
+    endpoint: str,
+    query: str,
+    timeout_seconds: int,
+    max_iterations: int,
+) -> Dict[str, Any]:
+    return gap_call_consultation_endpoint(
+        endpoint=endpoint,
+        query=query,
+        timeout_seconds=timeout_seconds,
+        max_iterations=max_iterations,
+    )
+
+
+def _decision_from_live_retest(gap: Dict[str, Any], evidence: Dict[str, Any]) -> Dict[str, Any]:
+    if _is_policy_boundary_gap(gap):
+        return {
+            "action": "block_policy",
+            "status": "blocked",
+            "reason": "Live consultation retest confirmed this is a policy, out-of-domain, or fabrication prompt",
+            "evidence": evidence,
+        }
+    if (
+        evidence.get("ok")
+        and evidence.get("quality") == "good"
+        and not evidence.get("refused")
+        and int(evidence.get("chunks_count") or 0) > 0
+    ):
+        return {
+            "action": "observe_fixed",
+            "status": "observing",
+            "reason": "Live consultation retest returned a non-refusal answer",
+            "evidence": evidence,
+        }
+    route = str(gap.get("affected_route") or "")
+    if route in _TRIAGE_IMPROVEMENT_ROUTES and not gap.get("linked_event_id"):
+        return {
+            "action": "create_improvement_event",
+            "status": "in_progress",
+            "reason": "Live consultation retest did not pass for a route-specific gap",
+            "evidence": evidence,
+        }
+    return {
+        "action": "keep_open",
+        "status": str(gap.get("status") or "open").lower(),
+        "reason": "Live consultation retest did not produce passing evidence",
+        "evidence": evidence,
+    }
+
+
+def _summarize_gap_duplicate_clusters(gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    clusters: Dict[str, List[Dict[str, Any]]] = {}
+    for gap in gaps:
+        cluster_id = str(gap.get("cluster_id") or "").strip()
+        if not cluster_id:
+            query_key = _normalize_gap_query_text(str(gap.get("query") or gap.get("description") or ""))
+            cluster_id = f"query:{query_key}" if query_key else str(gap.get("gap_key") or "")
+        clusters.setdefault(cluster_id, []).append(gap)
+
+    return [
+        {
+            "cluster_id": cluster_id,
+            "count": len(cluster_gaps),
+            "gap_keys": [str(gap.get("gap_key")) for gap in cluster_gaps if gap.get("gap_key")],
+            "sample_query": cluster_gaps[0].get("query") or cluster_gaps[0].get("description"),
+        }
+        for cluster_id, cluster_gaps in sorted(clusters.items())
+        if len(cluster_gaps) > 1
+    ]
+
+
+def _fetch_triage_gaps(*, limit: int, active_only: bool = False) -> List[Dict[str, Any]]:
+    if not active_only:
+        return fetch_knowledge_gaps(limit=limit)
+    return fetch_knowledge_gaps(limit=limit, statuses=["open", "in_progress"])
+
+
+def _classify_gap_triage_action(
+    gap: Dict[str, Any],
+    successful_query_index: Dict[str, Dict[str, Any]],
+    *,
+    now_ms: Optional[int] = None,
+) -> Dict[str, Any]:
+    status = str(gap.get("status") or "open").lower()
+    now_value = now_ms or int(time.time() * 1000)
+
+    if status == "observing" and gap.get("observation_until"):
+        observation_until = int(gap.get("observation_until") or 0)
+        if observation_until and observation_until <= now_value:
+            return {
+                "action": "resolve",
+                "status": "resolved",
+                "reason": "Observation window elapsed without recurrence",
+            }
+
+    if status in {"resolved", "blocked"} and not gap.get("verified_at"):
+        return {
+            "action": "repair_terminal_timestamp",
             "status": status,
-            "refused": bool(r.get("refused")),
-            "chunks_count": r.get("chunks_count", 0),
-            "confidence": (r.get("evaluation") or {}).get("confidence", 0),
-            "answer_preview": (r.get("answer") or "")[:200],
-        })
-        if len(gaps) >= limit:
-            break
-    return {"gaps": gaps}
+            "reason": f"Gap already {status}; backfilling terminal verification timestamp",
+        }
+
+    if status in {"resolved", "blocked"}:
+        return {"action": "skip", "status": status, "reason": f"Gap already {status}"}
+
+    if _is_policy_boundary_gap(gap):
+        return {
+            "action": "block_policy",
+            "status": "blocked",
+            "reason": "Classified as policy, out-of-domain, or fabrication request",
+        }
+
+    successful_run = _matching_successful_run(gap, successful_query_index)
+    if successful_run:
+        return {
+            "action": "observe_fixed",
+            "status": "observing",
+            "reason": "Latest matching interaction run is no longer weak, failed, or refused",
+            "evidence": {
+                "run_id": successful_run.get("run_id"),
+                "quality": successful_run.get("quality"),
+                "outcome_code": successful_run.get("outcome_code"),
+                "completed_at": successful_run.get("ts"),
+            },
+        }
+
+    route = str(gap.get("affected_route") or "")
+    if route in _TRIAGE_IMPROVEMENT_ROUTES and not gap.get("linked_event_id"):
+        return {
+            "action": "create_improvement_event",
+            "status": "in_progress",
+            "reason": "Unresolved route-specific gap needs an improvement event",
+        }
+
+    return {
+        "action": "keep_open",
+        "status": status,
+        "reason": "No passing retest or policy classification found",
+    }
+
+
+def _create_gap_triage_improvement_event(gap: Dict[str, Any], *, actor: str) -> Optional[int]:
+    route = str(gap.get("affected_route") or "")
+    if route not in _TRIAGE_IMPROVEMENT_ROUTES:
+        return None
+
+    from app.agent.event_ledger import insert_improvement_event
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    gap_key = str(gap.get("gap_key") or "")
+    payload = {
+        "type": "gap_triage_repair",
+        "problem_id": gap.get("problem_id"),
+        "gap_key": gap_key,
+        "description": f"Triage unresolved knowledge gap: {gap.get('description') or gap_key}",
+        "decision": "pending_review",
+        "risk_level": "medium",
+        "estimated_impact": "medium",
+        "review": {
+            "status": "pending_review",
+            "reviewer": actor,
+            "note": "Created by learning gap triage; requires human approval before execution",
+            "updated_at": int(time.time() * 1000),
+        },
+        "triage": {
+            "source": gap.get("source"),
+            "quality": gap.get("quality"),
+            "cause_type": gap.get("cause_type"),
+            "cluster_id": gap.get("cluster_id"),
+            "reopen_count": gap.get("reopen_count"),
+        },
+    }
+
+    conn = _get_pg_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO improvement_events
+                (source, actor, source_run_id, affected_route, patch_payload, rationale, reversible_by)
+            VALUES
+                (%s, %s, %s, %s, %s::jsonb, %s, 'rollback_event')
+            RETURNING id
+            """,
+            (
+                "auto",
+                actor,
+                gap.get("problem_id"),
+                route,
+                json.dumps(payload, ensure_ascii=False),
+                payload["description"],
+            ),
+        )
+        row = cursor.fetchone()
+        event_id = int(row[0])
+        insert_improvement_event(
+            cursor,
+            event_id=event_id,
+            patch_id=f"gap-triage:{gap_key}:{event_id}",
+            affected_route=route,
+            patch_type="gap_triage_repair",
+            status="pending_review",
+            event_type="improvement.event.created",
+            gap_key=gap_key,
+        )
+        conn.commit()
+        cursor.close()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_pg_conn(conn)
+
+    link_knowledge_gap_event(
+        gap_key,
+        event_id,
+        status="in_progress",
+        owner=actor,
+        note=payload["description"],
+    )
+    return event_id
+
+
+async def run_learning_gap_triage(payload: GapTriageRequest) -> Dict[str, Any]:
+    """Retest/classify active knowledge gaps and move them through the lifecycle."""
+    limit = max(1, min(int(payload.limit or 100), 200))
+    try:
+        runs = _fetch_recent_interaction_run_records(
+            limit=max(limit * 4, 200),
+            weak_or_failed_only=False,
+        )
+        upsert_knowledge_gap_records(build_learning_run_gap_records(runs, limit=max(limit * 2, 60)))
+    except Exception as exc:
+        logger.warning("knowledge gap triage refresh failed: %s", exc)
+        runs = []
+
+    gaps = _fetch_triage_gaps(limit=limit, active_only=payload.active_only)
+    successful_query_index = _build_successful_gap_query_index(runs)
+    duplicate_clusters = _summarize_gap_duplicate_clusters(gaps)
+    actions: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    live_retests_used = 0
+
+    for gap in gaps:
+        live_evidence: Dict[str, Any] = {}
+        live_applied = False
+        if (
+            payload.live_retest
+            and live_retests_used < max(0, min(int(payload.max_live_retests or 0), limit))
+            and str(gap.get("status") or "open").lower() in {"open", "in_progress"}
+        ):
+            live_retests_used += 1
+            live_result = await GapRetestService().retest_gap(
+                gap,
+                actor=payload.actor,
+                consultation_endpoint=payload.consultation_endpoint,
+                timeout_seconds=payload.consultation_timeout_seconds,
+                max_iterations=payload.max_iterations,
+                observation_window_days=payload.observation_window_days,
+                dry_run=payload.dry_run,
+            )
+            live_evidence = live_result.get("evidence") or {}
+            live_applied = bool(live_result.get("applied"))
+            decision = {
+                "action": live_result.get("action"),
+                "status": live_result.get("status"),
+                "reason": live_result.get("reason"),
+                "evidence": live_evidence,
+                "evidence_id": live_result.get("evidence_id"),
+                "transition_id": live_result.get("transition_id"),
+            }
+        else:
+            decision = _classify_gap_triage_action(gap, successful_query_index)
+        action = str(decision["action"])
+        counts[action] = counts.get(action, 0) + 1
+        gap_key = str(gap.get("gap_key") or "")
+        applied = False
+        event_id: Optional[int] = None
+
+        if live_evidence:
+            applied = live_applied
+        elif not payload.dry_run:
+            metadata = {
+                "triage_action": action,
+                "triage_reason": decision.get("reason"),
+                "triage_actor": payload.actor,
+                "triage_mode": "live_consultation" if live_evidence else "projection_only",
+                "triage_evidence": decision.get("evidence") or {},
+            }
+            if action in {"block_policy", "observe_fixed", "resolve", "repair_terminal_timestamp"}:
+                applied = update_knowledge_gap_status(
+                    gap_key,
+                    str(decision["status"]),
+                    str(decision["reason"]),
+                    metadata_patch=metadata,
+                    owner=payload.actor,
+                    observation_window_days=max(1, int(payload.observation_window_days or 7)),
+                )
+            elif action == "create_improvement_event":
+                event_id = _create_gap_triage_improvement_event(gap, actor=payload.actor)
+                applied = event_id is not None
+
+        actions.append(
+            {
+                "gap_key": gap_key,
+                "previous_status": gap.get("status"),
+                "action": action,
+                "status": decision.get("status"),
+                "reason": decision.get("reason"),
+                "applied": applied,
+                "event_id": event_id,
+                "evidence": decision.get("evidence") or {},
+                "evidence_id": decision.get("evidence_id"),
+                "transition_id": decision.get("transition_id"),
+                "triage_mode": "live_consultation" if live_evidence else "projection_only",
+            }
+        )
+
+    refreshed_gaps = _fetch_triage_gaps(limit=limit, active_only=payload.active_only)
+    return {
+        "dry_run": payload.dry_run,
+        "actor": payload.actor,
+        "active_only": payload.active_only,
+        "live_retest": payload.live_retest,
+        "consultation_endpoint": (
+            _normalize_consultation_endpoint(payload.consultation_endpoint)
+            if payload.live_retest
+            else None
+        ),
+        "live_retests_used": live_retests_used,
+        "processed": len(actions),
+        "counts": counts,
+        "duplicate_clusters": duplicate_clusters,
+        "actions": actions,
+        "summary": summarize_knowledge_gaps(refreshed_gaps),
+    }
+
+
+@router.post("/api/v1/learning/gaps/triage")
+async def triage_learning_gaps(payload: GapTriageRequest = GapTriageRequest()):
+    """Retest/classify knowledge gaps and move them through the lifecycle."""
+    return await run_learning_gap_triage(payload)
+
+
+@router.post("/api/v1/learning/gaps/reconcile")
+async def reconcile_learning_gaps(payload: GapTriageRequest = GapTriageRequest()):
+    """Alias for gap triage; keeps naming aligned with projection reconcile."""
+    return await triage_learning_gaps(payload)
+
+
+@router.get("/api/v1/learning/gaps/workbench")
+async def learning_gap_workbench(include_resolved: bool = False, limit: int = 200):
+    """DB-owned lifecycle workbench for knowledge gaps."""
+    return GapWorkbenchService().build(include_resolved=include_resolved, limit=limit)
+
+
+@router.get("/api/v1/learning/gaps/{gap_key}")
+async def learning_gap_detail(gap_key: str):
+    """Return one knowledge gap with durable evidence and transition history."""
+    detail = GapWorkbenchService().detail(gap_key)
+    if not detail:
+        raise HTTPException(status_code=404, detail=f"Knowledge gap not found: {gap_key}")
+    return detail
+
+
+@router.post("/api/v1/learning/gaps/{gap_key}/retest")
+async def retest_learning_gap(gap_key: str, payload: GapActionRequest = GapActionRequest()):
+    """Call the real consultation endpoint for one gap and persist the outcome as evidence."""
+    gap = KnowledgeGapRepository().fetch_gap(gap_key)
+    if not gap:
+        raise HTTPException(status_code=404, detail=f"Knowledge gap not found: {gap_key}")
+    return await GapRetestService().retest_gap(
+        gap,
+        actor=payload.actor,
+        consultation_endpoint=payload.consultation_endpoint,
+        timeout_seconds=payload.consultation_timeout_seconds,
+        max_iterations=payload.max_iterations,
+        observation_window_days=payload.observation_window_days,
+        dry_run=payload.dry_run,
+    )
+
+
+@router.post("/api/v1/learning/gaps/{gap_key}/transition/{action}")
+async def transition_learning_gap(
+    gap_key: str,
+    action: str,
+    payload: GapActionRequest = GapActionRequest(),
+):
+    """Persist a manual lifecycle transition with evidence."""
+    repository = KnowledgeGapRepository()
+    gap = repository.fetch_gap(gap_key)
+    if not gap:
+        raise HTTPException(status_code=404, detail=f"Knowledge gap not found: {gap_key}")
+    current_status = str(gap.get("status") or "open")
+    if action not in allowed_actions_for_status(current_status):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action {action!r} is not allowed for status {current_status!r}",
+        )
+    next_status = transition_status_for_action(current_status, action)
+    if payload.dry_run:
+        return {
+            "gap_key": gap_key,
+            "action": action,
+            "previous_status": current_status,
+            "status": next_status,
+            "applied": False,
+            "reason": payload.reason,
+        }
+
+    evidence_row = repository.insert_evidence(
+        gap_key=gap_key,
+        evidence_type="manual_action",
+        actor=payload.actor,
+        evidence={
+            "query": _extract_gap_retest_query(gap),
+            "answer_preview": "",
+            "quality": "manual",
+            "outcome_code": action.upper(),
+            "reason": payload.reason,
+            "action": action,
+            "source_type": "workbench_api",
+        },
+        decision=action,
+        decision_reason=payload.reason,
+    )
+    updated = repository.update_gap_status(
+        gap_key=gap_key,
+        status=next_status,
+        reason=payload.reason or f"Manual workbench action: {action}",
+        actor=payload.actor,
+        metadata_patch={"action": action, "source": "workbench_api"},
+        observation_window_days=payload.observation_window_days,
+    )
+    transition_row = repository.insert_transition(
+        gap_key=gap_key,
+        from_status=current_status,
+        to_status=next_status,
+        action=action,
+        actor=payload.actor,
+        reason=payload.reason or f"Manual workbench action: {action}",
+        evidence_id=evidence_row.get("id"),
+    )
+    return {
+        "gap_key": gap_key,
+        "action": action,
+        "previous_status": current_status,
+        "status": next_status,
+        "applied": bool(updated),
+        "evidence_id": evidence_row.get("id"),
+        "transition_id": transition_row.get("id"),
+    }
 
 
 @router.get("/api/v1/learning/conversations")
@@ -1358,7 +2163,7 @@ async def learning_conversations(limit: int = 50, source: Optional[str] = None):
     """Recent conversation turns from DB, newest first. source=agent|guide to filter."""
     try:
         import asyncpg
-        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+        db_url = read_runtime_config().database_url
         conn = await asyncpg.connect(db_url)
         try:
             if source:
@@ -1373,10 +2178,8 @@ async def learning_conversations(limit: int = 50, source: Optional[str] = None):
         finally:
             await conn.close()
         turns = [dict(r) for r in rows]
-        # Convert ts from Unix seconds to milliseconds for frontend
         for turn in turns:
-            if turn.get('ts'):
-                turn['ts'] = int(turn['ts'] * 1000)
+            turn['ts'] = normalize_epoch_milliseconds(turn.get('ts'))
         return {"turns": turns, "total": len(turns)}
     except Exception as e:
         logger.warning(f"conversations fetch error: {e}")
@@ -1388,7 +2191,7 @@ async def learning_feedback_stats(limit: int = 100):
     """Feedback records with detailed ratings + trend data for dashboard."""
     try:
         import asyncpg
-        db_url = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+        db_url = read_runtime_config().database_url
         conn = await asyncpg.connect(db_url)
         try:
             rows = await conn.fetch(
@@ -1440,11 +2243,6 @@ import threading as _threading_ops
 
 # ── Learning Engine status (transparent triggers) ─────────────────────────────
 
-_LEARNING_LAST_RUN_FILE = _os_learn.environ.get(
-    "LEARNING_LAST_RUN_FILE",
-    "/home/l/rag-dashboard/logs/agent_test_16_results.json",
-)
-
 from datetime import datetime as _datetime, timezone as _timezone
 
 
@@ -1456,13 +2254,18 @@ async def learning_engine_status():
     no threshold-based auto-run). Returns last-run results from the canary harness
     plus open feedback waiting for analyst attention.
     """
-    last_run: dict = {}
-    last_path = _os_learn.path.abspath(_LEARNING_LAST_RUN_FILE)
+    runtime = read_runtime_config()
     try:
-        if _os_learn.path.exists(last_path):
+        run_file_display = str(runtime.learning_last_run_file.relative_to(REPO_ROOT))
+    except ValueError:
+        run_file_display = str(runtime.learning_last_run_file)
+    last_run: dict = {}
+    last_path = str(runtime.learning_last_run_file.expanduser().resolve())
+    try:
+        if os.path.exists(last_path):
             with open(last_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
-            stat = _os_learn.stat(last_path)
+            stat = os.stat(last_path)
             last_run = {
                 "ts": payload.get("timestamp"),
                 "file": last_path,
@@ -1477,10 +2280,7 @@ async def learning_engine_status():
     weak_runs_24h = 0
     try:
         import asyncpg as _apg_le
-        db_url = _os_learn.environ.get(
-            "DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db"
-        )
-        conn = await _apg_le.connect(db_url)
+        conn = await _apg_le.connect(runtime.database_url)
         try:
             r1 = await conn.fetchval(
                 """SELECT COUNT(*) FROM rag_feedback
@@ -1496,43 +2296,106 @@ async def learning_engine_status():
         pass
 
     try:
-        runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=500)
-        from datetime import datetime as _dt2
-        cutoff = _time_ops.time() - 86400
-        for r in runs:
-            ts = r.get("ts")
-            try:
-                t_epoch = _dt2.fromisoformat(ts.replace("Z", "+00:00")).timestamp() if ts else 0
-            except Exception:
-                t_epoch = 0
-            if t_epoch >= cutoff and r.get("quality") in ("weak", "failure"):
-                weak_runs_24h += 1
+        weak_runs_24h = _count_recent_weak_or_failed_runs(hours=24)
     except Exception:
         pass
 
-    return {
-        "trigger_mode": "manual",
-        "trigger_description": (
+    runtime_state = await _build_learning_runtime_state_with_db_fallback()
+    layer2_triggers = runtime_state.get("layer2_triggers") or {}
+    scheduler_state = layer2_triggers.get("scheduler") or {}
+    failure_monitor_state = layer2_triggers.get("failure_monitor") or {}
+    feedback_analyzer_state = layer2_triggers.get("feedback_analyzer") or {}
+
+    scheduler_active = scheduler_state.get("status") == "running"
+    failure_monitor_active = failure_monitor_state.get("status") == "monitoring"
+    feedback_analyzer_active = feedback_analyzer_state.get("status") == "analyzing"
+
+    def _format_rate(value: Any) -> str:
+        return f"{value:.3f}" if isinstance(value, (int, float)) else "n/a"
+
+    trigger_mode = (
+        "hybrid"
+        if scheduler_active or failure_monitor_active or feedback_analyzer_active
+        else "manual"
+    )
+    trigger_description = (
+        "学习回路保留 `python tests/test_agent_16.py` 的手动金标回归入口，"
+        "同时 runtime 已接入 scheduler / failure monitor / feedback analyzer 的在线状态。"
+        "本面板展示当前触发条件、projection drift 与最近一次 reconcile 审计，避免 dashboard 与 engine 面分裂。"
+        if trigger_mode == "hybrid"
+        else (
             "学习回路目前为手动触发。运行 `python tests/test_agent_16.py` 跑 16 道金标问题，"
-            "结果写入 logs/agent_test_16_results.json，本端点读取后展示。"
+            f"结果写入 `{run_file_display}`，本端点读取后展示。"
             "暂无定时任务、阈值自动触发或后台 worker。"
-        ),
+        )
+    )
+
+    projection_drift = runtime_state.get("projection_drift")
+    last_projection_reconcile = runtime_state.get("last_projection_reconcile")
+    drift_count = int((projection_drift or {}).get("total_drift_count") or 0)
+    remaining_reconcile_drift = int((last_projection_reconcile or {}).get("remaining_drift_count") or 0)
+
+    next_actions: List[str] = []
+    if drift_count > 0:
+        next_actions.append(
+            f"检测到 {drift_count} 处 projection drift，优先执行 reconcile 并确认三张核心 projection 已回到 canonical ledger"
+        )
+    if last_projection_reconcile and remaining_reconcile_drift > 0:
+        next_actions.append(
+            f"最近一次 reconcile 后仍剩 {remaining_reconcile_drift} 处 drift，需继续检查未对齐的 projection 或异常 run"
+        )
+    next_actions.extend(
+        [
+            "查看『反馈点评』Tab 中带评论的负面反馈，作为下一轮迭代的素材",
+            "在『Agent 运行轨迹』中过滤 quality=weak/failure，排查共性",
+            "运行 `python tests/test_agent_16.py` 验证当前回归状态",
+        ]
+    )
+
+    return {
+        "trigger_mode": trigger_mode,
+        "trigger_description": trigger_description,
         "trigger_conditions": [
             {"name": "手动金标回归", "active": True, "command": "python tests/test_agent_16.py"},
-            {"name": "定时回归 (cron)", "active": False, "note": "未启用，需要后续配置"},
-            {"name": "失败率阈值自动触发", "active": False, "note": "未实现"},
-            {"name": "用户反馈聚合分析", "active": False, "note": "数据已收集，分析任务待开发"},
+            {
+                "name": "定时回归 (cron)",
+                "active": scheduler_active,
+                "note": (
+                    f"运行中；下次调度 {scheduler_state.get('next_run') or runtime_state.get('next_scheduled') or '未提供'}"
+                    if scheduler_active
+                    else "未启用或未完成调度初始化"
+                ),
+            },
+            {
+                "name": "失败率阈值自动触发",
+                "active": failure_monitor_active,
+                "note": (
+                    f"当前失败率 {_format_rate(failure_monitor_state.get('current_failure_rate'))} / "
+                    f"阈值 {_format_rate(failure_monitor_state.get('threshold'))}；"
+                    f"{'已达到触发条件' if failure_monitor_state.get('should_trigger') else '尚未达到触发条件'}"
+                    if failure_monitor_active
+                    else "未启用"
+                ),
+            },
+            {
+                "name": "用户反馈聚合分析",
+                "active": feedback_analyzer_active,
+                "note": (
+                    f"趋势问题 {feedback_analyzer_state.get('trending_issues_count') or 0} 个；"
+                    f"{'已建议触发' if feedback_analyzer_state.get('should_trigger') else '当前仅观察'}"
+                    if feedback_analyzer_active
+                    else "未启用"
+                ),
+            },
         ],
         "last_run": last_run,
         "signals_24h": {
             "weak_or_failed_runs": weak_runs_24h,
             "pending_negative_feedback_with_text": pending_feedback_count,
         },
-        "next_actions": [
-            "查看『反馈点评』Tab 中带评论的负面反馈，作为下一轮迭代的素材",
-            "在『Agent 运行轨迹』中过滤 quality=weak/failure，排查共性",
-            "运行 `python tests/test_agent_16.py` 验证当前回归状态",
-        ],
+        "projection_drift": projection_drift,
+        "last_projection_reconcile": last_projection_reconcile,
+        "next_actions": next_actions,
     }
 
 
@@ -1625,14 +2488,14 @@ async def system_version():
     """Git commit hash, build time, python version, service start time."""
     try:
         sha = _subp_sys.check_output(
-            ["git", "-C", "/home/l/rag-dashboard", "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
             stderr=_subp_sys.DEVNULL, timeout=2,
         ).decode().strip()
     except Exception:
         sha = "unknown"
     try:
         branch = _subp_sys.check_output(
-            ["git", "-C", "/home/l/rag-dashboard", "rev-parse", "--abbrev-ref", "HEAD"],
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
             stderr=_subp_sys.DEVNULL, timeout=2,
         ).decode().strip()
     except Exception:
@@ -1652,30 +2515,33 @@ _SERVICE_START_TS = _time_ops.time()
 @router.get("/api/v1/system/config")
 async def system_config():
     """Currently effective LLM/embedding/retrieval config — env-aware."""
+    runtime = read_runtime_config()
+    postgres_config = postgres_connection_kwargs()
+    qdrant_host = urlparse(runtime.qdrant_url).hostname or "localhost"
     return {
         "llm": {
-            "provider": _os_learn.environ.get("LLM_PROVIDER", "deepseek"),
-            "model": _os_learn.environ.get("LLM_MODEL", "deepseek-chat"),
-            "route": _os_learn.environ.get("LLM_ROUTE", "deepseek"),
-            "base_url": _os_learn.environ.get("LLM_BASE_URL", "https://api.deepseek.com"),
-            "max_tokens": int(_os_learn.environ.get("LLM_MAX_TOKENS", "2048")),
-            "temperature": float(_os_learn.environ.get("LLM_TEMPERATURE", "0.0")),
+            "provider": runtime.llm_provider,
+            "model": runtime.llm_model,
+            "route": runtime.llm_route,
+            "base_url": runtime.llm_base_url,
+            "max_tokens": runtime.llm_max_tokens,
+            "temperature": runtime.llm_temperature,
         },
         "embedding": {
-            "model": _os_learn.environ.get("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5"),
-            "backend": _os_learn.environ.get("EMBEDDING_BACKEND", "local"),
-            "dim": int(_os_learn.environ.get("EMBEDDING_DIM", "1024")),
+            "model": runtime.embedding_model_name,
+            "backend": runtime.embedding_backend,
+            "dim": runtime.embedding_dim,
         },
         "retrieval": {
-            "default_top_k": int(_os_learn.environ.get("DEFAULT_TOP_K", "8")),
-            "score_threshold": float(_os_learn.environ.get("SCORE_THRESHOLD", "0.6")),
-            "max_iterations": int(_os_learn.environ.get("MAX_ITERATIONS", "3")),
-            "rrf_k": int(_os_learn.environ.get("RRF_K", "60")),
+            "default_top_k": runtime.default_top_k,
+            "score_threshold": runtime.score_threshold,
+            "max_iterations": runtime.max_iterations,
+            "rrf_k": runtime.hybrid_rrf_rank_constant,
         },
         "stores": {
-            "postgres": _os_learn.environ.get("POSTGRES_HOST", "localhost"),
-            "qdrant": _os_learn.environ.get("QDRANT_HOST", "localhost"),
-            "neo4j": _os_learn.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+            "postgres": postgres_config["host"],
+            "qdrant": qdrant_host,
+            "neo4j": runtime.neo4j_uri,
         },
     }
 
@@ -1807,13 +2673,8 @@ async def prom_metrics():
 
 @router.get("/api/v1/learning/blindspots")
 async def learning_blindspots(min_size: int = 2, max_clusters: int = 8):
-    """Cluster failed/weak agent queries to surface "topic-level" blind spots.
-
-    Strategy: load failure/weak runs from agent_runs.jsonl, embed each query,
-    cluster via simple cosine threshold linkage (no extra deps), return clusters
-    with representative query + similar queries + chunk_count stats.
-    """
-    runs = _read_jsonl(_os_learn.path.join(_LEARN_DIR, "agent_runs.jsonl"), limit=1000)
+    """Cluster failed/weak projection-backed queries to surface topic-level blind spots."""
+    runs = _fetch_recent_interaction_run_records(limit=1000, weak_or_failed_only=True)
     bad = [r for r in runs if r.get("quality") in ("failure", "weak") or r.get("refused")]
     seen_q: dict[str, dict] = {}
     for r in bad:
@@ -1836,10 +2697,25 @@ async def learning_blindspots(min_size: int = 2, max_clusters: int = 8):
     if len(queries) < min_size:
         return {"clusters": [], "total_bad": len(queries), "note": "not enough bad runs to cluster"}
 
+    def _normalize_embedding_vector(value: Any) -> Optional[List[float]]:
+        if not isinstance(value, list):
+            return None
+        if value and all(isinstance(item, list) for item in value):
+            value = value[0]
+        if not value:
+            return None
+        try:
+            return [float(item) for item in value]
+        except (TypeError, ValueError):
+            return None
+
     try:
         from app.agent.tools import _get_embedding_svc  # type: ignore
         emb_svc = _get_embedding_svc()
-        vecs = [emb_svc.encode(q["query"]) for q in queries]
+        vecs = [_normalize_embedding_vector(emb_svc.encode(q["query"])) for q in queries]
+        if any(vec is None for vec in vecs):
+            logger.warning("[blindspots] invalid embedding vector shape; using jaccard fallback")
+            vecs = None
     except Exception as e:
         # fallback: token-jaccard similarity
         logger.warning(f"[blindspots] embedding unavailable: {e}; using jaccard fallback")
@@ -1935,11 +2811,10 @@ import shutil as _pl_shutil
 import uuid as _pl_uuid
 from pathlib import Path as _PlPath
 
-_PIPELINE_DIR = _PlPath(os.environ.get("RAG_PIPELINE_JOBS_DIR",
-                                        "/home/l/rag-dashboard/data/pipeline_jobs"))
+_runtime_config = read_runtime_config()
+_PIPELINE_DIR = _runtime_config.pipeline_jobs_dir
 _PIPELINE_DIR.mkdir(parents=True, exist_ok=True)
-_UPLOAD_DIR = _PlPath(os.environ.get("RAG_PIPELINE_UPLOAD_DIR",
-                                      "/home/l/rag-dashboard/data/uploads"))
+_UPLOAD_DIR = _runtime_config.pipeline_upload_dir
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1983,7 +2858,7 @@ async def _run_pipeline_job(job_id: str, file_path: str, file_name: str) -> None
         if suffix.endswith((".txt", ".md")):
             text = _PlPath(file_path).read_text(encoding="utf-8", errors="ignore")
         elif suffix.endswith((".pdf", ".png", ".jpg", ".jpeg")):
-            ocr_url = os.environ.get("OCR_SERVICE_URL", "http://localhost:8001")
+            ocr_url = read_runtime_config().ocr_service_url
             endpoint = "/ocr/pdf" if suffix.endswith(".pdf") else "/ocr/image"
             try:
                 async with _httpx.AsyncClient(timeout=180.0) as client:
@@ -2259,8 +3134,9 @@ async def audit_pipeline_job(job_id: str):
 
     # Qdrant — count points with payload.doc_id == doc_id (scroll, not exact-count)
     transport = httpx.AsyncHTTPTransport(proxy=None)
-    qurl = os.environ.get("QDRANT_URL", "http://localhost:6333")
-    qcoll = os.environ.get("QDRANT_INGEST_COLLECTION", "document_chunks")
+    runtime = read_runtime_config()
+    qurl = runtime.qdrant_url
+    qcoll = runtime.qdrant_ingest_collection
     try:
         async with httpx.AsyncClient(timeout=10.0, transport=transport) as client:
             offset = None
@@ -2384,13 +3260,14 @@ async def pipeline_health():
             else:
                 health["ok"] = False
 
-    await probe("qdrant", os.environ.get("QDRANT_URL", "http://localhost:6333") + "/collections")
-    await probe("ocr",    os.environ.get("OCR_SERVICE_URL", "http://localhost:8001") + "/health",
+    runtime = read_runtime_config()
+    await probe("qdrant", runtime.qdrant_url + "/collections")
+    await probe("ocr", runtime.ocr_service_url + "/health",
                 optional=True)
-    await probe("neo4j",  os.environ.get("NEO4J_HTTP_URL", "http://localhost:7474"),
+    await probe("neo4j", runtime.neo4j_http_url,
                 optional=True)
     await probe("elasticsearch",
-                os.environ.get("ES_URL", "http://localhost:9200") + "/_cluster/health",
+                runtime.elasticsearch_url + "/_cluster/health",
                 optional=True)
 
     return health
@@ -2443,7 +3320,7 @@ async def architecture_live():
     # ── Qdrant ──
     try:
         async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
-            url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+            url = read_runtime_config().qdrant_url
             r = await client.get(f"{url}/collections")
             r.raise_for_status()
             cols = r.json().get("result", {}).get("collections", [])
@@ -2471,7 +3348,7 @@ async def architecture_live():
     # ── Neo4j ──
     try:
         async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
-            url = os.environ.get("NEO4J_HTTP_URL", "http://localhost:7474")
+            url = read_runtime_config().neo4j_http_url
             r = await client.get(url)
             ok = r.status_code in (200, 401)
             snapshot["stores"]["neo4j"] = {
@@ -2485,10 +3362,7 @@ async def architecture_live():
     # ── Redis (cache) ──
     try:
         import redis as _redis
-        r = _redis.Redis.from_url(
-            os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-            socket_timeout=2,
-        )
+        r = _redis.Redis.from_url(read_runtime_config().redis_url, socket_timeout=2)
         info = r.info(section="server")
         snapshot["stores"]["redis"] = {
             "role": "cache",
@@ -2499,8 +3373,9 @@ async def architecture_live():
         snapshot["stores"]["redis"] = {"available": False, "error": str(e)[:200]}
 
     # ── Milvus (#49 — real probe + collection stats) ──
-    milvus_url = os.environ.get("MILVUS_URL", "http://localhost:19530")
-    milvus_health = os.environ.get("MILVUS_HEALTH_URL", "http://localhost:9091/healthz")
+    runtime = read_runtime_config()
+    milvus_url = runtime.milvus_url
+    milvus_health = runtime.milvus_health_url
     try:
         async with httpx.AsyncClient(timeout=3.0, transport=transport) as client:
             r = await client.get(milvus_health)
@@ -2534,7 +3409,7 @@ async def architecture_live():
             "collection_count": len(collections),
             "row_count": row_count,
             "version": version,
-            "active": os.environ.get("VECTOR_STORE__TYPE", "qdrant") == "milvus",
+            "active": runtime.vector_store_type == "milvus",
         }
     except Exception as e:
         snapshot["stores"]["milvus"] = {"available": False, "error": str(e)[:200]}
@@ -2920,9 +3795,7 @@ async def learning_radar_review(radar_id: int, payload: dict):
     new_status = status_map[decision]
 
     import asyncpg
-    db_url = os.environ.get(
-        "DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db",
-    )
+    db_url = read_runtime_config().database_url
     conn = await asyncpg.connect(db_url)
     try:
         existing = await conn.fetchrow(
@@ -3194,8 +4067,9 @@ async def llm_chat_proxy(request: LLMChatRequest):
     import httpx
     from fastapi.responses import StreamingResponse as _SR
 
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or ""
-    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    runtime = read_runtime_config()
+    api_key = runtime.llm_api_key
+    base_url = runtime.llm_base_url.rstrip("/")
     # Avoid double /v1 if base_url already ends with /v1
     if base_url.endswith("/v1"):
         endpoint = f"{base_url}/chat/completions"
@@ -3254,8 +4128,9 @@ async def system_kb_query(req: SystemKBQueryRequest):
     """
     import httpx
 
-    tei_url = os.getenv("TEI_URL", "http://localhost:8003")
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    runtime = read_runtime_config()
+    tei_url = runtime.tei_url
+    qdrant_url = runtime.qdrant_url
 
     # 1. 向量化 query
     async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
@@ -3342,8 +4217,9 @@ async def guide_agent_stream(req: GuideAgentRequest):
     )
     from app.agent.prompts import invoke_llm_with_tools, stream_llm_response
 
-    _tei_url = os.getenv("TEI_URL", "http://localhost:8003")
-    _qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    runtime = read_runtime_config()
+    _tei_url = runtime.tei_url
+    _qdrant_url = runtime.qdrant_url
     # Use env-configured model (deepseek-chat by default) — deepseek-reasoner does not support tool_choice
     _llm_config: dict[str, Any] = {}
 
@@ -3353,6 +4229,8 @@ async def guide_agent_stream(req: GuideAgentRequest):
         当 query_guide_kb 在 rag_system_kb 中没找到时，**优先**用此工具，因为这是直接索引仓库 .md 的内容，最权威。
         适合：项目代码结构、文件位置、命令、Agent 配置、架构规则等问题。"""
         try:
+            effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 5 else top_k
+            score_threshold = float(get_runtime_override("score_threshold", 0.25))
             with _httpx.Client(timeout=15, trust_env=False) as client:
                 emb = client.post(f"{_tei_url}/embed", json={"inputs": [question]})
                 emb.raise_for_status()
@@ -3360,7 +4238,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
             with _httpx.Client(timeout=15, trust_env=False) as client:
                 hits_resp = client.post(
                     f"{_qdrant_url}/collections/rag_self_docs/points/search",
-                    json={"vector": vec, "limit": top_k, "with_payload": True, "score_threshold": 0.25},
+                    json={"vector": vec, "limit": effective_top_k, "with_payload": True, "score_threshold": score_threshold},
                 )
                 hits_resp.raise_for_status()
                 hits = hits_resp.json().get("result", [])
@@ -3384,6 +4262,8 @@ async def guide_agent_stream(req: GuideAgentRequest):
     def query_guide_kb(question: str, top_k: int = 5) -> str:
         """查询RAG智库系统内部技术文档知识库（rag_system_kb），返回与问题相关的架构说明、工具介绍、检索流程等资料。架构、配置、流程类问题第一时间调用此工具。"""
         try:
+            effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 5 else top_k
+            score_threshold = float(get_runtime_override("score_threshold", 0.25))
             with _httpx.Client(timeout=15, trust_env=False) as client:
                 emb = client.post(f"{_tei_url}/embed", json={"inputs": [question]})
                 emb.raise_for_status()
@@ -3391,7 +4271,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
             with _httpx.Client(timeout=15, trust_env=False) as client:
                 hits_resp = client.post(
                     f"{_qdrant_url}/collections/rag_system_kb/points/search",
-                    json={"vector": vec, "limit": top_k, "with_payload": True, "score_threshold": 0.25},
+                    json={"vector": vec, "limit": effective_top_k, "with_payload": True, "score_threshold": score_threshold},
                 )
                 hits_resp.raise_for_status()
                 hits = hits_resp.json().get("result", [])
@@ -3417,9 +4297,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
         try:
             if aspect in ("all", "health"):
                 async def _get_health():
-                    async with _httpx.AsyncClient(timeout=3.0, trust_env=False) as c:
-                        r = await c.get("http://localhost:8002/api/v1/health/detail")
-                        return r.json() if r.status_code == 200 else {"error": r.status_code}
+                    return await health_detail()
                 try:
                     report["health"] = asyncio.run(_get_health())
                 except RuntimeError:
@@ -3449,8 +4327,12 @@ async def guide_agent_stream(req: GuideAgentRequest):
                             "name": cfg.models.embedding.name,
                         },
                         "env": {
-                            "VECTOR_STORE__TYPE": os.environ.get("VECTOR_STORE__TYPE", "qdrant"),
-                            "KEYWORD_BACKEND": os.environ.get("KEYWORD_BACKEND", "es"),
+                            "VECTOR_STORE__TYPE": runtime.vector_store_type,
+                            "KEYWORD_BACKEND": runtime.keyword_backend,
+                        },
+                        "runtime_overrides": {
+                            key: get_runtime_override(key, legacy_default_runtime_override(key))
+                            for key in ALLOWED_RUNTIME_OVERRIDES
                         },
                     }
                 except Exception as e:
@@ -3547,7 +4429,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
             if len(kw) < 2:
                 return "关键词太短，请提供至少 2 个字。"
             limit = max(1, min(int(top_k or 3), 8))
-            ocr_dir = _PlPath("/home/l/rag-dashboard/data/ocr_outputs")
+            ocr_dir = read_runtime_config().ocr_output_dir
             if not ocr_dir.exists():
                 return json.dumps({"error": "OCR 输出目录不存在", "path": str(ocr_dir)}, ensure_ascii=False)
             hits: list[dict] = []
@@ -3600,91 +4482,36 @@ async def guide_agent_stream(req: GuideAgentRequest):
           - value: 新值（字符串，按 key 类型解析）
           - apply: 默认 false（仅预览）；true 才会修改进程内配置
           - reason: 调整理由（必填于审计表）"""
-        ALLOWED = {
-            "score_threshold": ("float", lambda v: 0.0 <= float(v) <= 1.0),
-            "top_k": ("int", lambda v: 1 <= int(v) <= 50),
-            "rerank_enabled": ("bool", lambda v: v.lower() in ("true", "false", "1", "0")),
-            "keyword_backend": ("str", lambda v: v in ("es", "pg")),
-            "vector_backend": ("str", lambda v: v in ("qdrant", "milvus")),
-        }
         try:
-            if key not in ALLOWED:
+            if key not in ALLOWED_RUNTIME_OVERRIDES:
                 return json.dumps({
                     "error": f"配置项 {key} 不在白名单",
-                    "allowed_keys": list(ALLOWED.keys()),
+                    "allowed_keys": list(ALLOWED_RUNTIME_OVERRIDES.keys()),
                 }, ensure_ascii=False)
-            type_name, validator = ALLOWED[key]
-            try:
-                if not validator(value):
-                    return json.dumps({"error": f"值 {value!r} 未通过校验（期望 {type_name} 且符合范围）"}, ensure_ascii=False)
-            except Exception as exc:
-                return json.dumps({"error": f"值校验失败: {exc}"}, ensure_ascii=False)
+            valid, error_message = validate_runtime_override(key, value)
+            if not valid:
+                return json.dumps({"error": error_message}, ensure_ascii=False)
 
-            old_val = None
-            if key == "score_threshold":
-                old_val = str(os.getenv("RAG_SCORE_THRESHOLD", "0.25"))
-            elif key == "top_k":
-                old_val = str(os.getenv("RAG_TOP_K", "10"))
-            elif key == "rerank_enabled":
-                old_val = str(os.getenv("RAG_RERANK_ENABLED", "true"))
-            elif key == "keyword_backend":
-                old_val = str(os.getenv("KEYWORD_BACKEND", "pg"))
-            elif key == "vector_backend":
-                old_val = str(os.getenv("VECTOR_BACKEND", "qdrant"))
-
-            from app.agent.tools import _get_pg_conn, _put_pg_conn
-            audit_id = None
-            c = _get_pg_conn()
-            try:
-                with c.cursor() as cur:
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS runtime_config_audit (
-                            id SERIAL PRIMARY KEY,
-                            ts TIMESTAMPTZ DEFAULT now(),
-                            config_key TEXT NOT NULL,
-                            old_value TEXT,
-                            new_value TEXT,
-                            applied BOOLEAN NOT NULL DEFAULT false,
-                            reason TEXT,
-                            actor TEXT DEFAULT 'guide-agent'
-                        );
-                        """
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO runtime_config_audit (config_key, old_value, new_value, applied, reason)
-                        VALUES (%s, %s, %s, %s, %s)
-                        RETURNING id;
-                        """,
-                        (key, old_val, value, bool(apply), reason or "(未填)"),
-                    )
-                    audit_id = cur.fetchone()[0]
-                    c.commit()
-            finally:
-                _put_pg_conn(c)
+            audit_id, old_val, normalized_value = apply_runtime_override(
+                key=key,
+                value=value,
+                apply=bool(apply),
+                reason=reason,
+            )
 
             if not apply:
                 return json.dumps({
                     "mode": "dry_run",
                     "audit_id": audit_id,
-                    "key": key, "old_value": old_val, "new_value": value,
-                    "note": "已记录到 runtime_config_audit。重新调用并设 apply=true 才会真正修改进程内 env。",
+                    "key": key, "old_value": old_val, "new_value": normalized_value,
+                    "note": "已记录到 runtime_config_audit。重新调用并设 apply=true 才会真正写入 canonical runtime override 状态。",
                 }, ensure_ascii=False)
 
-            env_map = {
-                "score_threshold": "RAG_SCORE_THRESHOLD",
-                "top_k": "RAG_TOP_K",
-                "rerank_enabled": "RAG_RERANK_ENABLED",
-                "keyword_backend": "KEYWORD_BACKEND",
-                "vector_backend": "VECTOR_BACKEND",
-            }
-            os.environ[env_map[key]] = value
             return json.dumps({
                 "mode": "applied",
                 "audit_id": audit_id,
-                "key": key, "old_value": old_val, "new_value": value,
-                "note": "已写入进程 env。**注意：进程重启后会丢失**，需要持久化请改 .env 或 config.yaml。",
+                "key": key, "old_value": old_val, "new_value": normalized_value,
+                "note": "已写入 PostgreSQL runtime_config_overrides，重启后仍会生效，并保留审计轨迹。",
             }, ensure_ascii=False)
         except Exception as exc:
             return json.dumps({"error": str(exc)[:300]}, ensure_ascii=False)
@@ -3792,7 +4619,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
         # Server-side conversation logging for guide agent
         try:
             import asyncpg as _apg_g
-            _db_url_g = os.environ.get("DATABASE_URL", "postgresql://rag_user:rag_password@localhost:5432/rag_db")
+            _db_url_g = read_runtime_config().database_url
             _conn_g = await _apg_g.connect(_db_url_g)
             try:
                 await _conn_g.execute(
@@ -3818,7 +4645,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
 async def list_collections():
     """List all Qdrant collections with basic stats."""
     import httpx
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_url = read_runtime_config().qdrant_url
     try:
         async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
             resp = await client.get(f"{qdrant_url}/collections")
@@ -3851,7 +4678,7 @@ async def list_collections():
 async def list_documents(collection: str = "rag_documents", limit: int = 20, offset: int = 0):
     """List recent documents from a Qdrant collection with metadata preview."""
     import httpx
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_url = read_runtime_config().qdrant_url
     try:
         async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             scroll_body = {
@@ -3986,6 +4813,753 @@ async def get_signals_summary():
 
 # ── Layer 3 Problem Detection & Analysis API ──────────────────────────────
 
+
+_PROBLEM_BEARING_RUN_TYPES = ('manual', 'scheduled', 'full_loop')
+
+
+def _load_latest_persisted_learning_run() -> Optional[Dict[str, Any]]:
+    """Load the latest completed DB-backed learning run that can carry problems.
+
+    `auto_threshold` runs are gap-retest sweeps and never populate `result.problems`.
+    Picking the absolute latest run would hide every detected problem behind the
+    next 5-minute retest, so we restrict to run types that actually run problem
+    detection.
+    """
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+        conn = _get_pg_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT run_id, run_type, result, status, ts
+                FROM learning_runs
+                WHERE status = 'completed'
+                  AND run_type = ANY(%s)
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                (list(_PROBLEM_BEARING_RUN_TYPES),),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+        finally:
+            _put_pg_conn(conn)
+
+        if not row:
+            return None
+
+        result = row[2]
+        if isinstance(result, str):
+            result = json.loads(result)
+
+        return {
+            'run_id': row[0],
+            'run_type': row[1],
+            'result': result if isinstance(result, dict) else {},
+            'status': row[3],
+            'ts': row[4],
+        }
+    except Exception:
+        logger.debug("Persisted learning run unavailable", exc_info=True)
+        return None
+
+
+def _normalize_problem_payload(problem: Dict[str, Any]) -> Dict[str, Any]:
+    created_at = normalize_epoch_milliseconds(problem.get('ts') or problem.get('created_at'))
+    return {
+        **problem,
+        'gap_key': problem.get('gap_key') or problem.get('suggested_gap_id'),
+        'status': problem.get('status', 'open'),
+        'created_at': created_at,
+    }
+
+
+def _apply_gap_status_to_problem(problem: Dict[str, Any], gap_state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not gap_state:
+        return problem
+
+    return {
+        **problem,
+        'status': gap_state.get('status') or problem.get('status', 'open'),
+        'resolution_plan': gap_state.get('resolution_plan'),
+        'resolved_at': gap_state.get('resolved_at'),
+        'updated_at': gap_state.get('updated_at'),
+        'scope_type': gap_state.get('scope_type'),
+        'scope_id': gap_state.get('scope_id'),
+        'cluster_id': gap_state.get('cluster_id'),
+        'cause_type': gap_state.get('cause_type'),
+        'priority': gap_state.get('priority'),
+        'reopen_count': gap_state.get('reopen_count'),
+        'linked_event_id': gap_state.get('linked_event_id'),
+    }
+
+
+_GAP_STATUS_TO_PROBLEM_STATUS = {
+    'open': 'open',
+    'in_progress': 'analyzing',
+    'observing': 'pending_review',
+    'blocked': 'pending_review',
+    'resolved': 'resolved',
+}
+
+_CAUSE_TYPE_TO_CATEGORY = {
+    'tool_failure': 'tool_failure',
+    'routing_error': 'routing_error',
+    'prompt_issue': 'prompt_issue',
+    'low_quality': 'low_quality',
+    'diversity_issue': 'diversity_issue',
+    'contract_violation': 'contract_violation',
+    'topo_anomaly': 'topo_anomaly',
+}
+
+
+def _gap_to_problem_payload(gap: Dict[str, Any]) -> Dict[str, Any]:
+    """Synthesize a /problems-shaped payload from a knowledge_gaps row.
+
+    `knowledge_gaps` is the durable problem ledger. Older detector runs may have
+    populated `result.problems`, but the canonical state lives in this table —
+    fall back to it so the UI never goes blank just because the latest run was a
+    retest sweep.
+    """
+    priority = int(gap.get('priority') or 0)
+    quality = (gap.get('quality') or '').lower()
+    if priority >= 70 or quality == 'failure':
+        severity = 'high'
+    elif priority >= 40 or quality == 'weak':
+        severity = 'medium'
+    else:
+        severity = 'low'
+
+    cause_type = (gap.get('cause_type') or '').lower()
+    category = _CAUSE_TYPE_TO_CATEGORY.get(cause_type, 'low_quality')
+
+    gap_status = (gap.get('status') or 'open').lower()
+    status = _GAP_STATUS_TO_PROBLEM_STATUS.get(gap_status, 'open')
+
+    evidence: List[str] = []
+    query = gap.get('query')
+    if query:
+        evidence.append(f"query: {query}")
+    answer_preview = gap.get('answer_preview')
+    if answer_preview:
+        evidence.append(f"answer_preview: {answer_preview}")
+    sample_queries = gap.get('sample_queries') or []
+    for sample in sample_queries[:3]:
+        if sample and sample != query:
+            evidence.append(f"sample: {sample}")
+
+    gap_key = gap.get('gap_key')
+    problem_id = gap.get('problem_id') or (f"gap_{gap_key}" if gap_key else None)
+
+    return {
+        'problem_id': problem_id,
+        'category': category,
+        'severity': severity,
+        'affected_route': gap.get('affected_route') or 'R0_unknown',
+        'description': gap.get('description') or query or 'Knowledge gap detected',
+        'evidence': evidence,
+        'confidence': float(gap.get('confidence') or 0.0),
+        'suggested_gap_id': gap_key,
+        'gap_key': gap_key,
+        'ts': gap.get('ts') or gap.get('updated_at') or gap.get('created_at'),
+        'created_at': gap.get('created_at'),
+        'status': status,
+        'resolution_plan': gap.get('resolution_plan'),
+        'resolved_at': gap.get('resolved_at'),
+        'updated_at': gap.get('updated_at'),
+        'scope_type': gap.get('scope_type'),
+        'scope_id': gap.get('scope_id'),
+        'cluster_id': gap.get('cluster_id'),
+        'cause_type': gap.get('cause_type'),
+        'priority': priority,
+        'reopen_count': gap.get('reopen_count'),
+        'linked_event_id': gap.get('linked_event_id'),
+        'source': 'knowledge_gaps',
+    }
+
+
+def _build_problem_report_from_payload(problem: Dict[str, Any]):
+    from app.agent.problem_detector import ProblemCategory, ProblemReport, Severity
+
+    ts = problem.get('ts')
+    if not isinstance(ts, (int, float)):
+        created_at = problem.get('created_at')
+        ts = (created_at / 1000) if isinstance(created_at, (int, float)) else time.time()
+
+    return ProblemReport(
+        problem_id=problem['problem_id'],
+        category=ProblemCategory(problem['category']),
+        severity=Severity(problem['severity']),
+        affected_route=problem['affected_route'],
+        description=problem['description'],
+        evidence=problem.get('evidence', []),
+        confidence=problem.get('confidence', 0.0),
+        suggested_gap_id=problem.get('suggested_gap_id', ''),
+        ts=ts,
+        additional_context=problem.get('additional_context', {}),
+    )
+
+
+async def _load_problem_analysis(problem_id: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    persisted_run = _load_latest_persisted_learning_run()
+    if persisted_run:
+        result = persisted_run.get('result') or {}
+        problems = result.get('problems') or []
+        root_causes = {
+            item.get('problem_id'): item for item in (result.get('root_causes') or [])
+            if isinstance(item, dict) and item.get('problem_id')
+        }
+
+        problem = next(
+            (
+                _normalize_problem_payload(item)
+                for item in problems
+                if isinstance(item, dict) and item.get('problem_id') == problem_id
+            ),
+            None,
+        )
+        if problem:
+            root_cause = root_causes.get(problem_id)
+            if root_cause:
+                return problem, root_cause
+
+            from app.agent.root_cause_analyzer import RootCauseAnalyzer
+
+            analyzer = RootCauseAnalyzer()
+            report = await analyzer.analyze_root_cause(
+                _build_problem_report_from_payload(problem),
+                signals_context=result.get('signal_summary') or {},
+            )
+            return problem, report.to_dict()
+
+    from app.agent.root_cause_analyzer import RootCauseAnalyzer
+    from app.agent.problem_detector import ProblemDetector
+    from app.agent.signal_collector import get_latest_signals
+
+    signals = await get_latest_signals()
+    detector = ProblemDetector()
+    problems = await detector.detect_problems(signals)
+    problem = next((p for p in problems if p.problem_id == problem_id), None)
+    if not problem:
+        raise HTTPException(status_code=404, detail=f"Problem {problem_id} not found")
+
+    analyzer = RootCauseAnalyzer()
+    root_cause = await analyzer.analyze_root_cause(problem)
+    return _normalize_problem_payload(problem.to_dict()), root_cause.to_dict()
+
+
+def _format_root_cause_response(problem_id: str, root_cause: Dict[str, Any]) -> Dict[str, Any]:
+    confidence = float(root_cause.get('confidence', 0.0))
+    evidence_chain = root_cause.get('evidence_chain', {}) or {}
+
+    return {
+        'problem_id': problem_id,
+        'root_cause': root_cause.get('root_cause_hypothesis'),
+        'confidence': confidence,
+        'root_cause_type': root_cause.get('root_cause_type'),
+        'evidence': evidence_chain.get('primary_evidence', []),
+        'contributing_factors': root_cause.get('contributing_factors', []),
+        'suggested_fixes': [
+            {
+                'action': suggestion,
+                'estimated_impact': int(confidence * 100),
+            }
+            for suggestion in (root_cause.get('repair_suggestions') or [])
+        ],
+        'repair_priority': root_cause.get('repair_priority'),
+    }
+
+
+def _build_repair_strategies_payload(
+    problem: Dict[str, Any], root_cause: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    strategies = []
+    confidence = float(root_cause.get('confidence', 0.0))
+    risk_level = _infer_risk_level(confidence)
+    decision = 'auto_apply' if risk_level == 'low' else 'pending_review'
+    for i, suggestion in enumerate(root_cause.get('repair_suggestions', []) or []):
+        strategies.append(
+            {
+                'strategy_id': f"strat_{i:03d}",
+                'action_type': _infer_action_type(root_cause.get('root_cause_type', 'architecture_flaw')),
+                'description': suggestion,
+                'route': problem['affected_route'],
+                'risk_level': risk_level,
+                'estimated_impact': int(confidence * 100),
+                'decision': decision,
+            }
+        )
+    return strategies
+
+
+async def _build_repair_strategies(problem_id: str) -> tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
+    problem, root_cause = await _load_problem_analysis(problem_id)
+    strategies = _build_repair_strategies_payload(problem, root_cause)
+    return problem, root_cause, strategies
+
+
+def _build_executor_patch_payload(
+    problem: Dict[str, Any],
+    root_cause: Dict[str, Any],
+    strategy: Dict[str, Any],
+    reviewer_status: str,
+    reviewer: Optional[str] = None,
+    review_note: Optional[str] = None,
+) -> Dict[str, Any]:
+    route = problem['affected_route']
+    confidence = float(root_cause.get('confidence', 0.0))
+    expected_delta = round(min(0.3, max(0.05, confidence * 0.25)), 3)
+    expected_before_rate = 0.5
+    expected_after_rate = round(min(1.0, expected_before_rate + expected_delta), 3)
+
+    route_payload: Dict[str, Any]
+    if route == 'R1_navigator_dict':
+        route_payload = {'navigator_dict': {'auto_generated_rule': strategy['description']}}
+    elif route == 'R2_path_default':
+        route_payload = {'path': 'hybrid'}
+    elif route == 'R3_planner_examples':
+        route_payload = {'examples': [strategy['description']]}
+    elif route == 'R4_rerank_weights':
+        route_payload = {'weights': {'semantic': 0.45, 'bm25': 0.35, 'graph': 0.20}}
+    elif route == 'R5_tool_priority':
+        route_payload = {'priority': ['hybrid_search', 'graph_search', 'tool_lookup']}
+    else:
+        route_payload = {}
+
+    payload = {
+        'type': strategy['action_type'],
+        'problem_id': problem['problem_id'],
+        'gap_key': problem.get('gap_key') or problem.get('suggested_gap_id'),
+        'strategy_id': strategy['strategy_id'],
+        'description': strategy['description'],
+        'estimated_impact': strategy['estimated_impact'],
+        'risk_level': strategy['risk_level'],
+        'decision': strategy['decision'],
+        'root_cause_type': root_cause.get('root_cause_type'),
+        'expected_before_rate': expected_before_rate,
+        'expected_after_rate': expected_after_rate,
+        'expected_delta': expected_delta,
+        'review': {
+            'status': reviewer_status,
+            'reviewer': reviewer,
+            'note': review_note,
+            'updated_at': int(time.time() * 1000),
+        },
+        **route_payload,
+    }
+    return payload
+
+
+def _derive_improvement_event_status(
+    patch_payload: Dict[str, Any],
+    applied_at,
+    reverted_at,
+    verified_at,
+    verification_result: Optional[Dict[str, Any]] = None,
+) -> str:
+    review = patch_payload.get('review', {}) if isinstance(patch_payload, dict) else {}
+    review_status = review.get('status')
+    verification = verification_result if isinstance(verification_result, dict) else {}
+
+    if review_status == 'rejected':
+        return 'rejected'
+    if reverted_at:
+        return 'reverted'
+    if verified_at:
+        return 'verified'
+    if verification.get('status') == 'failed' or verification.get('success') is False:
+        return 'failed'
+    if applied_at:
+        return 'applied'
+    if review_status == 'approved':
+        return 'approved'
+    if review_status == 'pending_review':
+        return 'pending_review'
+    return 'pending_review'
+
+
+def _coerce_json_value(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            return {}
+    return {}
+
+
+def _format_improvement_event_row(row) -> Dict[str, Any]:
+    (
+        event_id,
+        source,
+        actor,
+        source_run_id,
+        route,
+        patch_payload,
+        rationale,
+        applied_at,
+        reverted_at,
+        ts,
+        verified_at,
+        verification_result,
+        reversible_by,
+        gap_key_db,
+        gap_status,
+        gap_owner,
+        gap_observation_until,
+        gap_verified_at,
+        gap_last_reopened_at,
+        gap_reopen_count,
+        gap_scope_type,
+        gap_cluster_id,
+    ) = row
+    patch_payload = _coerce_json_value(patch_payload)
+    verification_result = _coerce_json_value(verification_result)
+    review = coerce_json_dict(patch_payload.get('review'))
+    status = _derive_improvement_event_status(
+        patch_payload,
+        applied_at,
+        reverted_at,
+        verified_at,
+        verification_result,
+    )
+
+    before_rate = verification_result.get('before_rate', patch_payload.get('expected_before_rate', 0.5))
+    after_rate = verification_result.get('after_rate', patch_payload.get('expected_after_rate', before_rate))
+    delta = verification_result.get('delta', patch_payload.get('expected_delta', max(0.0, after_rate - before_rate)))
+    improvement_pct = verification_result.get(
+        'improvement_pct',
+        round((delta / before_rate) * 100, 1) if before_rate else round(delta * 100, 1),
+    )
+    test_result = verification_result.get('test_result')
+    raw_output = test_result.get('raw_output') if isinstance(test_result, dict) else None
+    execution_time = raw_output.get('duration_ms', 0) if isinstance(raw_output, dict) else 0
+    verification_status = (
+        'verified'
+        if verified_at
+        else 'failed'
+        if verification_result.get('status') == 'failed' or verification_result.get('success') is False
+        else 'applied'
+        if applied_at
+        else 'pending'
+    )
+    gap_key = patch_payload.get('gap_key') or gap_key_db
+
+    timestamp_source = verified_at or applied_at or reverted_at or ts
+
+    return {
+        'event_id': event_id,
+        'timestamp': int(timestamp_source.timestamp() * 1000) if timestamp_source else None,
+        'created_at': normalize_epoch_milliseconds(ts),
+        'applied_at': normalize_epoch_milliseconds(applied_at),
+        'verified_at': normalize_epoch_milliseconds(verified_at),
+        'problem_id': patch_payload.get('problem_id', ''),
+        'route': route,
+        'action': patch_payload.get('description') or rationale or f'Patch for {route}',
+        'status': status,
+        'before_rate': float(before_rate or 0),
+        'after_rate': float(after_rate or 0),
+        'delta': float(delta or 0),
+        'improvement_pct': float(improvement_pct or 0),
+        'execution_time': execution_time,
+        'reverted_at': int(reverted_at.timestamp() * 1000) if reverted_at else None,
+        'revert_reason': patch_payload.get('review', {}).get('note') if status == 'rejected' else None,
+        'source': {
+            'kind': source,
+            'actor': actor,
+            'source_run_id': source_run_id,
+        },
+        'strategy': {
+            'id': patch_payload.get('strategy_id'),
+            'type': patch_payload.get('type'),
+            'decision': patch_payload.get('decision'),
+            'risk_level': patch_payload.get('risk_level'),
+            'estimated_impact': patch_payload.get('estimated_impact'),
+            'root_cause_type': patch_payload.get('root_cause_type'),
+            'reversible_by': reversible_by,
+        },
+        'review': {
+            'status': review.get('status'),
+            'reviewer': review.get('reviewer'),
+            'note': review.get('note'),
+            'updated_at': normalize_epoch_milliseconds(review.get('updated_at')),
+        },
+        'verification': {
+            'status': verification_status,
+            'success': verification_result.get('success'),
+            'improved': verification_result.get('improved'),
+            'error': verification_result.get('error'),
+            'failed_at': normalize_epoch_milliseconds(verification_result.get('failed_at')),
+        },
+        'gap': {
+            'gap_key': gap_key,
+            'status': gap_status,
+            'owner': gap_owner,
+            'scope_type': gap_scope_type,
+            'cluster_id': gap_cluster_id,
+            'verified_at': normalize_epoch_milliseconds(gap_verified_at),
+            'observation_until': normalize_epoch_milliseconds(gap_observation_until),
+            'last_reopened_at': normalize_epoch_milliseconds(gap_last_reopened_at),
+            'reopen_count': int(gap_reopen_count or 0),
+        } if gap_key else None,
+    }
+
+
+def _format_dashboard_improvement_event_row(row) -> Dict[str, Any]:
+    (
+        event_id,
+        route,
+        patch_payload,
+        rationale,
+        applied_at,
+        reverted_at,
+        ts,
+        verified_at,
+        verification_result,
+    ) = row
+    patch_payload = _coerce_json_value(patch_payload)
+    verification_result = _coerce_json_value(verification_result)
+    status = _derive_improvement_event_status(
+        patch_payload,
+        applied_at,
+        reverted_at,
+        verified_at,
+        verification_result,
+    )
+    timestamp_source = verified_at or applied_at or reverted_at or ts
+    description = patch_payload.get('description') or rationale or f'Patch for {route}'
+    return {
+        'timestamp': normalize_epoch_milliseconds(timestamp_source),
+        'route': route,
+        'action': description,
+        'description': description,
+        'status': status,
+        'event_id': event_id,
+    }
+
+
+def _insert_improvement_event(
+    problem: Dict[str, Any],
+    root_cause: Dict[str, Any],
+    strategy: Dict[str, Any],
+    approved_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    review_status = 'approved' if strategy['decision'] == 'auto_apply' or approved_by else 'pending_review'
+    actor = approved_by or ('auto_strategy' if strategy['decision'] == 'auto_apply' else 'learning_strategy')
+    payload = _build_executor_patch_payload(
+        problem,
+        root_cause,
+        strategy,
+        reviewer_status=review_status,
+        reviewer=approved_by or actor,
+    )
+
+    persisted_run = _load_latest_persisted_learning_run()
+    source_run_id = persisted_run.get('run_id') if persisted_run else None
+
+    conn = _get_pg_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO improvement_events
+                (source, actor, source_run_id, affected_route, patch_payload, rationale, reversible_by)
+            VALUES
+                (%s, %s, %s, %s, %s::jsonb, %s, 'rollback_event')
+            RETURNING id, ts
+            """,
+            (
+                'auto',
+                actor,
+                source_run_id,
+                problem['affected_route'],
+                json.dumps(payload, ensure_ascii=False),
+                root_cause.get('root_cause_hypothesis') or strategy['description'],
+            ),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_pg_conn(conn)
+
+    gap_key = payload.get('gap_key')
+    if gap_key:
+        try:
+            linked = link_knowledge_gap_event(
+                gap_key,
+                row[0],
+                status='in_progress' if review_status == 'approved' else 'open',
+                owner=actor,
+                note=payload.get('description'),
+            )
+            if not linked:
+                upsert_knowledge_gap_records(
+                    build_problem_gap_records([problem], run_id=source_run_id)
+                )
+                link_knowledge_gap_event(
+                    gap_key,
+                    row[0],
+                    status='in_progress' if review_status == 'approved' else 'open',
+                    owner=actor,
+                    note=payload.get('description'),
+                )
+        except Exception:
+            logger.warning("Failed to link knowledge gap to improvement event", exc_info=True)
+
+    return {
+        'event_id': row[0],
+        'timestamp': int(row[1].timestamp() * 1000) if row and row[1] else None,
+        'status': review_status,
+        'payload': payload,
+    }
+
+
+def _update_improvement_event_review(
+    event_id: int,
+    review_status: str,
+    reviewer: str,
+    note: Optional[str],
+) -> Dict[str, Any]:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    conn = _get_pg_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT patch_payload, affected_route
+            FROM improvement_events
+            WHERE id = %s
+            """,
+            (event_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+
+        patch_payload = _coerce_json_value(row[0])
+        patch_payload['review'] = {
+            **patch_payload.get('review', {}),
+            'status': review_status,
+            'reviewer': reviewer,
+            'note': note,
+            'updated_at': int(time.time() * 1000),
+        }
+
+        cursor.execute(
+            """
+            UPDATE improvement_events
+            SET patch_payload = %s::jsonb
+            WHERE id = %s
+            """,
+            (json.dumps(patch_payload, ensure_ascii=False), event_id),
+        )
+        conn.commit()
+        cursor.close()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_pg_conn(conn)
+
+    gap_key = patch_payload.get('gap_key')
+    if gap_key:
+        try:
+            link_knowledge_gap_event(
+                gap_key,
+                event_id,
+                status='in_progress' if review_status == 'approved' else 'open',
+                owner=reviewer,
+                note=note,
+            )
+        except Exception:
+            logger.warning("Failed to sync knowledge gap review state", exc_info=True)
+
+    return {
+        'event_id': event_id,
+        'status': review_status,
+        'route': row[1],
+    }
+
+
+async def _execute_improvement_event_task(event_id: int) -> None:
+    from app.agent.executor import execute_improvement_event
+
+    try:
+        result = await execute_improvement_event(event_id)
+        if not result.get('success'):
+            logger.error(
+                "Queued improvement event execution failed: event_id=%s error=%s",
+                event_id,
+                result.get('error'),
+            )
+    except Exception as e:
+        logger.error("Queued improvement event execution crashed: event_id=%s error=%s", event_id, e, exc_info=True)
+
+
+def _schedule_improvement_event_execution(background_tasks: BackgroundTasks, event_id: int) -> None:
+    background_tasks.add_task(_execute_improvement_event_task, event_id)
+
+
+def _get_improvement_history_events(days: int, route: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+    conn = _get_pg_conn()
+    try:
+        cursor = conn.cursor()
+        if route:
+            cursor.execute(
+                """
+                SELECT
+                    ie.id, ie.source, ie.actor, ie.source_run_id,
+                    ie.affected_route, ie.patch_payload, ie.rationale, ie.applied_at, ie.reverted_at, ie.ts,
+                    ie.verified_at, ie.verification_result, ie.reversible_by,
+                    kg.gap_key, kg.status, kg.owner, kg.observation_until,
+                    kg.verified_at, kg.last_reopened_at, kg.reopen_count, kg.scope_type, kg.cluster_id
+                FROM improvement_events ie
+                LEFT JOIN knowledge_gaps kg ON kg.linked_event_id = ie.id
+                WHERE ie.ts > NOW() - (%s * INTERVAL '1 day')
+                  AND ie.affected_route = %s
+                ORDER BY ie.ts DESC
+                LIMIT %s
+                """,
+                (days, route, limit),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    ie.id, ie.source, ie.actor, ie.source_run_id,
+                    ie.affected_route, ie.patch_payload, ie.rationale, ie.applied_at, ie.reverted_at, ie.ts,
+                    ie.verified_at, ie.verification_result, ie.reversible_by,
+                    kg.gap_key, kg.status, kg.owner, kg.observation_until,
+                    kg.verified_at, kg.last_reopened_at, kg.reopen_count, kg.scope_type, kg.cluster_id
+                FROM improvement_events ie
+                LEFT JOIN knowledge_gaps kg ON kg.linked_event_id = ie.id
+                WHERE ie.ts > NOW() - (%s * INTERVAL '1 day')
+                ORDER BY ie.ts DESC
+                LIMIT %s
+                """,
+                (days, limit),
+            )
+        rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        _put_pg_conn(conn)
+
+    return [_format_improvement_event_row(row) for row in rows]
+
 @router.get("/api/v1/learning/problems")
 async def get_detected_problems(
     status: Optional[str] = None,
@@ -3993,11 +5567,11 @@ async def get_detected_problems(
 ) -> Dict[str, Any]:
     """
     获取识别的问题列表
-    
+
     Parameters:
     - status: 'open' | 'analyzing' | 'pending_review' | None (所有状态)
     - limit: 返回的最大问题数
-    
+
     Returns:
     {
         "problems": [
@@ -4019,39 +5593,79 @@ async def get_detected_problems(
     }
     """
     try:
-        from app.agent.problem_detector import ProblemDetector
-        from app.agent.signal_collector import get_latest_signals
-        
-        signals = await get_latest_signals()
-        detector = ProblemDetector()
-        problems = await detector.detect_problems(signals)
-        
-        # 过滤和排序
+        persisted_run = _load_latest_persisted_learning_run()
+        if persisted_run:
+            problems = [
+                _normalize_problem_payload(item)
+                for item in (persisted_run.get('result') or {}).get('problems', [])
+                if isinstance(item, dict)
+            ]
+        else:
+            from app.agent.problem_detector import ProblemDetector
+            from app.agent.signal_collector import get_latest_signals
+
+            signals = await get_latest_signals()
+            detector = ProblemDetector()
+            problems = [
+                _normalize_problem_payload(problem.to_dict())
+                for problem in await detector.detect_problems(signals)
+            ]
+
+        # Merge in gaps from the durable knowledge_gaps ledger so the UI never
+        # blanks out just because the latest run carried no fresh problems.
+        try:
+            gap_rows = fetch_knowledge_gaps(
+                limit=max(limit, 100),
+                statuses=['open', 'in_progress', 'observing', 'blocked'],
+            )
+        except Exception:
+            logger.debug("Knowledge gap ledger unavailable for problems endpoint", exc_info=True)
+            gap_rows = []
+
+        seen_gap_keys = {p.get('gap_key') for p in problems if p.get('gap_key')}
+        for gap in gap_rows:
+            gap_key = gap.get('gap_key')
+            if not gap_key or gap_key in seen_gap_keys:
+                continue
+            problems.append(_gap_to_problem_payload(gap))
+            seen_gap_keys.add(gap_key)
+
+        try:
+            gap_status_map = fetch_knowledge_gap_status_map(
+                [p.get('gap_key') for p in problems if p.get('gap_key')]
+            )
+        except Exception:
+            logger.debug("Knowledge gap state unavailable for problems endpoint", exc_info=True)
+            gap_status_map = {}
+        problems = [
+            _apply_gap_status_to_problem(problem, gap_status_map.get(problem.get('gap_key')))
+            for problem in problems
+        ]
+
+        severity_rank = {'high': 0, 'medium': 1, 'low': 2}
+        problems.sort(
+            key=lambda p: (
+                severity_rank.get(p.get('severity'), 3),
+                -(p.get('priority') or 0),
+                -(p.get('updated_at') or p.get('created_at') or 0),
+            )
+        )
+
         if status:
-            problems = [p for p in problems if getattr(p, 'status', 'open') == status]
-        
+            problems = [p for p in problems if p.get('status', 'open') == status]
+
         problems = problems[:limit]
-        
-        # 分类统计
+
         severity_counts = {
-            'high': sum(1 for p in problems if p.severity.value == 'high'),
-            'medium': sum(1 for p in problems if p.severity.value == 'medium'),
-            'low': sum(1 for p in problems if p.severity.value == 'low'),
+            'high_count': sum(1 for p in problems if p.get('severity') == 'high'),
+            'medium_count': sum(1 for p in problems if p.get('severity') == 'medium'),
+            'low_count': sum(1 for p in problems if p.get('severity') == 'low'),
         }
-        
-        from dataclasses import asdict
+
         return {
-            'problems': [
-                {
-                    **asdict(p),
-                    'severity': p.severity.value,
-                    'category': p.category.value,
-                    'created_at': int(p.ts * 1000),
-                    'status': getattr(p, 'status', 'open')
-                } for p in problems
-            ],
+            'problems': problems,
             'total': len(problems),
-            **severity_counts
+            **severity_counts,
         }
     except Exception as e:
         logger.error(f"Failed to get problems: {e}")
@@ -4062,7 +5676,7 @@ async def get_detected_problems(
 async def analyze_root_cause(problem_id: str) -> Dict[str, Any]:
     """
     深度分析单个问题的根因
-    
+
     Returns:
     {
         "problem_id": "prob_001",
@@ -4084,38 +5698,8 @@ async def analyze_root_cause(problem_id: str) -> Dict[str, Any]:
     }
     """
     try:
-        from app.agent.root_cause_analyzer import RootCauseAnalyzer
-        from app.agent.problem_detector import ProblemDetector
-        from app.agent.signal_collector import get_latest_signals
-        
-        # 获取所有问题并找到指定的
-        signals = await get_latest_signals()
-        detector = ProblemDetector()
-        problems = await detector.detect_problems(signals)
-        
-        problem = next((p for p in problems if p.problem_id == problem_id), None)
-        if not problem:
-            raise HTTPException(status_code=404, detail=f"Problem {problem_id} not found")
-        
-        analyzer = RootCauseAnalyzer()
-        root_cause = await analyzer.analyze_root_cause(problem)
-        
-        return {
-            'problem_id': problem_id,
-            'root_cause': root_cause.root_cause_hypothesis,
-            'confidence': root_cause.confidence,
-            'root_cause_type': root_cause.root_cause_type.value,
-            'evidence': root_cause.evidence_chain.get('evidence_items', []),
-            'contributing_factors': root_cause.contributing_factors,
-            'suggested_fixes': [
-                {
-                    'action': s,
-                    'estimated_impact': 20
-                }
-                for s in root_cause.repair_suggestions
-            ],
-            'repair_priority': root_cause.repair_priority
-        }
+        _, root_cause = await _load_problem_analysis(problem_id)
+        return _format_root_cause_response(problem_id, root_cause)
     except HTTPException:
         raise
     except Exception as e:
@@ -4124,76 +5708,68 @@ async def analyze_root_cause(problem_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/v1/learning/strategies")
-async def get_repair_strategies(problem_id: str) -> Dict[str, Any]:
+async def get_repair_strategies(problem_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    获取某个问题的修复策略列表
-    
-    Returns:
-    {
-        "problem_id": "prob_001",
-        "strategies": [
-            {
-                "strategy_id": "strat_001",
-                "action_type": "prompt_adjustment",
-                "description": "Add price comparison query pattern",
-                "route": "R1_navigator_dict",
-                "risk_level": "low",
-                "estimated_impact": 25,
-                "decision": "auto_apply"
+    获取修复策略。
+
+    - 传 `problem_id` → 返回该问题的策略列表（旧契约）。
+    - 不传 `problem_id` → 聚合返回当前所有待审/活跃问题的策略，便于
+      巡检/批量审批界面使用，而不是返回 422。
+    """
+    if problem_id:
+        try:
+            _, _, strategies = await _build_repair_strategies(problem_id)
+
+            return {
+                'problem_id': problem_id,
+                'strategies': strategies,
+                'recommended': strategies[0]['strategy_id'] if strategies else None,
+                'all_auto_apply': all(s['decision'] == 'auto_apply' for s in strategies),
             }
-        ],
-        "recommended": "strat_001",
-        "all_auto_apply": true
-    }
-    """
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get strategies: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    aggregated: List[Dict[str, Any]] = []
+    problem_ids: List[str] = []
     try:
-        from app.agent.root_cause_analyzer import RootCauseAnalyzer
-        from app.agent.problem_detector import ProblemDetector
-        from app.agent.signal_collector import get_latest_signals
-        
-        # 获取根因分析结果
-        signals = await get_latest_signals()
-        detector = ProblemDetector()
-        problems = await detector.detect_problems(signals)
-        
-        problem = next((p for p in problems if p.problem_id == problem_id), None)
-        if not problem:
-            raise HTTPException(status_code=404, detail=f"Problem {problem_id} not found")
-        
-        analyzer = RootCauseAnalyzer()
-        root_cause = await analyzer.analyze_root_cause(problem)
-        
-        # 根据根因生成策略
-        strategies = []
-        for i, suggestion in enumerate(root_cause.repair_suggestions):
-            strategy = {
-                'strategy_id': f"strat_{i:03d}",
-                'action_type': _infer_action_type(root_cause.root_cause_type.value),
-                'description': suggestion,
-                'route': problem.affected_route,
-                'risk_level': _infer_risk_level(root_cause.confidence),
-                'estimated_impact': int(root_cause.confidence * 100),
-                'decision': 'auto_apply' if _infer_risk_level(root_cause.confidence) == 'low' else 'manual_review'
-            }
-            strategies.append(strategy)
-        
-        return {
-            'problem_id': problem_id,
-            'strategies': strategies,
-            'recommended': strategies[0]['strategy_id'] if strategies else None,
-            'all_auto_apply': all(s['decision'] == 'auto_apply' for s in strategies)
-        }
-    except HTTPException:
-        raise
+        problems_payload = await get_detected_problems(limit=50)
+        for problem in problems_payload.get('problems', []):
+            pid = problem.get('problem_id')
+            if not pid:
+                continue
+            try:
+                _, _, strategies = await _build_repair_strategies(pid)
+            except HTTPException:
+                continue
+            except Exception:
+                logger.debug("Strategy build failed for %s", pid, exc_info=True)
+                continue
+            problem_ids.append(pid)
+            for strat in strategies:
+                aggregated.append({**strat, 'problem_id': pid})
     except Exception as e:
-        logger.error(f"Failed to get strategies: {e}")
+        logger.error(f"Failed to aggregate strategies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        'problem_id': None,
+        'strategies': aggregated,
+        'problem_ids': problem_ids,
+        'recommended': aggregated[0]['strategy_id'] if aggregated else None,
+        'all_auto_apply': bool(aggregated) and all(
+            s.get('decision') == 'auto_apply' for s in aggregated
+        ),
+    }
 
 
 @router.post("/api/v1/learning/apply-strategy")
 async def apply_repair_strategy(
     strategy_id: str,
     problem_id: str,
+    background_tasks: BackgroundTasks,
     approved_by: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -4209,34 +5785,40 @@ async def apply_repair_strategy(
     }
     """
     try:
-        import asyncio
-        from datetime import datetime
-        
-        # 生成事件ID
-        event_id = int(time.time() * 1000)
-        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # 这里应该入队到执行器，目前记录状态
-        status = 'queued' if not approved_by else 'approved'
-        
+        problem, root_cause, strategies = await _build_repair_strategies(problem_id)
+        strategy = next((item for item in strategies if item['strategy_id'] == strategy_id), None)
+        if not strategy:
+            raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+
+        event = _insert_improvement_event(problem, root_cause, strategy, approved_by=approved_by)
+        if event['status'] == 'approved':
+            _schedule_improvement_event_execution(background_tasks, event['event_id'])
+
         return {
-            'event_id': event_id,
+            'event_id': event['event_id'],
             'strategy_id': strategy_id,
             'problem_id': problem_id,
-            'status': status,
-            'message': 'Queued for auto-execution' if status == 'queued' else 'Queued for manual verification',
-            'run_id': run_id
+            'status': event['status'],
+            'message': 'Queued for execution' if event['status'] == 'approved' else 'Pending manual review',
+            'route': problem['affected_route'],
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to apply strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ApproveFixRequest(BaseModel):
+    event_id: int
+    comments: Optional[str] = None
+    approved_by: str = "user"
+
+
 @router.post("/api/v1/learning/approve-fix")
 async def approve_fix(
-    event_id: int,
-    comments: Optional[str] = None,
-    approved_by: str = "user"
+    payload: ApproveFixRequest,
+    background_tasks: BackgroundTasks,
 ) -> Dict[str, Any]:
     """
     人工批准待审核的修复
@@ -4249,35 +5831,56 @@ async def approve_fix(
     }
     """
     try:
+        event = _update_improvement_event_review(
+            payload.event_id,
+            review_status='approved',
+            reviewer=payload.approved_by,
+            note=payload.comments,
+        )
+        _schedule_improvement_event_execution(background_tasks, payload.event_id)
         return {
-            'event_id': event_id,
+            'event_id': payload.event_id,
             'status': 'approved',
             'message': 'Queued for execution',
-            'approved_by': approved_by,
+            'approved_by': payload.approved_by,
             'approved_at': int(time.time() * 1000)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to approve fix: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class RejectFixRequest(BaseModel):
+    event_id: int
+    reason: str
+    rejected_by: str = "user"
+
+
 @router.post("/api/v1/learning/reject-fix")
 async def reject_fix(
-    event_id: int,
-    reason: str,
-    rejected_by: str = "user"
+    payload: RejectFixRequest,
 ) -> Dict[str, Any]:
     """
     人工拒绝待审核的修复
     """
     try:
+        _update_improvement_event_review(
+            payload.event_id,
+            review_status='rejected',
+            reviewer=payload.rejected_by,
+            note=payload.reason,
+        )
         return {
-            'event_id': event_id,
+            'event_id': payload.event_id,
             'status': 'rejected',
-            'reason': reason,
-            'rejected_by': rejected_by,
+            'reason': payload.reason,
+            'rejected_by': payload.rejected_by,
             'rejected_at': int(time.time() * 1000)
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to reject fix: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4352,22 +5955,8 @@ async def get_improvement_history(
     }
     """
     try:
-        # 模拟历史数据
-        events = []
-        for i in range(min(5, limit)):
-            events.append({
-                'event_id': 100 + i,
-                'timestamp': int(time.time() * 1000) - (86400 * 1000 * (5 - i)),
-                'problem_id': f'prob_{i:03d}',
-                'route': route or f'R{i + 1}_route',
-                'action': f'Fix #{i + 1}',
-                'status': ['verified', 'applied', 'failed'][i % 3],
-                'before_rate': 0.40 + i * 0.05,
-                'after_rate': 0.65 + i * 0.05,
-                'delta': 0.25,
-                'improvement_pct': 50
-            })
-        
+        events = _get_improvement_history_events(days=days, route=route, limit=limit)
+
         return {
             'period': f'last {days} days',
             'events': events,
@@ -4376,8 +5965,11 @@ async def get_improvement_history(
                 'successful': sum(1 for e in events if e['status'] in ['applied', 'verified']),
                 'failed': sum(1 for e in events if e['status'] == 'failed'),
                 'reverted': sum(1 for e in events if e['status'] == 'reverted'),
-                'avg_improvement': 0.15,
-                'total_improvement': 1.2
+                'avg_improvement': (
+                    sum(e['delta'] for e in events if e['status'] in ['applied', 'verified']) /
+                    max(1, sum(1 for e in events if e['status'] in ['applied', 'verified']))
+                ),
+                'total_improvement': sum(e['delta'] for e in events if e['status'] in ['applied', 'verified']),
             }
         }
     except Exception as e:
@@ -4453,76 +6045,6 @@ async def get_learning_stats() -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/api/v1/learning/trigger")
-async def trigger_learning_loop(
-    reason: Optional[str] = None,
-    force: bool = False
-) -> Dict[str, Any]:
-    """
-    手动触发学习循环
-    
-    Returns:
-    {
-        "run_id": "run_20260505_120000",
-        "status": "queued",
-        "message": "Learning loop triggered manually",
-        "reason": "Manual trigger",
-        "estimated_duration": 300
-    }
-    """
-    try:
-        from datetime import datetime
-        
-        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        return {
-            'run_id': run_id,
-            'status': 'queued',
-            'message': 'Learning loop triggered manually',
-            'reason': reason or 'manual',
-            'estimated_duration': 300,
-            'triggered_at': int(time.time() * 1000)
-        }
-    except Exception as e:
-        logger.error(f"Failed to trigger learning loop: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/v1/learning/status")
-async def get_learning_status() -> Dict[str, Any]:
-    """
-    获取学习系统当前状态
-    
-    Returns:
-    {
-        "engine_status": "idle",
-        "last_run": 1714898730000,
-        "next_scheduled": 1714985130000,
-        "pending_approvals": 3,
-        "queued_executions": 2,
-        "health": "good"
-    }
-    """
-    try:
-        from app.agent.signal_collector import get_latest_signals
-        
-        signals = await get_latest_signals()
-        
-        return {
-            'engine_status': 'idle',
-            'last_run': int(signals.timestamp * 1000),
-            'next_scheduled': int((signals.timestamp + 3600) * 1000),
-            'pending_approvals': 0,
-            'queued_executions': 0,
-            'signal_count': signals.total_count,
-            'severity_score': signals.severity_score,
-            'health': 'critical' if signals.severity_score > 70 else 'warning' if signals.severity_score > 40 else 'good'
-        }
-    except Exception as e:
-        logger.error(f"Failed to get learning status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4619,7 +6141,7 @@ async def get_event_status(event_id: int) -> Dict[str, Any]:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, affected_route, patch_payload, applied_at, verified_at, verification_result
+                SELECT id, affected_route, patch_payload, applied_at, reverted_at, verified_at, verification_result
                 FROM improvement_events
                 WHERE id = %s
                 """,
@@ -4631,11 +6153,19 @@ async def get_event_status(event_id: int) -> Dict[str, Any]:
             if not row:
                 raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
             
-            event_id_db, route, payload, applied_at, verified_at, verification_result = row
+            event_id_db, route, payload, applied_at, reverted_at, verified_at, verification_result = row
             
             # 解析 verification_result（可能是 JSON 字符串或 None）
             if isinstance(verification_result, str):
                 verification_result = json.loads(verification_result)
+            payload = _coerce_json_value(payload)
+            status = _derive_improvement_event_status(
+                payload,
+                applied_at,
+                reverted_at,
+                verified_at,
+                verification_result,
+            )
             
             return {
                 "id": event_id_db,
@@ -4644,7 +6174,7 @@ async def get_event_status(event_id: int) -> Dict[str, Any]:
                 "applied_at": applied_at.isoformat() if applied_at else None,
                 "verified_at": verified_at.isoformat() if verified_at else None,
                 "verification_result": verification_result,
-                "status": "verified" if verified_at else "applied" if applied_at else "pending"
+                "status": status,
             }
         finally:
             _put_pg_conn(conn)
@@ -4703,29 +6233,12 @@ async def get_learning_dashboard() -> Dict[str, Any]:
         try:
             cursor = conn.cursor()
             
+            projection_drift = compare_canonical_projection_drift_summary()
+
             # 1. 计算系统健康度
-            health_score = await _calculate_health_score(cursor)
-            
-            # 2. 获取关键指标
-            # 最后一次运行
-            cursor.execute(
-                """
-                SELECT id, ts FROM learning_runs 
-                ORDER BY ts DESC LIMIT 1
-                """
-            )
-            last_run_row = cursor.fetchone()
-            last_run_ts = int(last_run_row[1].timestamp() * 1000) if last_run_row else None
-            
-            # 待审核数 (尚未应用的改进)
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM improvement_events 
-                WHERE applied_at IS NULL
-                """
-            )
-            pending_count = cursor.fetchone()[0]
-            
+            health_score = await _calculate_health_score(cursor, projection_drift=projection_drift)
+            runtime_state = await _build_learning_runtime_state(cursor)
+
             # 最近 30 天的改进趋势
             cursor.execute(
                 """
@@ -4746,6 +6259,21 @@ async def get_learning_dashboard() -> Dict[str, Any]:
             
             # 3. 生成告警
             alerts = await _generate_alerts(cursor, health_score)
+
+            total_projection_drift = int(projection_drift.get("total_drift_count") or 0)
+            if total_projection_drift > 0:
+                alerts = [
+                    {
+                        "severity": "critical" if total_projection_drift >= 5 else "warning",
+                        "message": (
+                            f"{total_projection_drift} projection drift item(s) across "
+                            f"{len(projection_drift.get('drifted_projections') or [])} canonical read model(s)"
+                        ),
+                        "created_at": int(time.time() * 1000),
+                        "acknowledged": False,
+                    },
+                    *alerts,
+                ]
             
             # 4. 最近事件
             recent_events = await _get_recent_events(cursor, limit=10)
@@ -4759,10 +6287,10 @@ async def get_learning_dashboard() -> Dict[str, Any]:
                     'last_check': int(time.time() * 1000)
                 },
                 'key_metrics': {
-                    'last_run': last_run_ts,
-                    'next_run': None,
-                    'running': False,
-                    'pending_approvals': pending_count
+                    'last_run': runtime_state['last_run'],
+                    'next_run': runtime_state['next_scheduled'],
+                    'running': runtime_state['engine_status'] == 'running',
+                    'pending_approvals': runtime_state['pending_approvals'] or 0,
                 },
                 'improvement_trend': [
                     {
@@ -4774,7 +6302,8 @@ async def get_learning_dashboard() -> Dict[str, Any]:
                     for r in improvement_trend_rows
                 ],
                 'alerts': alerts,
-                'recent_events': recent_events
+                'recent_events': recent_events,
+                'projection_drift': projection_drift,
             }
         finally:
             _put_pg_conn(conn)
@@ -4784,7 +6313,7 @@ async def get_learning_dashboard() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _calculate_health_score(cursor) -> int:
+async def _calculate_health_score(cursor, projection_drift: Optional[Dict[str, Any]] = None) -> int:
     """
     计算学习系统健康度 (0-100)
     
@@ -4793,6 +6322,7 @@ async def _calculate_health_score(cursor) -> int:
     - 修复有效率：30%
     - 待审核堆积：20%
     - 系统响应时间：20%
+    - canonical projection drift：额外扣分项
     """
     # 最近 10 次运行的成功率
     cursor.execute(
@@ -4826,7 +6356,9 @@ async def _calculate_health_score(cursor) -> int:
     cursor.execute(
         """
         SELECT COUNT(*) FROM improvement_events 
-        WHERE applied_at IS NULL AND reverted_at IS NULL
+        WHERE applied_at IS NULL
+          AND reverted_at IS NULL
+          AND COALESCE(patch_payload->'review'->>'status', 'pending_review') = 'pending_review'
         """
     )
     pending_count = cursor.fetchone()[0]
@@ -4839,8 +6371,11 @@ async def _calculate_health_score(cursor) -> int:
         approval_health * 0.2 +
         80 * 0.2
     )
-    
-    return min(100, max(0, int(health_score)))
+
+    drift_summary = projection_drift or compare_canonical_projection_drift_summary()
+    drift_penalty = min(int(drift_summary.get('total_drift_count') or 0) * 4, 20)
+
+    return min(100, max(0, int(health_score - drift_penalty)))
 
 
 async def _generate_alerts(cursor, health_score: int) -> list:
@@ -4861,6 +6396,7 @@ async def _generate_alerts(cursor, health_score: int) -> list:
         """
         SELECT COUNT(*) FROM improvement_events 
         WHERE applied_at IS NULL
+          AND COALESCE(patch_payload->'review'->>'status', 'pending_review') = 'pending_review'
         """
     )
     pending = cursor.fetchone()[0]
@@ -4896,13 +6432,15 @@ async def _get_recent_events(cursor, limit: int = 10) -> list:
     cursor.execute(
         """
         SELECT 
-            COALESCE(applied_at, ts) as timestamp,
+            id,
             affected_route as route,
             patch_payload,
-            CASE 
-                WHEN applied_at IS NOT NULL THEN 'applied'
-                ELSE 'pending'
-            END as status
+            rationale,
+            applied_at,
+            reverted_at,
+            ts,
+            verified_at,
+            verification_result
         FROM improvement_events
         ORDER BY ts DESC
         LIMIT %s
@@ -4910,19 +6448,197 @@ async def _get_recent_events(cursor, limit: int = 10) -> list:
         (limit,)
     )
     rows = cursor.fetchall()
-    
-    return [
-        {
-            'timestamp': int(r[0].timestamp() * 1000) if r[0] else None,
-            'route': r[1],
-            'description': (
-                r[2].get('description') if isinstance(r[2], dict) and r[2] 
-                else f"Fix applied to {r[1]}"
-            ),
-            'status': r[3]
-        }
-        for r in rows
+
+    formatted = [
+        _format_dashboard_improvement_event_row(row)
+        for row in rows
     ]
+
+    improvement_events = [
+        {
+            'timestamp': item['timestamp'],
+            'route': item['route'],
+            'description': item['action'],
+            'status': item['status'],
+        }
+        for item in formatted
+    ]
+
+    cursor.execute(
+        """
+        SELECT payload, occurred_at
+        FROM event_ledger
+        WHERE aggregate_type = 'projection_reconcile'
+          AND event_type = 'projection.reconcile.completed'
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    reconcile_rows = cursor.fetchall()
+    reconcile_events = [
+        _format_projection_reconcile_recent_event_row(row)
+        for row in reconcile_rows
+    ]
+
+    recent_events = improvement_events + reconcile_events
+    recent_events.sort(key=lambda item: item.get('timestamp') or 0, reverse=True)
+    return recent_events[:limit]
+
+
+def _format_projection_reconcile_recent_event_row(row) -> Dict[str, Any]:
+    payload = coerce_json_dict(row[0])
+    occurred_at = row[1]
+    run_id = payload.get('run_id')
+    rebuilt_total = int(payload.get('rebuilt_total') or 0)
+    remaining_drift = int(payload.get('remaining_drift_count') or 0)
+    scope = payload.get('scope') or ('run' if run_id else 'global')
+    description = (
+        f"Reconciled projections for {run_id} (rebuilt {rebuilt_total}, remaining {remaining_drift})"
+        if run_id
+        else f"Reconciled canonical projections ({scope}, rebuilt {rebuilt_total}, remaining {remaining_drift})"
+    )
+    return {
+        'timestamp': normalize_epoch_milliseconds(occurred_at),
+        'route': f"projection_reconcile:{run_id}" if run_id else 'projection_reconcile',
+        'description': description,
+        'status': 'verified' if remaining_drift == 0 else 'applied',
+    }
+
+
+def _fetch_latest_projection_reconcile_summary(cursor) -> Optional[Dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT payload, occurred_at
+        FROM event_ledger
+        WHERE aggregate_type = 'projection_reconcile'
+          AND event_type = 'projection.reconcile.completed'
+        ORDER BY occurred_at DESC, event_id DESC
+        LIMIT 1
+        """
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    payload = coerce_json_dict(row[0])
+    occurred_at = row[1]
+    return {
+        'run_id': payload.get('run_id'),
+        'scope': payload.get('scope') or ('run' if payload.get('run_id') else 'global'),
+        'rebuilt_total': int(payload.get('rebuilt_total') or 0),
+        'remaining_drift_count': int(payload.get('remaining_drift_count') or 0),
+        'occurred_at': normalize_epoch_milliseconds(occurred_at),
+    }
+
+
+async def _build_learning_runtime_state(cursor=None) -> Dict[str, Any]:
+    """Build the shared runtime view used by status and dashboard endpoints."""
+    layer2_status: Dict[str, Any] = {}
+
+    scheduler = get_scheduler()
+    next_run_data = None
+    if scheduler and scheduler._running:
+        next_run_data = await scheduler.get_next_run_time()
+        layer2_status['scheduler'] = {
+            'status': 'running',
+            'next_run': next_run_data.get('next_run_utc'),
+        }
+    else:
+        layer2_status['scheduler'] = {'status': 'not_running'}
+
+    monitor = get_failure_monitor()
+    if monitor:
+        stats = await monitor.get_recent_failure_stats()
+        layer2_status['failure_monitor'] = {
+            'status': 'monitoring',
+            'current_failure_rate': stats.failure_rate if stats else None,
+            'threshold': monitor.FAILURE_THRESHOLD,
+            'should_trigger': await monitor.should_trigger(),
+        }
+    else:
+        layer2_status['failure_monitor'] = {'status': 'not_initialized'}
+
+    analyzer = get_feedback_analyzer()
+    if analyzer:
+        analysis = await analyzer.analyze_feedback_trends()
+        layer2_status['feedback_analyzer'] = {
+            'status': 'analyzing',
+            'trending_issues_count': len(analysis.trending_problems) if analysis else 0,
+            'should_trigger': analysis.should_trigger if analysis else False,
+        }
+    else:
+        layer2_status['feedback_analyzer'] = {'status': 'not_initialized'}
+
+    runtime_state: Dict[str, Any] = {
+        'engine_status': 'running' if scheduler and scheduler._running else 'idle',
+        'last_run': None,
+        'next_scheduled': next_run_data.get('next_run_timestamp') if next_run_data else None,
+        'pending_approvals': None,
+        'queued_executions': None,
+        'layer2_triggers': layer2_status,
+        'projection_drift': None,
+        'last_projection_reconcile': None,
+    }
+
+    if cursor is None:
+        return runtime_state
+
+    cursor.execute(
+        """
+        SELECT run_id, ts, status
+        FROM learning_runs
+        ORDER BY ts DESC
+        LIMIT 1
+        """
+    )
+    last_run_row = cursor.fetchone()
+    runtime_state['last_run'] = int(last_run_row[1].timestamp() * 1000) if last_run_row else None
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM improvement_events
+        WHERE applied_at IS NULL
+          AND reverted_at IS NULL
+          AND COALESCE(patch_payload->'review'->>'status', 'pending_review') = 'pending_review'
+        """
+    )
+    runtime_state['pending_approvals'] = cursor.fetchone()[0]
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM learning_runs
+        WHERE status = 'running'
+        """
+    )
+    runtime_state['queued_executions'] = cursor.fetchone()[0]
+
+    runtime_state['projection_drift'] = compare_canonical_projection_drift_summary()
+    runtime_state['last_projection_reconcile'] = _fetch_latest_projection_reconcile_summary(cursor)
+
+    return runtime_state
+
+
+async def _build_learning_runtime_state_with_db_fallback() -> Dict[str, Any]:
+    runtime_state = await _build_learning_runtime_state()
+
+    try:
+        from app.agent.tools import _get_pg_conn, _put_pg_conn
+
+        conn = _get_pg_conn()
+        try:
+            cursor = conn.cursor()
+            try:
+                runtime_state = await _build_learning_runtime_state(cursor)
+            finally:
+                cursor.close()
+        finally:
+            _put_pg_conn(conn)
+    except Exception:
+        logger.debug("Learning runtime DB enrichment unavailable", exc_info=True)
+
+    return runtime_state
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -4943,8 +6659,6 @@ async def trigger_learning_loop(reason: Optional[str] = None) -> Dict[str, Any]:
         }
     """
     try:
-        from app.agent.scheduler import get_scheduler
-        
         scheduler = get_scheduler()
         if not scheduler:
             raise HTTPException(status_code=503, detail="Learning scheduler not initialized")
@@ -4982,8 +6696,6 @@ async def get_next_learning_run() -> Dict[str, Any]:
         }
     """
     try:
-        from app.agent.scheduler import get_scheduler
-        
         scheduler = get_scheduler()
         if not scheduler:
             return {'error': 'scheduler not initialized', 'next_run': None}
@@ -5011,8 +6723,6 @@ async def get_failure_stats() -> Dict[str, Any]:
         }
     """
     try:
-        from app.agent.failure_monitor import get_failure_monitor
-        
         monitor = get_failure_monitor()
         if not monitor:
             return {'error': 'failure monitor not initialized', 'should_trigger': False}
@@ -5058,8 +6768,6 @@ async def get_feedback_insights(window_days: int = 7) -> Dict[str, Any]:
         }
     """
     try:
-        from app.agent.feedback_analyzer import get_feedback_analyzer
-        
         analyzer = get_feedback_analyzer()
         if not analyzer:
             return {'error': 'feedback analyzer not initialized'}
@@ -5090,53 +6798,11 @@ async def get_learning_status() -> Dict[str, Any]:
         }
     """
     try:
-        from app.agent.scheduler import get_scheduler
-        from app.agent.failure_monitor import get_failure_monitor
-        from app.agent.feedback_analyzer import get_feedback_analyzer
-        
-        status = {}
-        
-        # Scheduler status
-        scheduler = get_scheduler()
-        if scheduler and scheduler._running:
-            next_run = await scheduler.get_next_run_time()
-            status['scheduler'] = {
-                'status': 'running',
-                'next_run': next_run.get('next_run_utc')
-            }
-        else:
-            status['scheduler'] = {'status': 'not_running'}
-        
-        # Failure monitor status
-        monitor = get_failure_monitor()
-        if monitor:
-            stats = await monitor.get_recent_failure_stats()
-            status['failure_monitor'] = {
-                'status': 'monitoring',
-                'current_failure_rate': stats.failure_rate if stats else None,
-                'threshold': monitor.FAILURE_THRESHOLD,
-                'should_trigger': await monitor.should_trigger()
-            }
-        else:
-            status['failure_monitor'] = {'status': 'not_initialized'}
-        
-        # Feedback analyzer status
-        analyzer = get_feedback_analyzer()
-        if analyzer:
-            analysis = await analyzer.analyze_feedback_trends()
-            status['feedback_analyzer'] = {
-                'status': 'analyzing',
-                'trending_issues_count': len(analysis.trending_problems) if analysis else 0,
-                'should_trigger': analysis.should_trigger if analysis else False
-            }
-        else:
-            status['feedback_analyzer'] = {'status': 'not_initialized'}
-        
-        return {
-            'layer2_triggers': status,
-            'timestamp': datetime.utcnow().isoformat()
-        }
+        runtime_state = await _build_learning_runtime_state_with_db_fallback()
+
+        runtime_state['timestamp'] = datetime.now(timezone.utc).isoformat()
+        return runtime_state
         
     except Exception as e:
         logger.error(f"Failed to get learning status: {e}")
-        return {'error': str(e), 'timestamp': datetime.utcnow().isoformat()}
+        return {'error': str(e), 'timestamp': datetime.now(timezone.utc).isoformat()}

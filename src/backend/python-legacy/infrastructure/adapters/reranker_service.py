@@ -7,6 +7,8 @@ import os
 import logging
 from typing import List, Tuple
 
+from config.runtime import read_runtime_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,13 +30,7 @@ class RerankerService:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-            # 动态计算模型目录：优先使用环境变量，其次使用项目根目录下的models目录
-            models_dir = os.environ.get("MODELS_DIR")
-            if not models_dir:
-                # 计算项目根目录：src/backend/python-legacy/infrastructure/adapters -> ../../../../../
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                project_root = os.path.abspath(os.path.join(current_dir, "../../../../.."))
-                models_dir = os.path.join(project_root, "models")
+            models_dir = read_runtime_config().models_dir
 
             logger.info(f"Loading reranker model: {self.model_name}, cache_dir: {models_dir}")
             self.model = CrossEncoder(

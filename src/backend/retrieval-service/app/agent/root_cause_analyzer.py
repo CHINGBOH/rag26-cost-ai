@@ -163,6 +163,9 @@ class RootCauseAnalyzer:
         Returns:
             List of execution traces
         """
+        if run_ids is not None:
+            # Placeholder until trace reconstruction wires to concrete run tables.
+            run_ids = [run_id for run_id in run_ids if run_id]
         traces = []
 
         # Mock: In real implementation, this would:
@@ -195,7 +198,9 @@ class RootCauseAnalyzer:
         }
 
         # Extract keywords from problem description and evidence
-        all_text = problem.description + " ".join(problem.evidence)
+        feedback_text = " ".join(signal.text for signal in feedback_signals if signal.text)
+        feedback_tags = " ".join(tag for signal in feedback_signals for tag in signal.tags)
+        all_text = " ".join(part for part in [problem.description, *problem.evidence, feedback_text, feedback_tags] if part)
         keywords = self._extract_keywords(all_text)
         patterns["keywords"] = keywords
 

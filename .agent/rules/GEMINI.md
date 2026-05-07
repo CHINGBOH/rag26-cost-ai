@@ -51,6 +51,51 @@ Sử dụng workflow `/plan` -> `/create` -> `/orchestrate` -> `/status`.
 2.  **Zero-Silent-Failure**: Mọi thất bại (Test fail, Build fail, Agent hiểu sai) KHÔNG được bỏ qua. PHẢI ghi nhận vào `ERRORS.md` ngay lập tức.
 3.  **Recursive Learning**: Mỗi lỗi lặp lại lần thứ 2 PHẢI được biến thành một Rule hoặc Test Case mới. Lỗi là tài sản, không phải gánh nặng.
 
+### 2.6.1. HARD CUTOVER DISCIPLINE
+
+When a canonical path exists, Agent must prefer cutting over to it instead of preserving parallel legacy runtime paths.
+
+1. **Delete or hard-disable pseudo-paths**: remove duplicate readers, duplicate writers, compatibility-only branches, JSONL side channels, and dead fallback logic whenever feasible in the same task.
+2. **Rollback uses Git and issue tracking**: do not keep obsolete runtime chains alive just to feel safer about rollback.
+3. **No indefinite dual-read or dual-write**: temporary migration bridges must have an explicit removal condition; otherwise they are forbidden.
+4. **Cutover is end-to-end**: update reads, writes, APIs, UI surfaces, jobs, monitors, and tests so the old path is truly severed.
+5. **If legacy survives, name it explicitly**: the canonical path and the exact surviving file, path, or runtime edge must be called out together rather than silently left behind.
+
+### 2.6.2. TRACEABILITY DISCIPLINE
+
+Behavior-changing actions must leave durable, time-stamped evidence.
+
+1. **Trace every operational change**: cutovers, manual triggers, migrations, restarts, deletions, fallback disablement, and overrides should leave a durable trace whenever feasible.
+2. **Use explicit timestamps**: prefer ISO 8601 with timezone for new audit records and behavior logs.
+3. **Capture actor, action, target, reason, outcome**: a later investigator must be able to reconstruct what changed, when, and why.
+4. **No silent runtime changes**: if behavior changes without an audit trail, Agent should add traceability in the same task when possible.
+5. **Prefer canonical audit channels**: use structured logs, event ledgers, and existing audit/state tables instead of ad hoc side files.
+
+### 2.6.3. CONFIG EXTERNALIZATION DISCIPLINE
+
+Mutable behavior must be externalized instead of hidden in code.
+
+1. **No hardcoded mutable values**: ports, paths, hosts, URLs, credentials, tokens, thresholds, timeouts, feature flags, provider/model selection, routing targets, and environment-specific limits must not be embedded in business logic unless they are true immutable protocol constants.
+2. **Use one precedence chain everywhere**: `default < config file < environment variable < command-line argument < runtime dynamic input`. Agent must not introduce a conflicting priority order.
+3. **One canonical loader per module**: configurable behavior should flow through a single schema-validated config entrypoint for that domain, not through scattered `os.getenv`, duplicated JSON parsing, or file-local fallback constants.
+4. **Prefer mature config tooling or the existing canonical loader**: do not create a new handwritten parser if the stack already has a proper config mechanism. Extend the canonical config surface instead.
+5. **No fake config separation**: if real behavior is still controlled by hardcoded branch logic or shadow defaults in code, the system is still hardcoded even when a JSON/YAML file exists.
+6. **Defaults are bootstrap only**: safe local defaults are acceptable, but production-sensitive behavior must come from external configuration and must not silently ignore deploy-time inputs.
+7. **Bias toward stateless artifacts**: the same build should move between environments by changing external configuration, not by editing code or relying on hidden in-memory switches.
+8. **Make config cutovers explicit**: when externalizing behavior, Agent should say which hardcoded values were removed, what the canonical config entrypoint is, and which remaining hardcoded survivors still exist.
+9. **Markdown alone is not enforcement**: updating `.md` rules without changing executable config surfaces or persistent runtime constraints does not satisfy a real config-separation task.
+10. **Encode mutable behavior in executable surfaces**: if the rule affects runtime behavior, Agent should prefer JSON/YAML/canonical loaders/env/CLI/runtime inputs over prose-only guidance whenever task scope permits.
+
+### 2.6.4. REUSE & TOPOLOGY DISCIPLINE
+
+Reuse existing owned surfaces before creating new ones, and keep the runtime graph connected.
+
+1. **Reuse before rebuild**: consult the project resource/capability index before adding modules, services, endpoints, jobs, workflows, or config surfaces; extend owned surfaces when they already cover the need.
+2. **Prefer canonical surfaces**: extend existing loaders, route maps, exports, and mature ecosystem tooling instead of parallel wrappers, shadow configs, or one-off helper files.
+3. **No topology black holes**: every new route, flag, env, CLI arg, file, or state field must connect to both a caller and a runtime consumer.
+4. **No isolated files or dead parameters**: if nothing imports it, routes to it, reads it, validates it, or observes it, finish the wiring or delete it.
+5. **Prose is not wiring**: markdown-only rule edits do not satisfy connectivity or config governance when runtime behavior is involved.
+
 ---
 
 ## 🧭 2.5. AGENT ROUTING CHECKLIST (Mandatory)

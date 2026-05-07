@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from app.runtime_config import read_runtime_config
+
 logger = logging.getLogger("ingest_pipeline")
 
 
@@ -49,11 +51,12 @@ def _release(conn):
 
 
 # ────────────────────────────── Qdrant + Neo4j helpers ──────────────────────────────
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_COLLECTION = os.getenv("QDRANT_INGEST_COLLECTION", "document_chunks")
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.getenv("NEO4J_PASSWORD", "password")
+_runtime = read_runtime_config()
+QDRANT_URL = _runtime.qdrant_url
+QDRANT_COLLECTION = _runtime.qdrant_ingest_collection
+NEO4J_URI = _runtime.neo4j_uri
+NEO4J_USER = _runtime.neo4j_user
+NEO4J_PASS = _runtime.neo4j_password
 
 
 def _qdrant_point_id(doc_id: str, chunk_index: int) -> str:
@@ -704,7 +707,7 @@ async def extract_pdf_or_image_via_ocr(path: Path, doc_id: str, file_name: str,
     import httpx
     from app.ingest_schema import from_paddle_ocr_json, to_legacy_blocks
 
-    ocr_url = os.environ.get("OCR_SERVICE_URL", "http://localhost:8001")
+    ocr_url = read_runtime_config().ocr_service_url
     suffix = path.suffix.lower()
     endpoint = "/ocr/pdf" if suffix == ".pdf" else "/ocr/image"
 

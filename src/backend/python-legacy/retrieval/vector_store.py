@@ -9,6 +9,8 @@ import numpy as np
 from dataclasses import dataclass
 import hashlib
 
+from config.runtime import read_runtime_config
+
 
 @dataclass
 class VectorDocument:
@@ -41,17 +43,18 @@ class QdrantClient:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 6333,
+        host: str | None = None,
+        port: int | None = None,
         collection_name: str = "documents",
         vector_size: int = 768,
-        timeout: int = 60,
+        timeout: int | None = None,
     ):
-        self.host = host
-        self.port = port
+        runtime_config = read_runtime_config()
+        self.host = host or runtime_config.qdrant_host
+        self.port = port or runtime_config.qdrant_port
         self.collection_name = collection_name
         self.vector_size = vector_size
-        self.timeout = timeout
+        self.timeout = timeout or runtime_config.qdrant_timeout
         self._client = None
         self._connect()
 
@@ -292,11 +295,11 @@ class EmbeddingService:
 
     def __init__(
         self,
-        model_name: str = "BAAI/bge-m3",
+        model_name: str | None = None,
         device: str = "cpu",
         normalize_embeddings: bool = True,
     ):
-        self.model_name = model_name
+        self.model_name = model_name or read_runtime_config().embedding_model_name
         self.device = device
         self.normalize_embeddings = normalize_embeddings
         self.model = None
@@ -306,11 +309,10 @@ class EmbeddingService:
         """加载模型"""
         try:
             from sentence_transformers import SentenceTransformer
-            import os
             import torch
 
             # 设置模型缓存路径
-            cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME", "/home/l/models")
+            cache_dir = read_runtime_config().sentence_transformers_home
 
             self.model = SentenceTransformer(
                 self.model_name, device=self.device, cache_folder=cache_dir

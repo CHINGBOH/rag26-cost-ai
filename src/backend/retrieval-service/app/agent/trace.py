@@ -11,20 +11,22 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+
+from app.runtime_config import read_runtime_config
 
 logger = logging.getLogger(__name__)
 
 # Module-level live trace map. Cleared after persistence.
 _TRACES: dict[str, dict[str, Any]] = {}
 
-# Persisted location.
-_BASE = Path(os.environ.get("RAG_AGENT_TRACES_DIR", "/home/l/rag-dashboard/data/agent_traces"))
-_BASE.mkdir(parents=True, exist_ok=True)
+def _trace_base_dir() -> Path:
+    base = read_runtime_config().agent_traces_dir
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 # Keys we redact / truncate when snapshotting state-update dicts (avoid blowing up traces)
 _HEAVY_KEYS = {"messages", "retrieved_chunks", "workspace", "tool_call_cache",
@@ -125,7 +127,7 @@ def persist_trace(tid: str, final_state: dict[str, Any] | None = None) -> str | 
             "evaluation": final_state.get("evaluation") or {},
             "query_type": final_state.get("query_type") or "",
         }
-    fp = _BASE / f"{tid}.json"
+    fp = _trace_base_dir() / f"{tid}.json"
     try:
         fp.write_text(json.dumps(t, ensure_ascii=False, default=str))
         return str(fp)
@@ -167,9 +169,10 @@ def wrap_node(name: str, fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
 
 def list_traces(limit: int = 50) -> list[dict[str, Any]]:
     """List most-recent persisted traces (lightweight summary)."""
-    if not _BASE.exists():
+    base = _trace_base_dir()
+    if not base.exists():
         return []
-    files = sorted(_BASE.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    files = sorted(base.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
     out: list[dict[str, Any]] = []
     for fp in files:
         try:
@@ -191,7 +194,7 @@ def list_traces(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def get_trace(trace_id: str) -> dict[str, Any] | None:
-    fp = _BASE / f"{trace_id}.json"
+    fp = _trace_base_dir() / f"{trace_id}.json"
     if not fp.exists():
         return None
     try:

@@ -19,6 +19,8 @@ from enum import Enum
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 
+from app.runtime_config import postgres_connection_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,25 @@ class FeedbackSignal:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @property
+    def signal_id(self) -> str:
+        return self.message_id or f"feedback:{self.session_id}:{int(self.ts)}"
+
+    @property
+    def text(self) -> str:
+        return self.feedback_text
+
+    @property
+    def dimensions(self) -> Dict[str, float]:
+        return {}
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "message_id": self.message_id,
+        }
+
 
 @dataclass
 class FailureSignal:
@@ -53,6 +74,16 @@ class FailureSignal:
     latency_ms: int
     context: Dict[str, Any] = field(default_factory=dict)
     ts: float = 0.0
+    route_id: str = "R2_path_default"
+    error_code: str = "FAILED_UNKNOWN"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def signal_id(self) -> str:
+        run_id = self.context.get("run_id") if isinstance(self.context, dict) else None
+        if run_id:
+            return str(run_id)
+        return f"failure:{self.session_id}:{self.turn_index}:{int(self.ts)}"
 
 
 @dataclass
@@ -65,6 +96,18 @@ class RepeatQuestionSignal:
     similarity: float
     ts: float = 0.0
 
+    @property
+    def repeat_turn(self) -> int:
+        return self.latest_turn
+
+    @property
+    def similarity_score(self) -> float:
+        return self.similarity
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {"repeat_count": self.repeat_count}
+
 
 @dataclass
 class ViolationSignal:
@@ -74,6 +117,16 @@ class ViolationSignal:
     violation_code: str
     payload: Dict[str, Any] = field(default_factory=dict)
     ts: float = 0.0
+
+    @property
+    def detail(self) -> str:
+        if not isinstance(self.payload, dict):
+            return ""
+        return str(self.payload.get("detail") or self.payload.get("message") or "")
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self.payload if isinstance(self.payload, dict) else {}
 
 
 @dataclass
@@ -86,6 +139,19 @@ class TopoAnomalySignal:
     last_traversed_at: str
     traversal_count: int
     ts: float = 0.0
+
+    @property
+    def metrics(self) -> Dict[str, Any]:
+        return {
+            "from_node": self.from_node,
+            "to_node": self.to_node,
+            "last_traversed_at": self.last_traversed_at,
+            "traversal_count": self.traversal_count,
+        }
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return {}
 
 
 @dataclass
@@ -108,6 +174,14 @@ class AggregatedSignals:
         return (len(self.feedback_signals) + len(self.failure_signals) + 
                 len(self.repeat_signals) + len(self.violation_signals) + 
                 len(self.topo_signals))
+
+    @property
+    def window_start(self) -> float:
+        return self.timestamp - 3600
+
+    @property
+    def window_end(self) -> float:
+        return self.timestamp
     
     @property
     def severity_score(self) -> float:
@@ -146,13 +220,13 @@ class SignalCollector:
     def _init_pool(self):
         """初始化 PostgreSQL 连接池"""
         try:
-            import os
+            kwargs = postgres_connection_kwargs()
             dsn = (
-                f"host={os.getenv('POSTGRES_HOST', 'localhost')} "
-                f"port={os.getenv('POSTGRES_PORT', '5432')} "
-                f"dbname={os.getenv('POSTGRES_DB', 'rag_db')} "
-                f"user={os.getenv('POSTGRES_USER', 'rag_user')} "
-                f"password={os.getenv('POSTGRES_PASSWORD', '')}"
+                f"host={kwargs['host']} "
+                f"port={kwargs['port']} "
+                f"dbname={kwargs['dbname']} "
+                f"user={kwargs['user']} "
+                f"password={kwargs['password']}"
             )
             self.pool = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=dsn)
             conn = self.pool.getconn()
@@ -172,6 +246,38 @@ class SignalCollector:
                 logger.info("✅ SignalCollector pool closed")
             except Exception as e:
                 logger.warning(f"Error closing pool: {e}")
+
+    @staticmethod
+    def _normalize_failure_error_code(status: str, context: Dict[str, Any]) -> str:
+        if isinstance(context, dict):
+            outcome_code = context.get("outcome_code")
+            if outcome_code:
+                return str(outcome_code)
+        normalized_status = str(status or "").strip().upper()
+        return normalized_status or "FAILED_UNKNOWN"
+
+    @staticmethod
+    def _infer_failure_route(context: Dict[str, Any], error_code: str) -> str:
+        if not isinstance(context, dict):
+            context = {}
+
+        explicit_route = context.get("route_id")
+        if explicit_route:
+            return str(explicit_route)
+
+        query_type = str(context.get("query_type") or "").lower()
+        source = str(context.get("source") or "").lower()
+        normalized_code = str(error_code or "").upper()
+
+        if "rerank" in source or "RERANK" in normalized_code:
+            return "R4_rerank_weights"
+        if "TOOL" in normalized_code or "TIMEOUT" in normalized_code:
+            return "R5_tool_priority"
+        if "INSUFFICIENT" in normalized_code or "REFUSED" in normalized_code:
+            return "R4_rerank_weights"
+        if any(token in query_type for token in ("price", "spec", "cost")):
+            return "R1_navigator_dict"
+        return "R2_path_default"
     
     async def collect_feedback_signals(self, limit: int = 100) -> List[FeedbackSignal]:
         """
@@ -214,7 +320,8 @@ class SignalCollector:
                                 rating=rating or 0,
                                 tags=tags_list,
                                 feedback_text=(feedback_text or "").strip(),
-                                ts=float(ts) if ts else 0.0
+                                ts=float(ts) if ts else 0.0,
+                                overall_score=float(rating) if rating is not None else 0.0,
                             ))
                         except Exception as e:
                             logger.warning(f"Error processing feedback row: {e}")
@@ -231,7 +338,7 @@ class SignalCollector:
     async def collect_failure_signals(self, window_hours: int = 24, 
                                      latency_threshold_ms: int = 5000) -> List[FailureSignal]:
         """
-        从 conversation_turns 表采集失败信号
+        优先从 agent_run_projection 采集失败信号，兼容回退到 conversation_turns。
         
         Args:
             window_hours: 时间窗口（小时）
@@ -249,35 +356,78 @@ class SignalCollector:
             conn = self.pool.getconn()
             try:
                 with conn.cursor() as cur:
-                    # 采集失败的 turn（status='error'）或高延迟的 turn
-                    # ts 是 double precision (Unix timestamp), 所以不能直接用 NOW()
-                    cur.execute("""
-                        SELECT 
-                            session_id, turn_index, status, latency_ms,
-                            jsonb_build_object(
-                                'user_query', user_content,
-                                'response_excerpt', SUBSTRING(assistant_content, 1, 200),
-                                'source', source
-                            ) as context,
-                            ts
-                        FROM conversation_turns
-                        WHERE (status = 'error' OR latency_ms > %s)
-                          AND ts > (EXTRACT(EPOCH FROM NOW()) - %s * 3600)
-                        ORDER BY ts DESC
-                        LIMIT 100
-                    """, (latency_threshold_ms, window_hours))
-                    
-                    rows = cur.fetchall()
+                    try:
+                        cur.execute(
+                            """
+                            SELECT
+                                session_id, run_id, quality, latency_ms,
+                                jsonb_build_object(
+                                    'user_query', query,
+                                    'response_excerpt', SUBSTRING(answer_preview, 1, 200),
+                                    'source', channel,
+                                    'outcome_code', outcome_code,
+                                    'query_type', query_type
+                                ) as context,
+                                EXTRACT(EPOCH FROM completed_at)
+                            FROM agent_run_projection
+                            WHERE learning_eligible = TRUE
+                              AND (
+                                quality = 'failure'
+                                OR (latency_ms > %s AND quality NOT IN ('good', 'non_task'))
+                              )
+                              AND completed_at > NOW() - (%s * INTERVAL '1 hour')
+                            ORDER BY completed_at DESC
+                            LIMIT 100
+                            """,
+                            (latency_threshold_ms, window_hours),
+                        )
+                        rows = cur.fetchall()
+                    except Exception:
+                        conn.rollback()
+                        cur.execute("""
+                            SELECT 
+                                session_id, turn_index, status, latency_ms,
+                                jsonb_build_object(
+                                    'user_query', user_content,
+                                    'response_excerpt', SUBSTRING(assistant_content, 1, 200),
+                                    'source', source
+                                ) as context,
+                                ts
+                            FROM conversation_turns
+                            WHERE (status = 'error' OR latency_ms > %s)
+                              AND ts > (EXTRACT(EPOCH FROM NOW()) - %s * 3600)
+                            ORDER BY ts DESC
+                            LIMIT 100
+                        """, (latency_threshold_ms, window_hours))
+                        rows = cur.fetchall()
+
                     for row in rows:
                         try:
                             session_id, turn_index, status, latency_ms, context, ts = row
+                            normalized_turn_index = (
+                                turn_index if isinstance(turn_index, int) else 0
+                            )
+                            signal_context = dict(context or {})
+                            outcome_code_raw = str(signal_context.get("outcome_code") or "").upper()
+                            if outcome_code_raw == "ANSWERED_OK":
+                                continue
+                            if normalized_turn_index == 0 and turn_index is not None:
+                                signal_context.setdefault("run_id", str(turn_index))
+                            error_code = self._normalize_failure_error_code(status, signal_context)
                             signals.append(FailureSignal(
                                 session_id=session_id or "",
-                                turn_index=turn_index or 0,
+                                turn_index=normalized_turn_index,
                                 status=status or "unknown",
                                 latency_ms=latency_ms or 0,
-                                context=context or {},
-                                ts=float(ts) if ts else 0.0
+                                context=signal_context,
+                                ts=float(ts) if ts else 0.0,
+                                route_id=self._infer_failure_route(signal_context, error_code),
+                                error_code=error_code,
+                                metadata={
+                                    "source": signal_context.get("source"),
+                                    "query_type": signal_context.get("query_type"),
+                                    "outcome_code": signal_context.get("outcome_code"),
+                                },
                             ))
                         except Exception as e:
                             logger.warning(f"Error processing failure row: {e}")

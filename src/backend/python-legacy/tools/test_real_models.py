@@ -10,13 +10,17 @@ import asyncio
 import logging
 from typing import List, Dict, Any
 from dataclasses import dataclass
+from pathlib import Path
 
-# 添加项目路径
-sys.path.insert(0, '/home/l/rag-dashboard/src/backend/python-legacy')
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
 
-# 配置
-EMBEDDING_MODEL_PATH = "/home/l/rag-dashboard/models/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181"
-RERANK_MODEL_PATH = "/home/l/rag-dashboard/models/models--BAAI--bge-reranker-v2-m3/snapshots/953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+from config.runtime import read_runtime_config, tool_pg_config
+
+runtime_config = read_runtime_config()
+EMBEDDING_MODEL_PATH = runtime_config.embedding_model_path
+RERANK_MODEL_PATH = runtime_config.rerank_model_path
+PG_CONFIG = tool_pg_config()
 
 # 日志配置
 logging.basicConfig(
@@ -211,11 +215,7 @@ async def test_real_model_calls():
     
     # 从数据库获取候选
     conn = await asyncpg.connect(
-        host="localhost",
-        port=5432,
-        database="rag_db",
-        user="rag_user",
-        password=os.environ.get("POSTGRES_PASSWORD", "rag_password")
+        **PG_CONFIG
     )
     
     try:
@@ -274,11 +274,7 @@ async def test_real_model_calls():
     # Step 2: 获取候选
     logger.info("Step 2: 从数据库获取候选")
     conn = await asyncpg.connect(
-        host="localhost",
-        port=5432,
-        database="rag_db",
-        user="rag_user",
-        password=os.environ.get("POSTGRES_PASSWORD", "rag_password")
+        **PG_CONFIG
     )
     
     try:

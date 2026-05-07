@@ -53,6 +53,22 @@ class TestFeedbackSignal:
         assert d["rating"] == 5
         assert isinstance(d["tags"], list)
 
+    def test_problem_detector_compatibility_properties(self):
+        signal = FeedbackSignal(
+            session_id="sess_123",
+            message_id="msg_456",
+            rating=2,
+            tags=["unclear"],
+            feedback_text="Need more evidence",
+            ts=1609459200.0,
+            overall_score=2.0,
+        )
+
+        assert signal.signal_id == "msg_456"
+        assert signal.text == "Need more evidence"
+        assert signal.dimensions == {}
+        assert signal.metadata["session_id"] == "sess_123"
+
 
 class TestAggregatedSignals:
     """AggregatedSignals 聚合类测试"""
@@ -112,6 +128,11 @@ class TestAggregatedSignals:
         )
         assert agg.severity_score <= 100.0
 
+    def test_window_compatibility_properties(self):
+        agg = AggregatedSignals(timestamp=1609459200.0)
+        assert agg.window_end == 1609459200.0
+        assert agg.window_start == pytest.approx(1609455600.0)
+
 
 class TestSignalCollectorInit:
     """SignalCollector 初始化测试"""
@@ -129,6 +150,35 @@ class TestSignalCollectorInit:
         collector = SignalCollector(pool=mock_pool)
         assert collector.pool is mock_pool
         assert collector._owns_pool is False
+
+    def test_init_pool_reads_runtime_postgres_config(self, monkeypatch):
+        monkeypatch.setenv("POSTGRES_HOST", "collector.db")
+        monkeypatch.setenv("POSTGRES_PORT", "5549")
+        monkeypatch.setenv("POSTGRES_DB", "collector_db")
+        monkeypatch.setenv("POSTGRES_USER", "collector_user")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "collector_pass")
+
+        mock_pool = Mock()
+        mock_conn = Mock()
+        mock_cursor_ctx = MagicMock()
+        mock_cursor = Mock()
+        mock_cursor_ctx.__enter__.return_value = mock_cursor
+        mock_conn.cursor.return_value = mock_cursor_ctx
+        mock_pool.getconn.return_value = mock_conn
+
+        with patch("app.agent.signal_collector.ThreadedConnectionPool", return_value=mock_pool) as pool_cls:
+            collector = SignalCollector(pool=mock_pool)
+            collector.pool = None
+            collector._owns_pool = True
+            collector._init_pool()
+
+        assert collector.pool is mock_pool
+        dsn = pool_cls.call_args.kwargs["dsn"]
+        assert "host=collector.db" in dsn
+        assert "port=5549" in dsn
+        assert "dbname=collector_db" in dsn
+        assert "user=collector_user" in dsn
+        assert "password=collector_pass" in dsn
 
 
 class TestSignalCollectorMocked:
@@ -206,8 +256,22 @@ class TestSignalCollectorMocked:
         mock_pool, mock_conn, mock_cursor = self._mock_pool()
         
         mock_cursor.fetchall.return_value = [
-            ("sess_1", 0, "error", 5000, {"query": "test", "tool": "search"}, 1609459200.0),
-            ("sess_2", 1, "error", 8000, {"query": "test2", "tool": "rerank"}, 1609459300.0),
+            (
+                "sess_1",
+                "run_1",
+                "failure",
+                5000,
+                {"user_query": "test", "source": "sync", "outcome_code": "FAILED_TOOL", "query_type": "price"},
+                1609459200.0,
+            ),
+            (
+                "sess_2",
+                "run_2",
+                "failure",
+                8000,
+                {"user_query": "test2", "source": "rerank", "outcome_code": "REFUSED_INSUFFICIENT_EVIDENCE"},
+                1609459300.0,
+            ),
         ]
         
         collector = SignalCollector(pool=mock_pool)
@@ -216,6 +280,45 @@ class TestSignalCollectorMocked:
         assert len(signals) == 2
         assert signals[0].latency_ms == 5000
         assert signals[1].latency_ms == 8000
+        assert signals[0].error_code == "FAILED_TOOL"
+        assert signals[0].route_id == "R5_tool_priority"
+        assert signals[1].route_id == "R4_rerank_weights"
+        assert signals[0].signal_id == "run_1"
+
+    @pytest.mark.asyncio
+    async def test_collect_failure_signals_skips_slow_good_runs(self):
+        """quality='good' / outcome_code='ANSWERED_OK' rows must NOT become FailureSignal,
+        even when latency exceeds the threshold. Prevents poisoning R2_path_default with
+        slow-but-successful answers (issue #111)."""
+        mock_pool, mock_conn, mock_cursor = self._mock_pool()
+
+        # Only failures should arrive here because the SQL filter excludes good/non_task.
+        # Defensive row-level filter must additionally drop ANSWERED_OK if it slips through.
+        mock_cursor.fetchall.return_value = [
+            (
+                "sess_good_slow",
+                "run_good",
+                "good",
+                30000,
+                {"user_query": "long but ok", "outcome_code": "ANSWERED_OK"},
+                1609459200.0,
+            ),
+            (
+                "sess_real_fail",
+                "run_fail",
+                "failure",
+                4000,
+                {"user_query": "broken", "outcome_code": "FAILED_TOOL"},
+                1609459300.0,
+            ),
+        ]
+
+        collector = SignalCollector(pool=mock_pool)
+        signals = await collector.collect_failure_signals()
+
+        assert len(signals) == 1
+        assert signals[0].session_id == "sess_real_fail"
+        assert signals[0].error_code == "FAILED_TOOL"
     
     @pytest.mark.asyncio
     async def test_collect_repeat_questions_table_missing(self):
@@ -260,7 +363,8 @@ class TestSignalCollectorMocked:
     @pytest.mark.asyncio
     async def test_pool_none_handling(self):
         """测试当池为 None 时的处理"""
-        collector = SignalCollector(pool=None)
+        with patch.object(SignalCollector, "_init_pool"):
+            collector = SignalCollector(pool=None)
         
         feedback = await collector.collect_feedback_signals()
         failure = await collector.collect_failure_signals()
@@ -351,6 +455,34 @@ class TestHelperFunctions:
                 # 这个测试会失败，因为我们没有真实的池
                 # 只是验证函数签名
                 assert callable(get_latest_signals)
+
+
+class TestCompatibilityAdapters:
+    """Compatibility helpers for problem detector/root cause analyzer."""
+
+    def test_repeat_violation_topology_compatibility_properties(self):
+        repeat = RepeatQuestionSignal("sess", 2, 1, 4, 0.91, 1609459200.0)
+        violation = ViolationSignal(
+            "run_1",
+            "contract_1",
+            "VIOLATION",
+            payload={"detail": "Missing evidence"},
+            ts=1609459200.0,
+        )
+        topo = TopoAnomalySignal(
+            "edge_1",
+            "query",
+            "rerank",
+            "stale",
+            "2024-01-01T00:00:00Z",
+            12,
+            1609459200.0,
+        )
+
+        assert repeat.repeat_turn == 4
+        assert repeat.similarity_score == pytest.approx(0.91)
+        assert violation.detail == "Missing evidence"
+        assert topo.metrics["traversal_count"] == 12
 
 
 class TestErrorHandling:

@@ -5,7 +5,7 @@
 
 import Redis from 'ioredis';
 
-interface CacheConfig {
+export interface CacheConfig {
   redisUrl: string;
   defaultTTL: number; // 默认过期时间（秒）
   keyPrefix: string;
@@ -21,12 +21,8 @@ export class CacheService {
   private redis: Redis;
   private config: CacheConfig;
 
-  constructor(config?: Partial<CacheConfig>) {
-    this.config = {
-      redisUrl: config?.redisUrl || process.env.REDIS_URL || 'redis://localhost:6379',
-      defaultTTL: config?.defaultTTL || 3600, // 1小时
-      keyPrefix: config?.keyPrefix || 'rag:'
-    };
+  constructor(config: CacheConfig) {
+    this.config = config;
 
     this.redis = new Redis(this.config.redisUrl, {
       retryStrategy: (times) => Math.min(times * 50, 2000),

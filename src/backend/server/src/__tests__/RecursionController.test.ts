@@ -6,13 +6,22 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { RecursionController } from '../core/RecursionController';
 
+const controllerConfig = {
+  gatewayUrl: 'http://localhost:8081/broadcast',
+  ragUrl: 'http://localhost:8002',
+  cleanupIntervalMs: 10 * 60 * 1000,
+  completedSessionMaxAgeMs: 24 * 60 * 60 * 1000,
+  hardSessionMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
+  requestTimeoutMs: 120000,
+};
+
 describe('RecursionController', () => {
   let controller: RecursionController;
   let eventEmitter: EventEmitter;
 
   beforeEach(() => {
     eventEmitter = new EventEmitter();
-    controller = new RecursionController(eventEmitter);
+    controller = new RecursionController(eventEmitter, controllerConfig);
   });
 
   it('应该创建会话', () => {

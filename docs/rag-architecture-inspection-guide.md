@@ -21,28 +21,9 @@ docker-compose -f docker-compose.langfuse.yml up -d
 # 访问: http://localhost:3001
 ```
 
-#### 在 TypeScript 项目集成
+#### TypeScript 集成说明
 
-```bash
-cd src/backend/server
-npm install langfuse
-```
-
-然后在 `src/backend/server/src/modules/rag/utils/langfuse.ts 已创建好工具函数。
-
-#### 使用示例:
-
-```typescript
-import { initLangfuse, traceRAGQuery } from './utils/langfuse'
-
-// 初始化
-initLangfuse({
-  enabled: true
-})
-
-// 追踪查询
-const traceId = traceRAGQuery('问题', context, 回答)
-```
+Node orchestrator 当前未接入活跃的 Langfuse SDK 调用链；如需恢复该能力，应重新按实际运行时路径接入，而不是依赖已删除的历史示例工具文件。
 
 ---
 

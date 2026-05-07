@@ -5,7 +5,6 @@ Rerank服务 - 精确重排服务
 支持多种rerank模型和特征融合
 """
 
-import os
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
@@ -14,10 +13,11 @@ from datetime import datetime
 
 from sentence_transformers import CrossEncoder
 import numpy as np
+from config.runtime import read_runtime_config
 
-# 配置
-RERANK_MODEL_NAME = os.getenv("RERANK_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-12-v2")
-BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
+runtime_config = read_runtime_config()
+RERANK_MODEL_NAME = runtime_config.rerank_model_name
+BATCH_SIZE = runtime_config.rerank_batch_size
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)

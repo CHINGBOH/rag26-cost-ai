@@ -11,11 +11,16 @@ import json
 import psycopg2
 from pathlib import Path
 
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config, tool_pg_config
+
 # embedding 模型加载（复用现有逻辑）
 def get_embed_model():
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("/home/l/rag-dashboard/models/BAAI/bge-m3")
+        model = SentenceTransformer(read_runtime_config().embedding_model_path)
         print(f"✓ Embedding model loaded: {model.get_sentence_embedding_dimension()}d")
         return model
     except Exception as e:
@@ -23,13 +28,7 @@ def get_embed_model():
         return None
 
 
-PG_CONFIG = {
-    "host": os.environ.get("PG_HOST", "localhost"),
-    "port": int(os.environ.get("PG_PORT", "5432")),
-    "database": os.environ.get("PG_DB", "rag_db"),
-    "user": os.environ.get("PG_USER", "rag_user"),
-    "password": os.environ.get("PG_PASSWORD", "rag_password"),
-}
+PG_CONFIG = tool_pg_config()
 
 
 def get_pg_conn():
@@ -329,7 +328,7 @@ def main():
 
     embed_model = get_embed_model()
 
-    base = "/home/l/rag-dashboard/data/knowledge_base/深圳市建设工程地方标准"
+    base = str(Path(read_runtime_config().knowledge_base_dir) / "深圳市建设工程地方标准")
     files = [
         (os.path.join(base, "深圳市建设工程计价费率标准（2023）.pdf"), "2023"),
         (os.path.join(base, "深圳市建设工程计价费率标准（2025）.pdf"), "2025"),

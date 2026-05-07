@@ -12,29 +12,33 @@ import psycopg2.extras
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import logging
+from pathlib import Path
+
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config, tool_pg_config
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 数据库配置
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "rag_db",
-    "user": "rag_user",
-    "password": os.environ.get("POSTGRES_PASSWORD", "rag_password")  # 直接设置密码
-}
+DB_CONFIG = tool_pg_config()
 
 # Qdrant 配置（用于会话上下文）
-QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.environ.get("QDRANT_PORT", 6333))
+runtime_config = read_runtime_config()
+QDRANT_HOST = runtime_config.qdrant_host
+QDRANT_PORT = runtime_config.qdrant_port
 QDRANT_COLLECTION = "session_context"
 
 def get_db_connection():
     """获取数据库连接"""
-    # 使用连接字符串而不是字典
-    conn_string = f"host=localhost port=5432 dbname=rag_db user=rag_user password={os.environ.get('POSTGRES_PASSWORD', 'rag_password')}"
+    pg_config = tool_pg_config()
+    conn_string = (
+        f"host={pg_config['host']} port={pg_config['port']} dbname={pg_config['database']} "
+        f"user={pg_config['user']} password={pg_config['password']}"
+    )
     return psycopg2.connect(conn_string)
 
 def price_query(query: str, period: Optional[str] = None, category: Optional[str] = None,

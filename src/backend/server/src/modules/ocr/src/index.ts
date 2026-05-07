@@ -8,6 +8,7 @@ import {
   OCRTextBlock,
   OCRResult
 } from '../../common/types'
+import { runtimeConfig } from '../../../config/runtime'
 
 // ==================== 配置类型 ====================
 
@@ -54,17 +55,17 @@ export interface DocumentChunk {
 // ==================== 默认配置 ====================
 
 const defaultOCRConfig: OCRConfig = {
-  ocrServiceUrl: process.env.OCR_SERVICE_URL || 'http://localhost:8001',
-  language: 'ch',
-  dpi: 300,
-  timeout: 300000,
-  useGPU: false
+  ocrServiceUrl: runtimeConfig.services.ocrApiUrl,
+  language: runtimeConfig.ocr.language,
+  dpi: runtimeConfig.ocr.dpi,
+  timeout: runtimeConfig.ocr.timeoutMs,
+  useGPU: runtimeConfig.ocr.useGpu
 }
 
 const defaultChunkConfig: ChunkConfig = {
-  chunkSize: 512,
-  chunkOverlap: 50,
-  minChunkSize: 100
+  chunkSize: runtimeConfig.ocr.chunkSize,
+  chunkOverlap: runtimeConfig.ocr.chunkOverlap,
+  minChunkSize: runtimeConfig.ocr.minChunkSize
 }
 
 // ==================== Python OCR 服务响应类型 ====================

@@ -142,11 +142,11 @@ proxy: {
 
 ### 3.4 消除循环依赖 ✅
 
-**提取共享类型文件:**
+**当时提取的共享类型文件（现已随旧前端原型一并删除）:**
 - `src/components/chat/types.ts` — `PipelineStage`, `PipelineState`
 - `src/components/pipeline/types.ts` — `UploadFile`, `PipelineStats`, `DatabaseHealth`, `EvaluationMetrics`
 
-**修改引用:**
+**当时的引用关系（历史记录）:**
 - `ChatInterface.tsx` / `TaskPipelineVisual.tsx` → 从 `./types` 导入
 - `DataPipelineDashboard.tsx` / 5 个子组件 → 从 `./types` 导入
 

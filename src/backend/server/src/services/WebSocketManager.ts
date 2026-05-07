@@ -5,15 +5,19 @@
 
 import { DashboardEvent, SystemVitals } from '@rag/shared';
 
-const GATEWAY_URL = process.env.WS_GATEWAY_URL || 'http://localhost:8081/broadcast';
+export interface WebSocketManagerConfig {
+  gatewayUrl: string;
+}
 
 export class WebSocketManager {
+  constructor(private readonly config: WebSocketManagerConfig) {}
+
   /**
    * 广播事件到 Go WebSocket 网关
    */
   broadcast(event: DashboardEvent) {
     // 异步发送，不阻塞调用方
-    fetch(GATEWAY_URL, {
+    fetch(this.config.gatewayUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event)

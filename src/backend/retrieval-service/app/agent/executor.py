@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +25,12 @@ from typing import Any, Dict, List, Optional
 
 import psycopg2
 import yaml
+from app.agent.event_ledger import insert_improvement_event
+from app.agent.learning_state import (
+    DEFAULT_OBSERVATION_WINDOW_DAYS,
+    coerce_json_dict,
+    update_knowledge_gap_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +74,9 @@ class PatchExecutor:
             pool: psycopg2.pool.ThreadedConnectionPool，若为None则使用工具的默认池
         """
         self.pool = pool
-        self.test_script = Path(__file__).parent.parent.parent.parent.parent / "tests" / "test_agent_16.py"
-        self.config_path = Path(__file__).parent.parent.parent.parent.parent / "config" / "config.yaml"
-        self.repo_root = Path(__file__).parent.parent.parent.parent.parent
+        self.repo_root = Path(__file__).resolve().parents[5]
+        self.test_script = self.repo_root / "tests" / "test_agent_16.py"
+        self.config_path = self.repo_root / "config" / "config.yaml"
 
     def _get_pool(self):
         """获取数据库连接池"""
@@ -225,9 +232,10 @@ class PatchExecutor:
     async def _health_check(self):
         """快速健康检查：确保系统还能启动"""
         try:
-            # 尝试 import 主服务，检查配置合法性
-            from app.agent.graph import create_agent_graph
-            graph = create_agent_graph()
+            # Compile or fetch the current agent graph to validate config/runtime wiring.
+            from app.agent.graph import get_agent_graph
+
+            get_agent_graph()
             logger.info("✅ Health check passed")
         except Exception as e:
             raise Exception(f"❌ Health check failed: {e}")
@@ -464,10 +472,36 @@ class PatchExecutor:
                 """,
                 (patch.event_id,),
             )
+            insert_improvement_event(
+                cursor,
+                event_id=patch.event_id,
+                patch_id=patch.patch_id,
+                affected_route=patch.affected_route,
+                patch_type=patch.patch_type,
+                status="applied",
+                event_type="improvement.event.applied",
+                gap_key=patch.patch_payload.get("gap_key"),
+                recovery_point=patch.recovery_point,
+            )
 
             conn.commit()
             cursor.close()
             logger.info(f"Recorded patch application in DB: event_id={patch.event_id}")
+
+            gap_key = patch.patch_payload.get("gap_key")
+            if gap_key:
+                try:
+                    update_knowledge_gap_status(
+                        gap_key,
+                        "in_progress",
+                        f"Applying strategy: {patch.patch_payload.get('description') or patch.patch_type}",
+                        metadata_patch={"event_id": patch.event_id, "last_execution_phase": "applied"},
+                        linked_event_id=patch.event_id,
+                        owner="auto_executor",
+                        pool=self.pool,
+                    )
+                except Exception:
+                    logger.warning("Failed to mark knowledge gap in progress", exc_info=True)
 
         except Exception as e:
             logger.error(f"Failed to record application: {e}")
@@ -502,13 +536,86 @@ class PatchExecutor:
                 """,
                 (json.dumps(verification_result), patch.event_id),
             )
+            insert_improvement_event(
+                cursor,
+                event_id=patch.event_id,
+                patch_id=patch.patch_id,
+                affected_route=patch.affected_route,
+                patch_type=patch.patch_type,
+                status="verified" if after_rate > before_rate else "blocked",
+                event_type="improvement.event.verified",
+                gap_key=patch.patch_payload.get("gap_key"),
+                verification_result=verification_result,
+                recovery_point=patch.recovery_point,
+            )
 
             conn.commit()
             cursor.close()
             logger.info(f"Recorded verification result in DB: event_id={patch.event_id}")
 
+            gap_key = patch.patch_payload.get("gap_key")
+            if gap_key:
+                final_status = "observing" if after_rate > before_rate else "blocked"
+                try:
+                    update_knowledge_gap_status(
+                        gap_key,
+                        final_status,
+                        (
+                            f"{patch.patch_payload.get('description') or patch.patch_type}: "
+                            f"{before_rate:.1%} -> {after_rate:.1%} "
+                            f"(delta {after_rate - before_rate:+.1%})"
+                        ),
+                        metadata_patch={
+                            "event_id": patch.event_id,
+                            "verification_result": verification_result,
+                            "last_execution_phase": "verified",
+                            "observation_window_days": DEFAULT_OBSERVATION_WINDOW_DAYS,
+                        },
+                        linked_event_id=patch.event_id,
+                        owner="auto_executor",
+                        observation_window_days=DEFAULT_OBSERVATION_WINDOW_DAYS,
+                        pool=self.pool,
+                    )
+                except Exception:
+                    logger.warning("Failed to update final knowledge gap state", exc_info=True)
+
         except Exception as e:
             logger.error(f"Failed to record verification: {e}")
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                self._put_db_conn(conn, error=False)
+
+    async def _record_failure(self, patch: PatchApplication, error: Exception):
+        """Persist executor failures so event status does not remain stuck in applied/approved."""
+        conn = None
+        try:
+            conn = self._get_db_conn()
+            cursor = conn.cursor()
+
+            verification_result = {
+                "success": False,
+                "status": "failed",
+                "error": str(error),
+                "failed_at": datetime.utcnow().isoformat() + "Z",
+            }
+
+            cursor.execute(
+                """
+                UPDATE improvement_events
+                SET verification_result = COALESCE(verification_result, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s
+                """,
+                (json.dumps(verification_result), patch.event_id),
+            )
+
+            conn.commit()
+            cursor.close()
+            logger.info("Recorded executor failure in DB: event_id=%s", patch.event_id)
+        except Exception as exc:
+            logger.error("Failed to record executor failure: %s", exc)
             if conn:
                 conn.rollback()
             raise
@@ -567,12 +674,20 @@ class PatchExecutor:
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
 
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(process.communicate(), timeout=5)
+                except Exception:
+                    pass
                 raise subprocess.TimeoutExpired(cmd, timeout)
 
             if process.returncode != 0:
@@ -628,7 +743,7 @@ async def execute_improvement_event(event_id: int, pool=None) -> Dict[str, Any]:
 
         cursor.execute(
             """
-            SELECT id, affected_route, patch_payload
+            SELECT id, affected_route, patch_payload, applied_at, reverted_at, verified_at, verification_result
             FROM improvement_events
             WHERE id = %s
             """,
@@ -644,7 +759,63 @@ async def execute_improvement_event(event_id: int, pool=None) -> Dict[str, Any]:
     if not row:
         raise ValueError(f"Event not found: {event_id}")
 
-    event_id_db, affected_route, patch_payload = row
+    (
+        event_id_db,
+        affected_route,
+        patch_payload,
+        applied_at,
+        reverted_at,
+        verified_at,
+        verification_result,
+    ) = row
+    patch_payload = coerce_json_dict(patch_payload)
+    verification_result = coerce_json_dict(verification_result)
+    review_status = patch_payload.get("review", {}).get("status")
+
+    if review_status == "rejected":
+        return {
+            "patch_id": f"patch_{event_id}",
+            "status": "rejected",
+            "verification_result": verification_result or None,
+            "error": "Event was rejected and cannot be executed",
+            "success": False,
+        }
+
+    if reverted_at:
+        return {
+            "patch_id": f"patch_{event_id}",
+            "status": "reverted",
+            "verification_result": verification_result or None,
+            "error": "Event was reverted and cannot be executed",
+            "success": False,
+        }
+
+    if verified_at:
+        return {
+            "patch_id": f"patch_{event_id}",
+            "status": "verified",
+            "verification_result": verification_result or None,
+            "error": None,
+            "success": True,
+        }
+
+    if verification_result.get("status") == "failed" or verification_result.get("success") is False:
+        return {
+            "patch_id": f"patch_{event_id}",
+            "status": "failed",
+            "verification_result": verification_result or None,
+            "error": verification_result.get("error"),
+            "success": False,
+        }
+
+    if review_status not in {None, "approved"}:
+        return {
+            "patch_id": f"patch_{event_id}",
+            "status": review_status,
+            "verification_result": verification_result or None,
+            "error": "Event is not approved for execution",
+            "success": False,
+        }
 
     # 构建补丁对象
     patch = PatchApplication(
@@ -657,8 +828,11 @@ async def execute_improvement_event(event_id: int, pool=None) -> Dict[str, Any]:
     )
 
     try:
-        # 执行：应用 → 验证 → 记录
-        patch = await executor.apply_patch(patch)
+        if applied_at:
+            patch.status = PatchStatus.APPLIED
+            patch.applied_at = applied_at.timestamp()
+        else:
+            patch = await executor.apply_patch(patch)
         patch = await executor.verify_patch(patch)
 
         return {
@@ -670,6 +844,26 @@ async def execute_improvement_event(event_id: int, pool=None) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        patch.status = PatchStatus.FAILED
+        patch.error_msg = str(e)
+        try:
+            await executor._record_failure(patch, e)
+        except Exception:
+            logger.warning("Failed to persist executor failure state", exc_info=True)
+        gap_key = patch.patch_payload.get("gap_key") if isinstance(patch.patch_payload, dict) else None
+        if gap_key:
+            try:
+                update_knowledge_gap_status(
+                    gap_key,
+                    "blocked",
+                    f"Execution failed: {e}",
+                    metadata_patch={"event_id": patch.event_id, "execution_error": str(e)},
+                    linked_event_id=patch.event_id,
+                    owner="auto_executor",
+                    pool=pool,
+                )
+            except Exception:
+                logger.warning("Failed to update knowledge gap after executor error", exc_info=True)
         logger.error(f"Execution failed: {e}", exc_info=True)
         return {
             "patch_id": patch.patch_id,

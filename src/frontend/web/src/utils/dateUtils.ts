@@ -9,7 +9,27 @@ const FALLBACK = '—';
 /** Coerce any date-like value to a valid Date, or null. */
 function toDate(val: unknown): Date | null {
   if (val == null || val === '' || val === 0 || val === '0') return null;
-  const d = val instanceof Date ? val : new Date(val as string | number);
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? null : val;
+  }
+
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    const normalized = val > 0 && val < 1e11 ? val * 1000 : val;
+    const d = new Date(normalized);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      return toDate(Number(trimmed));
+    }
+    const d = new Date(trimmed);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  const d = new Date(val as string | number);
   return isNaN(d.getTime()) ? null : d;
 }
 

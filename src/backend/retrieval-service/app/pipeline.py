@@ -84,12 +84,16 @@ class UnifiedRetrievalPipeline:
         self, request: RetrievalRequest, request_id: str
     ) -> List[RetrievedDocument]:
         """简单检索"""
+        # Phase 1+ Task 1: Externalize top_k parameter
+        from config.param_registry import param
+        default_top_k = param("retrieval_default_top_k", default=8)
+        
         search_query = SearchQuery(
             query_id=request_id,
             text=request.query,
             session_id=request.session_id,
             mode="hybrid",
-            top_k=10,
+            top_k=default_top_k,
             filters=request.filters,
         )
 

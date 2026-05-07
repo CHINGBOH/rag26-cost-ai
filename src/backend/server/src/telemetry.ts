@@ -2,11 +2,13 @@
  * OpenTelemetry 启动模块
  * 必须被 src/index.ts 顶部第一个 import，确保 SDK 在其他模块加载前注册全局 hooks
  *
- * Opt-in：仅在 OTEL_EXPORTER_OTLP_ENDPOINT 环境变量存在时启用
+ * Opt-in：仅在 runtimeConfig.telemetry.endpoint 存在时启用
  * 配套基础设施：infrastructure/docker-compose.tracing.yml (Tempo + Grafana + Prom)
  */
 
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+import { runtimeConfig } from './config/runtime';
+
+const endpoint = runtimeConfig.telemetry.endpoint;
 
 if (endpoint) {
   try {
@@ -25,7 +27,7 @@ if (endpoint) {
     const url = `${endpoint.replace(/\/$/, '')}/v1/traces`;
     const sdk = new NodeSDK({
       resource: resourceFromAttributes({
-        [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'node-orchestrator',
+        [ATTR_SERVICE_NAME]: runtimeConfig.telemetry.serviceName,
       }),
       traceExporter: new OTLPTraceExporter({ url }),
       instrumentations: [

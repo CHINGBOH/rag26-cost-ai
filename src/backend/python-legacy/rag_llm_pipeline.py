@@ -15,28 +15,26 @@ from enum import Enum
 import json
 import re
 import hashlib
+from pathlib import Path
 
 import asyncpg
 import numpy as np
 
 # 添加项目路径
-sys.path.insert(0, '/home/l/rag-dashboard/src/backend/python-legacy')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# 配置
-EMBEDDING_MODEL_PATH = "/home/l/rag-dashboard/models/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181"
-RERANK_MODEL_PATH = "/home/l/rag-dashboard/models/models--BAAI--bge-reranker-v2-m3/snapshots/953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+from config.runtime import read_runtime_config, tool_pg_config
 
-DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "database": "rag_db",
-    "user": "rag_user",
-    "password": os.environ.get("POSTGRES_PASSWORD", "rag_password")
-}
+runtime_config = read_runtime_config()
+EMBEDDING_MODEL_PATH = runtime_config.embedding_model_path
+EMBEDDING_MODEL_NAME = runtime_config.embedding_model_name
+RERANK_MODEL_PATH = runtime_config.rerank_model_path
+RERANK_MODEL_NAME = runtime_config.rerank_model_name
+DB_CONFIG = tool_pg_config()
 
 # 日志配置
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, runtime_config.log_level, logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -435,7 +433,7 @@ class RAGLLMPipeline:
                 self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_PATH)
                 logger.info("✓ 使用本地BAAI embedding模型")
             else:
-                self.embedding_model = SentenceTransformer('BAAI/bge-m3')
+                self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
                 logger.info("✓ 使用远程BAAI embedding模型")
             
             # 加载Rerank模型
@@ -444,7 +442,7 @@ class RAGLLMPipeline:
                 self.rerank_model = CrossEncoder(RERANK_MODEL_PATH)
                 logger.info("✓ 使用本地BAAI rerank模型")
             else:
-                self.rerank_model = CrossEncoder('BAAI/bge-reranker-v2-m3')
+                self.rerank_model = CrossEncoder(RERANK_MODEL_NAME)
                 logger.info("✓ 使用远程BAAI rerank模型")
             
             self.models_loaded = True

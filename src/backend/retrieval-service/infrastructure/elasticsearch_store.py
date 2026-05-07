@@ -17,14 +17,11 @@ Index schema (chunks_v1):
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+from app.runtime_config import read_runtime_config
 
-INDEX_NAME = os.getenv("ES_INDEX_NAME", "rag_chunks_v1")
-ES_URL = os.getenv("ES_URL", "http://localhost:9200")
-ES_TIMEOUT = float(os.getenv("ES_TIMEOUT", "5.0"))
+logger = logging.getLogger(__name__)
 
 
 _INDEX_MAPPING: Dict[str, Any] = {
@@ -67,30 +64,35 @@ def _client():
     except ImportError:
         logger.warning("[es_store] elasticsearch package not installed")
         return None
-    return Elasticsearch(ES_URL, request_timeout=ES_TIMEOUT)
+    runtime = read_runtime_config()
+    return Elasticsearch(
+        runtime.elasticsearch_url,
+        request_timeout=runtime.elasticsearch_timeout_seconds,
+    )
 
 
 def is_enabled() -> bool:
     """Whether ES backend is selected via env."""
-    return os.getenv("KEYWORD_BACKEND", "pgsql").lower() == "es"
+    return read_runtime_config().keyword_backend.lower() == "es"
 
 
 def health() -> Dict[str, Any]:
     """Probe ES cluster + index. Used by /api/v1/architecture/live and /health."""
     client = _client()
+    runtime = read_runtime_config()
     if client is None:
         return {"available": False, "reason": "elasticsearch package not installed"}
     try:
         cluster = client.cluster.health(timeout="3s")
-        index_exists = client.indices.exists(index=INDEX_NAME)
+        index_exists = client.indices.exists(index=runtime.elasticsearch_index_name)
         doc_count = 0
         if index_exists:
-            doc_count = client.count(index=INDEX_NAME).get("count", 0)
+            doc_count = client.count(index=runtime.elasticsearch_index_name).get("count", 0)
         return {
             "available": True,
             "cluster_status": cluster.get("status"),  # green / yellow / red
             "nodes": cluster.get("number_of_nodes"),
-            "index": INDEX_NAME,
+            "index": runtime.elasticsearch_index_name,
             "index_exists": bool(index_exists),
             "doc_count": int(doc_count),
         }
@@ -101,13 +103,14 @@ def health() -> Dict[str, Any]:
 def ensure_index() -> bool:
     """Create the chunks index with IK analyzers if it does not exist."""
     client = _client()
+    runtime = read_runtime_config()
     if client is None:
         return False
     try:
-        if client.indices.exists(index=INDEX_NAME):
+        if client.indices.exists(index=runtime.elasticsearch_index_name):
             return True
-        client.indices.create(index=INDEX_NAME, body=_INDEX_MAPPING)
-        logger.info("[es_store] created index %s", INDEX_NAME)
+        client.indices.create(index=runtime.elasticsearch_index_name, body=_INDEX_MAPPING)
+        logger.info("[es_store] created index %s", runtime.elasticsearch_index_name)
         return True
     except Exception as exc:
         logger.error("[es_store] ensure_index failed: %s", exc)
@@ -117,6 +120,7 @@ def ensure_index() -> bool:
 def bulk_index(docs: List[Dict[str, Any]]) -> int:
     """Bulk-index a batch of chunk docs. Returns successfully indexed count."""
     client = _client()
+    runtime = read_runtime_config()
     if client is None or not docs:
         return 0
     try:
@@ -125,7 +129,7 @@ def bulk_index(docs: List[Dict[str, Any]]) -> int:
         actions = [
             {
                 "_op_type": "index",
-                "_index": INDEX_NAME,
+                "_index": runtime.elasticsearch_index_name,
                 "_id": d["chunk_id"],
                 "_source": d,
             }
@@ -147,6 +151,7 @@ def search(query: str, top_k: int = 10) -> List[Dict[str, Any]]:
     if not query or not query.strip():
         return []
     client = _client()
+    runtime = read_runtime_config()
     if client is None:
         return []
     try:
@@ -162,7 +167,7 @@ def search(query: str, top_k: int = 10) -> List[Dict[str, Any]]:
             },
             "_source": ["chunk_id", "doc_id", "content", "page_number", "section", "path"],
         }
-        resp = client.search(index=INDEX_NAME, body=body)
+        resp = client.search(index=runtime.elasticsearch_index_name, body=body)
         hits = resp.get("hits", {}).get("hits", [])
         out: List[Dict[str, Any]] = []
         for h in hits:
@@ -191,10 +196,11 @@ def search(query: str, top_k: int = 10) -> List[Dict[str, Any]]:
 def delete_index() -> bool:
     """Drop the index (for re-creation in scripts/tests)."""
     client = _client()
+    runtime = read_runtime_config()
     if client is None:
         return False
     try:
-        client.indices.delete(index=INDEX_NAME, ignore_unavailable=True)
+        client.indices.delete(index=runtime.elasticsearch_index_name, ignore_unavailable=True)
         return True
     except Exception as exc:
         logger.error("[es_store] delete_index failed: %s", exc)

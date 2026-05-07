@@ -33,6 +33,14 @@ from infrastructure.vector_store import create_vector_store_adapter
 from app.runtime_config import postgres_connection_kwargs, read_runtime_config
 from app.runtime_overrides import get_runtime_override
 
+# Phase 1: Import RetrievalPresets for unified top_k (#116)
+import sys
+from pathlib import Path
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from config.retrieval_presets import RetrievalPresets
+
 logger = logging.getLogger(__name__)
 
 RETRIEVAL_PATH_DATABASE = "database"
@@ -1384,11 +1392,15 @@ def _expand_concept_hits_heuristic(conn, query: str, concept_hits: list[dict], t
                 if not local_hits:
                     local_hits.extend(_query_text_chunks_literal(conn, concept_name, top_k=top_k))
             else:
+                # Phase 1+ Task 1: Externalize drill-down top_k
+                from config.param_registry import param
+                drill_top_k = param("price_query_page_top_k", default=1)
+                
                 drill_terms = concept_terms[:2] if concept_terms else [concept_name]
                 for term in drill_terms:
-                    local_hits.extend(_query_text_chunks_literal(conn, term, top_k=1))
+                    local_hits.extend(_query_text_chunks_literal(conn, term, top_k=drill_top_k))
                 if _should_include_structured_tables(query):
-                    local_hits.extend(_query_structured_tables(query, top_k=1))
+                    local_hits.extend(_query_structured_tables(query, top_k=drill_top_k))
         except Exception as e:
             conn.rollback()
             logger.warning(f"[concept_expand] failed for concept '{concept_name}': {e}")
@@ -4219,17 +4231,22 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
         existing_months = {str(r[0]) for r in rows}
         fallback_chunks: list[dict] = []
         months_to_fill = [month for month in _iter_months(start_month, end_month) if month not in existing_months]
+        # Phase 1+ Task 1: Externalize price query fallback top_k
+        from config.param_registry import param
+        page_top_k = param("price_query_page_top_k", default=1)
+        text_top_k = param("price_query_text_top_k", default=5)
+        
         for month in months_to_fill:
             prefer_page_fallback = any(token in material_name for token in ("装配式", "预制构件"))
             fallback_rows: list[dict] = []
             if prefer_page_fallback:
-                fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=1)
+                fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=page_top_k)
                 if not fallback_rows:
-                    fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=5)
+                    fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=text_top_k)
             else:
-                fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=5)
+                fallback_rows = _query_material_text_fallback(conn, material_name, month, top_k=text_top_k)
                 if not fallback_rows:
-                    fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=1)
+                    fallback_rows = _query_material_page_fallback(conn, material_name, month, top_k=page_top_k)
             if not fallback_rows:
                 fallback_rows = _query_material_ocr_fallback(material_name, month)
             if not fallback_rows:
@@ -6047,9 +6064,12 @@ def proactive_explore(question: str, max_concepts: int = 3, neighbor_top_k: int 
                 entry["downstream"] = (ud or {}).get("downstream", [])[:6]
             except Exception:
                 pass
+            # Phase 1+ Task 1: Externalize graph cooccurrence top_k
             try:
-                co = json.loads(entity_cooccur(nm, top_k=6))
-                entry["cooccur"] = (co or {}).get("cooccur", [])[:6]
+                from config.param_registry import param
+                cooccur_top_k = param("graph_cooccur_top_k", default=6)
+                co = json.loads(entity_cooccur(nm, top_k=cooccur_top_k))
+                entry["cooccur"] = (co or {}).get("cooccur", [])[:cooccur_top_k]
             except Exception:
                 pass
             out["concepts"].append(entry)

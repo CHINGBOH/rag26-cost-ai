@@ -6,7 +6,10 @@
 from dataclasses import dataclass, field
 from typing import Optional
 import os
+from urllib.parse import urlparse
 import yaml
+
+from app.runtime_config import postgres_connection_kwargs, read_runtime_config, redis_connection_kwargs
 
 
 @dataclass
@@ -67,27 +70,32 @@ class StoreConfig:
     @classmethod
     def from_env(cls) -> "StoreConfig":
         """从环境变量加载配置"""
+        runtime = read_runtime_config()
+        postgres = postgres_connection_kwargs()
+        redis = redis_connection_kwargs()
+        qdrant = urlparse(runtime.qdrant_url)
         return cls(
             qdrant=QdrantConfig(
-                host=os.getenv("QDRANT_HOST", "localhost"),
-                port=int(os.getenv("QDRANT_PORT", "6333")),
-                collection_name=os.getenv("QDRANT_COLLECTION_NAME", "session_context"),
-                timeout=int(os.getenv("QDRANT_TIMEOUT", "30")),
-                pool_size=int(os.getenv("QDRANT_POOL_SIZE", "10")),
+                host=qdrant.hostname or "localhost",
+                port=qdrant.port or 6333,
+                collection_name=runtime.qdrant_session_collection,
+                timeout=runtime.qdrant_timeout_seconds,
+                pool_size=runtime.qdrant_pool_size,
             ),
             postgres=PostgresConfig(
-                host=os.getenv("POSTGRES_HOST", "localhost"),
-                port=int(os.getenv("POSTGRES_PORT", "5432")),
-                database=os.getenv("POSTGRES_DB", "rag_db"),
-                user=os.getenv("POSTGRES_USER", "rag_user"),
-                password=os.getenv("POSTGRES_PASSWORD", ""),
-                max_connections=int(os.getenv("POSTGRES_MAX_CONNECTIONS", "20")),
+                host=str(postgres["host"]),
+                port=int(postgres["port"]),
+                database=str(postgres["dbname"]),
+                user=str(postgres["user"]),
+                password=str(postgres["password"]),
+                max_connections=runtime.postgres_max_connections,
             ),
             cache=CacheConfig(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", "6379")),
-                password=os.getenv("REDIS_PASSWORD"),
-                max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "50")),
-                socket_timeout=int(os.getenv("REDIS_SOCKET_TIMEOUT", "10")),
+                host=str(redis["host"]),
+                port=int(redis["port"]),
+                db=int(redis["db"]),
+                password=redis["password"],
+                max_connections=runtime.redis_max_connections,
+                socket_timeout=runtime.redis_socket_timeout_seconds,
             ),
         )

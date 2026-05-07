@@ -3,7 +3,9 @@
  * 唯一的问答 API 入口
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+import { getApiBaseUrl } from '../config/runtime';
+
+const API_BASE = getApiBaseUrl();
 
 export interface AgentChunk {
   chunk_id: string;

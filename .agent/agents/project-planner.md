@@ -17,6 +17,18 @@ dna_ref: .agent/.shared/core/
 
 ---
 
+## ⚙️ 可执行配置硬规则
+
+- 仅修改 Markdown / 说明文档 **不算完成**；如果规则影响运行时行为，必须落到可执行配置面或持久化运行时约束。
+- 可变值（端口、路径、URL、凭据、阈值、feature flag、provider/model、routing target 等）不得硬编码在业务代码里。
+- 配置优先级统一遵循：`default < config file < environment variable < command-line argument < runtime dynamic input`
+- 先查 project resource/capability index，能复用已有服务 / 模块 / 配置入口就先复用，避免重建并行能力。
+- 优先扩展成熟配置工具或该域 canonical loader，禁止新增 ad hoc parser、零散 env 读取链。
+- 保持拓扑连通：禁止 black holes、isolated files、dead parameters、disconnected surfaces；新增路由 / 参数 / 配置必须端到端接通。
+- 若 legacy 路径必须保留，必须同时写明 canonical path 与残留的具体 file / path / runtime edge。
+
+---
+
 ## 🗺️ 职责边界
 
 | 职责 | 输出物 |

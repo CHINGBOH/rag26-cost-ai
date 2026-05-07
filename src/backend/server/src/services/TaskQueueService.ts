@@ -7,9 +7,11 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import { EventEmitter } from 'events';
 import Redis from 'ioredis';
 
-interface TaskQueueConfig {
+export interface TaskQueueConfig {
   redisUrl: string;
   concurrency: number;
+  evaluationConcurrency: number;
+  ocrConcurrency: number;
 }
 
 interface RetrievalTask {
@@ -52,12 +54,9 @@ export class TaskQueueService {
   private config: TaskQueueConfig;
   private ocrJobHandler: ((job: OCRTask) => Promise<any>) | null = null;
 
-  constructor(eventEmitter: EventEmitter, config?: Partial<TaskQueueConfig>) {
+  constructor(eventEmitter: EventEmitter, config: TaskQueueConfig) {
     this.eventEmitter = eventEmitter;
-    this.config = {
-      redisUrl: config?.redisUrl || process.env.REDIS_URL || 'redis://localhost:6379',
-      concurrency: config?.concurrency || 3
-    };
+    this.config = config;
 
     this.redis = new Redis(this.config.redisUrl, {
       maxRetriesPerRequest: null,
@@ -147,7 +146,7 @@ export class TaskQueueService {
         
         return { status: 'processing', sessionId, query };
       },
-      { connection: this.redis, concurrency: 5 }
+      { connection: this.redis, concurrency: this.config.evaluationConcurrency }
     );
     this.workers.set('evaluation', evaluationWorker);
 
@@ -172,7 +171,7 @@ export class TaskQueueService {
           return { status: 'completed', jobId, mock: true };
         }
       },
-      { connection: this.redis, concurrency: 2 }
+      { connection: this.redis, concurrency: this.config.ocrConcurrency }
     );
     this.workers.set('ocr', ocrWorker);
 

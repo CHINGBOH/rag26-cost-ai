@@ -10,6 +10,8 @@ import json
 import logging
 from datetime import datetime
 
+from config.runtime import REPO_ROOT
+
 # 配置日志
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -223,7 +225,7 @@ def update_tools_file(storage):
         })
     
     # 读取tools.ts文件
-    tools_file_path = '/home/l/rag-dashboard/src/backend/server/src/modules/agent/src/tools.ts'
+    tools_file_path = REPO_ROOT / "src" / "backend" / "server" / "src" / "modules" / "agent" / "src" / "tools.ts"
     try:
         with open(tools_file_path, 'r', encoding='utf-8') as f:
             content = f.read()

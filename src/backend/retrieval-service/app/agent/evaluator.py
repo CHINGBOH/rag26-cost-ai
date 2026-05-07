@@ -44,6 +44,39 @@ def evaluate_retrieval_quality(
 
             passed = has_chunks and has_price_number
 
+            # Phase 1+ Task 2: Observability integration for price query evaluation
+            try:
+                from config.observability import log_decision, DecisionType
+                log_decision(
+                    decision_type=DecisionType.EVALUATION_SCORE,
+                    context={
+                        "query_type": "price",
+                        "history_rounds": history_rounds,
+                        "chunks_count": len(chunks),
+                        "answer_length": len(generated_answer)
+                    },
+                    params_used={
+                        "requires_chunks": True,
+                        "requires_price_number": True
+                    },
+                    outcome={
+                        "passed": passed,
+                        "has_chunks": has_chunks,
+                        "has_price_number": has_price_number,
+                        "confidence": confidence
+                    },
+                    reason=(
+                        f"Price query evaluation: chunks={'✓' if has_chunks else '✗'}, "
+                        f"price_number={'✓' if has_price_number else '✗'} → {'PASS' if passed else 'FAIL'}"
+                    ),
+                    confidence=confidence,
+                    metadata={
+                        "current_year_month": current_year_month
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"[Evaluator] Observability logging failed: {e}")
+
             return {
                 "passed": passed,
                 "completeness": 0.9 if has_chunks else 0.3,
@@ -84,6 +117,42 @@ def evaluate_retrieval_quality(
         confidence = (completeness + consistency + fact_consistency + source_diversity) / 4
 
         passed = confidence >= 0.7 and fact_consistency >= 0.6
+
+        # Phase 1+ Task 2: Observability integration for evaluation scoring
+        try:
+            from config.observability import log_decision, DecisionType
+            log_decision(
+                decision_type=DecisionType.EVALUATION_SCORE,
+                context={
+                    "query_type": query_type,
+                    "history_rounds": history_rounds,
+                    "chunks_count": len(chunks),
+                    "answer_length": len(generated_answer)
+                },
+                params_used={
+                    "confidence_threshold": 0.7,
+                    "fact_consistency_threshold": 0.6
+                },
+                outcome={
+                    "passed": passed,
+                    "confidence": confidence,
+                    "fact_consistency": fact_consistency,
+                    "completeness": completeness,
+                    "source_diversity": source_diversity
+                },
+                reason=(
+                    f"Semantic query evaluation: confidence={confidence:.2f}, "
+                    f"fact_consistency={fact_consistency:.2f} → {'PASS' if passed else 'FAIL'}"
+                ),
+                confidence=confidence,
+                metadata={
+                    "avg_chunk_score": avg_score,
+                    "total_length": total_length,
+                    "citations_found": len(citations)
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[Evaluator] Observability logging failed: {e}")
 
         return {
             "passed": passed,

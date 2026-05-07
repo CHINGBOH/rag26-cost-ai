@@ -58,6 +58,14 @@ export interface PipelineStats {
   throughput: number;
 }
 
+export interface PipelineConfig {
+  uploadDir: string;
+  pythonApiUrl: string;
+  ocrApiUrl: string;
+  maxConcurrent: number;
+  processingLoopIntervalMs: number;
+}
+
 export class PipelineService {
   private eventEmitter: EventEmitter;
   private files: Map<string, PipelineFile> = new Map();
@@ -66,7 +74,8 @@ export class PipelineService {
   private ocrApiUrl: string;
   private processingQueue: string[] = [];
   private isProcessing: boolean = false;
-  private maxConcurrent: number = 5;
+  private maxConcurrent: number;
+  private processingLoopIntervalMs: number;
   private stats: PipelineStats = {
     totalFiles: 0,
     completedFiles: 0,
@@ -77,11 +86,13 @@ export class PipelineService {
     throughput: 0
   };
 
-  constructor(eventEmitter: EventEmitter) {
+  constructor(eventEmitter: EventEmitter, config: PipelineConfig) {
     this.eventEmitter = eventEmitter;
-    this.uploadDir = process.env.UPLOAD_DIR || '/tmp/rag-uploads';
-    this.pythonApiUrl = process.env.PYTHON_API_URL || 'http://localhost:8000';
-    this.ocrApiUrl = process.env.OCR_API_URL || 'http://localhost:8001';
+    this.uploadDir = config.uploadDir;
+    this.pythonApiUrl = config.pythonApiUrl;
+    this.ocrApiUrl = config.ocrApiUrl;
+    this.maxConcurrent = config.maxConcurrent;
+    this.processingLoopIntervalMs = config.processingLoopIntervalMs;
     
     // 确保上传目录存在
     if (!fs.existsSync(this.uploadDir)) {
@@ -316,7 +327,7 @@ export class PipelineService {
       }
 
       this.isProcessing = false;
-    }, 1000);
+    }, this.processingLoopIntervalMs);
   }
 
   /**

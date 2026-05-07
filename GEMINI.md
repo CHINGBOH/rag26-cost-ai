@@ -90,6 +90,16 @@ Use these commands to trigger specialized workflows:
 - **/update-docs**: Sync documentation with code.
 - **/visually**: Visualize logic & architecture.
 
+## Project Governance Overrides
+
+- Externalize mutable runtime values; do not hardcode ports, hosts, URLs, paths, credentials, thresholds, feature flags, or routing targets in business logic.
+- Keep precedence fixed: `default < config file < environment variable < command-line argument < runtime dynamic input`.
+- Extend canonical loaders or mature config tooling; do not add ad hoc parsers or scattered env reads.
+- Reuse before rebuild: check the project resource/capability index before creating new modules, services, workflows, or config surfaces.
+- Preserve topology connectivity: no black-hole routes, isolated files, dead parameters, or disconnected surfaces.
+- If legacy survives, name the canonical path and the exact surviving legacy edge.
+- Markdown-only policy edits do not enforce runtime/config behavior; executable surfaces must do that.
+
 ## Custom Instructions
 
 Add your project-specific instructions here.

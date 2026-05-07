@@ -110,6 +110,62 @@ Transform imperative tasks into verifiable goals:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+### 5. Hard Cutover Discipline
+
+**Do not keep fake legacy chains alive.**
+
+This repository has enough issue tracking and Git history to support rollback. Agents must not preserve obsolete runtime paths merely as psychological safety nets.
+
+**Mandatory rules:**
+- When a new canonical path is adopted, prefer cutting over fully instead of leaving old read/write/fallback paths active.
+- Delete or hard-disable pseudo-paths in the same task whenever feasible: duplicate readers, duplicate writers, JSONL side channels, migration shims, compatibility-only branches, and dead fallback logic.
+- Temporary dual-write or dual-read is allowed only for a bounded migration and must have an explicit removal condition. "We'll clean it up later" is not acceptable.
+- A task is not complete if only one layer was switched. Cutover must propagate through runtime writes, reads, APIs, UI surfaces, jobs, monitors, and tests.
+- If a legacy path cannot be removed in the current task, state both the canonical path and the exact surviving file/path/edge explicitly instead of silently leaving it behind.
+
+**Default bias:** prefer deletion, consolidation, and routing everything to the canonical path over adding more wrapper code around legacy behavior.
+
+### 6. Traceability Discipline
+
+**Behavior changes must leave dated, time-stamped evidence.**
+
+Mandatory rules:
+- Any cutover, manual intervention, migration, restart, deletion, or fallback disablement must leave a trace in an existing durable audit surface whenever feasible.
+- New operational traces should prefer ISO 8601 timestamps with timezone.
+- A trace should identify actor, action, target, reason, and outcome so later investigation can reconstruct what changed and when.
+- Do not make silent runtime behavior changes if the system has no durable trace; add traceability in the same task when possible.
+- Prefer canonical audit channels such as event tables, structured logs, and existing state records over ad hoc scratch files.
+
+### 7. Config Externalization Discipline
+
+**Mutable behavior belongs outside code.**
+
+This repo must move toward true code/config separation, not cosmetic config files with hidden hardcoded fallbacks.
+
+**Mandatory rules:**
+- Do not hardcode mutable operational values such as ports, hosts, URLs, paths, credentials, tokens, thresholds, timeouts, feature flags, provider/model selectors, routing targets, or environment-specific limits unless they are genuine immutable protocol constants.
+- Every new configurable behavior must obey the same precedence chain: `default < config file < environment variable < command-line argument < runtime dynamic input`.
+- Each module should expose one canonical config entrypoint with schema validation. Do not scatter `os.getenv`, duplicate JSON/YAML parsing, or per-file fallback constants across the codebase.
+- If a canonical loader already exists, extend it instead of creating another ad hoc loader. If mature ecosystem config tooling exists for the stack, prefer it over handwritten parsers.
+- A task does not count as “configured” if runtime behavior is still secretly governed by hardcoded branch logic or shadow defaults in code. External config must be the real source of behavior.
+- Defaults are for safe bootstrap only. They must not silently override deploy-time configuration or hide missing production inputs.
+- Prefer stateless runtime design: the same artifact should move across environments by changing external config, not by editing code or relying on hidden in-process switches.
+- When externalizing config, state explicitly which hardcoded values were removed and what the new canonical config surface is.
+- Markdown policy text alone does not count as enforcement. A config-separation task is incomplete until the runtime is actually governed by executable config surfaces or persistent runtime constraints.
+- If a rule affects mutable behavior, prefer encoding it in JSON/YAML/canonical loaders/env/CLI/runtime inputs rather than leaving it as prose guidance only.
+
+### 7.5 Reuse & Topology Discipline
+
+**Reuse existing owned surfaces before creating new ones, and keep the graph connected.**
+
+**Mandatory rules:**
+- Before adding a module, service, endpoint, job, workflow, or config surface, check the project resource/capability index and extend an existing owned surface if it already covers the need.
+- Prefer extending canonical loaders, route maps, exports, and mature ecosystem tooling over parallel helper files, shadow configs, and one-off wrappers.
+- No topology black holes: every new route, flag, env, CLI arg, file, or state field must connect to both a caller and a runtime consumer.
+- No isolated files or dead parameters: if nothing imports it, routes to it, reads it, or exercises it in validation/observability, finish the wiring or delete it.
+- When legacy survives, report the canonical path and the surviving legacy file/path/runtime edge together.
+- Markdown guidance alone does not satisfy this rule for runtime/config behavior; executable wiring must change too.
+
 ## LangGraph-style runtime / channel / state guidance
 
 - Treat the agent as a stateful runtime loop, not a stateless one-shot pipeline.
@@ -367,4 +423,4 @@ Apply this before marking any task complete:
 - **New Python adapter**: implement port in `domain/ports.py`, register in `container.py` (dependency-injector).
 - **New FastAPI route**: add handler in `api/unified_api.py` or `api/routes.py`, models in `domain_models/`.
 - **New Node module**: follow `src/backend/server/src/modules/<domain>/` pattern; re-export from `src/modules/<domain>/index.ts`.
-- **New tool for RAG agent**: define in `src/modules/agent/src/tools.ts`, wire through `ToolBridge` in `src/modules/rag/tool-bridge.ts`.
+- **New tool for Node agent**: define it in `src/backend/server/src/modules/agent/src/tools.ts` and expose it through `createFourDatabaseTools()` / the active `ReactAgent` loop.

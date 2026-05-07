@@ -1,0 +1,55 @@
+{
+  "gateway": {
+    "port": "8080",
+    "debug": false,
+    "healthCheckTimeout": "5s",
+    "telemetryServiceName": "go-gateway",
+    "services": {
+      "nodejs": {
+        "name": "nodejs-backend",
+        "url": "http://localhost:3001",
+        "health": "",
+        "timeout": "30s"
+      },
+      "python": {
+        "name": "python-backend",
+        "url": "http://localhost:8000",
+        "health": "",
+        "timeout": "30s"
+      },
+      "ocr": {
+        "name": "ocr-service",
+        "url": "http://localhost:8001",
+        "health": "",
+        "timeout": "60s"
+      },
+      "retrieval": {
+        "name": "retrieval-service",
+        "url": "http://localhost:8002",
+        "health": "",
+        "timeout": "30s"
+      },
+      "llm": {
+        "name": "llm-service",
+        "url": "http://localhost:8003",
+        "health": "",
+        "timeout": "120s"
+      },
+      "websocket": {
+        "name": "websocket-gateway",
+        "url": "http://localhost:8081",
+        "health": "",
+        "timeout": "30s"
+      }
+    }
+  },
+  "websocket": {
+    "port": "8081",
+    "readBufferSize": 1024,
+    "writeBufferSize": 1024,
+    "allowAllOrigins": true
+  },
+  "telemetry": {
+    "endpoint": ""
+  }
+}

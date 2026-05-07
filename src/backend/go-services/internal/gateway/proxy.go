@@ -125,6 +125,7 @@ func getRouteMapping() map[string]string {
 		"/api/v1/system-kb":       "retrieval",
 		"/api/v1/guide-agent":     "retrieval",
 		"/api/v1/learning":        "retrieval",
+		"/api/v1/executor":        "retrieval",
 		"/api/v1/ops":             "retrieval",
 		"/api/v1/pipeline":        "retrieval",
 		"/api/v1/architecture":    "retrieval",

@@ -155,10 +155,8 @@ except Exception:
 ## 五、修复文件清单
 
 ### TypeScript
-- `/home/l/rag-dashboard/src/backend/server/src/modules/rag/types.ts`
-- `/home/l/rag-dashboard/src/backend/server/src/modules/rag/machine.ts`
-- `/home/l/rag-dashboard/src/backend/server/src/modules/rag/memory/thread-memory.ts`
 - `/home/l/rag-dashboard/src/backend/server/src/modules/retrieval/src/cascade-retrieval.ts`
+- 历史 `src/backend/server/src/modules/rag/` 原型文件已在后续清理中删除
 
 ### Python
 - `/home/l/rag-dashboard/src/backend/python-legacy/api/routes.py`

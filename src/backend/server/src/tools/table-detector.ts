@@ -64,8 +64,8 @@ interface TableDetectorConfig {
 }
 
 const defaultConfig: TableDetectorConfig = {
-  rowThreshold: 100,     // 100像素Y差异视为同一行（放宽）
-  colThreshold: 150,   // 150像素X差异视为同一列（放宽）
+  rowThreshold: 40,    // 保持相邻表格行可分离，同时允许同一行轻微抖动
+  colThreshold: 60,    // 允许常见OCR列偏移，但避免把相邻列合并
   minCellCount: 4,     // 最少4个单元格才认为是表格
   headerRowCount: 1,   // 默认第1行是表头
   mergeThreshold: 2.0  // 单元格宽度超过平均宽度2倍视为合并

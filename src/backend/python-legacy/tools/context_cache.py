@@ -10,17 +10,25 @@ import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
+from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+
+legacy_root = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Qdrant 配置
-QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.environ.get("QDRANT_PORT", 6333))
+runtime_config = read_runtime_config()
+QDRANT_HOST = runtime_config.qdrant_host
+QDRANT_PORT = runtime_config.qdrant_port
 QDRANT_COLLECTION = "session_context"
 
 class ContextCache:
@@ -61,8 +69,7 @@ class ContextCache:
 
     def _get_cache_ttl(self) -> int:
         """获取缓存过期时间（秒）"""
-        # 默认缓存 1 小时
-        return int(os.environ.get("CACHE_TTL_SECONDS", 3600))
+        return runtime_config.cache_ttl_seconds
 
     def get_cached_result(self, query: str, filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """

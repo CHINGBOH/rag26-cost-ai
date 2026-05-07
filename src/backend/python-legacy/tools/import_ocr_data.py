@@ -12,9 +12,15 @@ from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
 
-# 配置
-OCR_OUTPUT_DIR = "/home/l/rag-dashboard/data/ocr_outputs"
-PROCESSED_LOG = "/home/l/rag-dashboard/data/ocr_outputs/processed_documents.log"
+legacy_root = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(legacy_root))
+
+from config.runtime import read_runtime_config
+
+runtime_config = read_runtime_config()
+OCR_OUTPUT_DIR = runtime_config.ocr_output_dir
+PROCESSED_LOG = str(Path(runtime_config.ocr_output_dir) / "processed_documents.log")
 
 # 日志配置
 logging.basicConfig(
@@ -62,10 +68,6 @@ class OCRDataImporter:
     async def initialize(self):
         """初始化服务"""
         logger.info("初始化OCR数据导入器...")
-        
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         from services.four_database_service import get_four_db_service
         self.four_db_service = await get_four_db_service()

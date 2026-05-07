@@ -15,7 +15,11 @@ from datetime import datetime
 
 # Allow imports from project root
 project_root = Path(__file__).resolve().parents[4]
+legacy_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(legacy_root))
 sys.path.insert(0, str(project_root))
+
+from config.runtime import read_runtime_config, tool_pg_config
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -25,22 +29,16 @@ from src.database.scripts.ocr_output_reconciliation import build_ocr_source_cand
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+runtime_config = read_runtime_config()
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-OCR_DIR = Path(os.environ.get("OCR_OUTPUT_DIR", project_root / "data" / "ocr_outputs"))
-KB_DIR = Path(os.environ.get("KB_DIR", project_root / "data" / "knowledge_base" / "documents"))
-INCLUDE_LEGACY_KB_OCR = os.environ.get("INCLUDE_LEGACY_KB_OCR", "").lower() in {"1", "true", "yes"}
+OCR_DIR = Path(runtime_config.ocr_output_dir)
+KB_DIR = Path(runtime_config.knowledge_base_documents_dir)
+INCLUDE_LEGACY_KB_OCR = runtime_config.include_legacy_kb_ocr
 _SKIP_OCR_FILENAMES = {"processing_summary.json", "processed_documents.log", "_scan_state.json"}
-
-PG_CONFIG = {
-    "host": os.environ.get("PG_HOST", "localhost"),
-    "port": int(os.environ.get("PG_PORT", "5432")),
-    "database": os.environ.get("PG_DB", "rag_db"),
-    "user": os.environ.get("PG_USER", "rag_user"),
-    "password": os.environ.get("PG_PASSWORD", "rag_password"),
-}
+PG_CONFIG = tool_pg_config()
 
 # Embedding (reuse local model)
 EMBEDDING_MODEL = None
@@ -70,7 +68,7 @@ def _get_embedding_model():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for OCR price import embeddings")
 
-    model_path = os.environ.get("EMBEDDING_MODEL", str(project_root / "models" / "BAAI" / "bge-m3"))
+    model_path = runtime_config.embedding_model_path
     logger.info(f"Loading embedding model: {model_path} [cuda]")
     EMBEDDING_MODEL = SentenceTransformer(model_path, device="cuda")
     return EMBEDDING_MODEL

@@ -10,6 +10,7 @@ describe('CacheService', () => {
 
   beforeEach(() => {
     cache = new CacheService({
+      redisUrl: 'redis://localhost:6379',
       defaultTTL: 60,
       keyPrefix: 'test:'
     });

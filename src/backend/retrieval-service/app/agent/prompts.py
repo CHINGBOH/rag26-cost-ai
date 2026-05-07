@@ -4,28 +4,15 @@ Agent Prompts + LLM 初始化
 
 import os
 import re
-from pathlib import Path
 from typing import Any
 
 import httpx
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-# 加载仓库根目录 .env（从 app/agent/ 往上 5 级 → rag-dashboard/）
-load_dotenv(Path(__file__).parents[5] / ".env")
+from app.runtime_config import bootstrap_llm_proxy_environment, read_runtime_config
 
-# ALL_PROXY / all_proxy with socks:// scheme causes httpx to fail entirely.
-# HTTP_PROXY / HTTPS_PROXY cause local llama-server requests (127.0.0.1) to go
-# through the proxy — httpx doesn't honour CIDR ranges in NO_PROXY (127.0.0.0/8).
-# Fix: remove ALL_PROXY unconditionally; if LLM_BASE_URL is local, also remove
-# HTTP(S)_PROXY so that local inference requests are never proxied.
-for _k in ("ALL_PROXY", "all_proxy"):
-    os.environ.pop(_k, None)
-
-_llm_url = os.environ.get("LLM_BASE_URL", "")
-if any(h in _llm_url for h in ("localhost", "127.0.0.1", "::1")):
-    for _k in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
-        os.environ.pop(_k, None)
+_runtime = read_runtime_config()
+bootstrap_llm_proxy_environment(_runtime.llm_base_url)
 
 
 SYSTEM_PROMPT = """你是工程造价知识库问答助手。根据提供的检索结果回答用户问题。
@@ -104,7 +91,7 @@ def resolve_llm_runtimes(
     requested_engine = str(llm_config.get("engine") or "").strip()
 
     configured_base_url = _normalize_base_url(
-        llm_config.get("base_url") or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
+        llm_config.get("base_url") or _runtime.llm_base_url or "https://api.deepseek.com/v1"
     )
 
     default_route = "local" if _is_local_base_url(configured_base_url) else "deepseek"
@@ -112,14 +99,12 @@ def resolve_llm_runtimes(
 
     deepseek_runtime = _build_runtime(
         "deepseek",
-        model=requested_model or os.getenv("LLM_MODEL", "deepseek-chat"),
+        model=requested_model or _runtime.llm_model,
         base_url=llm_config.get("deepseek_base_url")
-        or os.getenv("DEEPSEEK_BASE_URL")
+        or _runtime.deepseek_base_url
         or configured_base_url,
         api_key=llm_config.get("api_key")
-        or os.getenv("LLM_API_KEY")
-        or (_k if (_k := os.getenv("DEEPSEEK_API_KEY", "")) and _k.isascii() else None)
-        or (_k if (_k := os.getenv("OPENAI_API_KEY", "")) and _k.isascii() else None)
+        or (_k if (_k := _runtime.llm_api_key) and _k.isascii() else None)
         or "none",
         engine="api",
         route_mode=route_mode,
@@ -128,14 +113,11 @@ def resolve_llm_runtimes(
     local_runtime = _build_runtime(
         "local",
         model=requested_model
-        or os.getenv("LOCAL_LLM_MODEL")
-        or os.getenv("LLM_LOCAL_MODEL")
-        or "Qwen2.5-14B-Instruct",
+        or _runtime.local_llm_model,
         base_url=llm_config.get("local_base_url")
-        or os.getenv("LOCAL_LLM_BASE_URL")
-        or "http://127.0.0.1:8080/v1",
+        or _runtime.local_llm_base_url,
         api_key="none",
-        engine=requested_engine or os.getenv("LOCAL_LLM_ENGINE") or "llama.cpp",
+        engine=requested_engine or _runtime.local_llm_engine,
         route_mode=route_mode,
     )
 

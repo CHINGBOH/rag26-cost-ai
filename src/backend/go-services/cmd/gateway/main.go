@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"time"
 
 	"rag-system/internal/gateway"
@@ -12,9 +13,15 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	shutdown, err := telemetry.Init("go-gateway")
+	cfg, telemetryCfg, err := gateway.LoadConfig(os.Args[1:])
+	if err != nil {
+		log.Fatalf("Failed to load gateway config: %v", err)
+	}
+
+	shutdown, err := telemetry.Init(telemetryCfg.Endpoint, cfg.TelemetryServiceName)
 	if err != nil {
 		log.Printf("[OTEL] init failed (continuing without tracing): %v", err)
+		shutdown = func(context.Context) error { return nil }
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -22,7 +29,6 @@ func main() {
 		_ = shutdown(ctx)
 	}()
 
-	cfg := gateway.LoadConfig()
 	router := gateway.SetupRouter(cfg)
 
 	log.Printf("🚀 Starting Gateway on port %s", cfg.Port)

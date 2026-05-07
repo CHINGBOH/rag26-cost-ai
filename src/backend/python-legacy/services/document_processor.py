@@ -41,6 +41,7 @@ from domain_models.document_models import (
 )
 from infrastructure.adapters.unified import UnifiedStore
 from infrastructure.adapters.embedding_service import get_embedding_service
+from config.runtime import read_runtime_config
 
 # 可选导入 - 配置加载器
 try:
@@ -128,10 +129,11 @@ class DocumentProcessor:
 
     def __init__(self, store: Optional[UnifiedStore] = None):
         print("[DocumentProcessor] 初始化开始...")
+        runtime_config = read_runtime_config()
 
         self.store = store or UnifiedStore()
         self.embedding_service = get_embedding_service()
-        self.ocr_service_url = "http://localhost:8001"
+        self.ocr_service_url = runtime_config.ocr_api_url
 
         # 可选服务
         self.ocr_validator = OCRQualityValidator() if OCR_VALIDATOR_AVAILABLE else None
