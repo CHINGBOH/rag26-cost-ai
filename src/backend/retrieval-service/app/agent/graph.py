@@ -1572,9 +1572,41 @@ def _escalate_tool_fallback(level: int) -> list[str]:
 
 
 # ── Original evaluation ─────────────────────────────────────────────────
+# Issue #124: Initialize strict evaluator singleton
+_strict_evaluator = StrictSemanticEvaluator()
 
 
-def _build_answer_evaluation(query_type: str, final_answer: str, chunks: list[dict]) -> dict:
+def _build_answer_evaluation(
+    query_type: str, final_answer: str, chunks: list[dict], original_query: str = ""
+) -> dict:
+    """
+    Issue #124: 支持严格语义评估模式
+    
+    Feature Flag控制：
+    - ENABLE_STRICT_EVALUATION=true: 使用LLM语义验证
+    - ENABLE_STRICT_EVALUATION=false: 使用原有启发式规则（默认）
+    """
+    # Feature flag check
+    use_strict = os.getenv("ENABLE_STRICT_EVALUATION", "false").lower() == "true"
+    
+    if use_strict and original_query and final_answer:
+        logger.info("[Evaluation] 使用严格语义评估模式")
+        try:
+            strict_result = _strict_evaluator.evaluate_answer_quality(
+                query=original_query,
+                answer=final_answer,
+                chunks=chunks,
+                query_type=query_type
+            )
+            # 添加额外的元数据字段
+            strict_result["eval_mode"] = "strict_semantic"
+            return strict_result
+        except Exception as e:
+            logger.error(f"[Evaluation] 严格评估失败，降级到启发式规则: {e}")
+            # 降级到原有逻辑
+    
+    # 原有启发式评估逻辑
+    logger.info("[Evaluation] 使用启发式评估模式")
     catalog_hits = sum(1 for chunk in chunks if _is_catalog_evidence(chunk))
     usable_hits = sum(
         1
@@ -1628,6 +1660,7 @@ def _build_answer_evaluation(query_type: str, final_answer: str, chunks: list[di
         "feedback": feedback,
         "catalog_hits": catalog_hits,
         "usable_hits": usable_hits,
+        "eval_mode": "heuristic",
     }
 
 
@@ -3768,7 +3801,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     citations_text = _format_citations(all_chunks)
     presentation = _build_presentation_payload(query, query_type, all_chunks)
 
-    evaluation = _build_answer_evaluation(query_type, "", all_chunks)
+    evaluation = _build_answer_evaluation(query_type, "", all_chunks, original_query=query)
 
     if state.get("stream_response"):
         runtime = state.get("llm_runtime") or {}
@@ -3791,7 +3824,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
         runtime = state.get("llm_runtime") or {}
         citations_text = refine_citations_for_answer(final_answer, all_chunks, citations_text)
         final_answer = _normalize_final_answer(query, final_answer, all_chunks, citations_text, query_type)
-        evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks)
+        evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks, original_query=query)
         presentation = finalize_presentation_payload(
             query=query,
             query_type=query_type,
@@ -3831,7 +3864,7 @@ def synthesize_node(state: RAGAgentState) -> dict:
     from app.rag_pipeline import _strip_latex
     citations_text = refine_citations_for_answer(final_answer, all_chunks, citations_text)
     final_answer = _normalize_final_answer(query, _strip_latex(final_answer), all_chunks, citations_text, query_type)
-    evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks)
+    evaluation = _build_answer_evaluation(query_type, final_answer, all_chunks, original_query=query)
     presentation = finalize_presentation_payload(
         query=query,
         query_type=query_type,
