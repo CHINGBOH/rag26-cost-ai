@@ -2796,14 +2796,14 @@ def _milvus_vector_results(query: str, top_k: int) -> list[dict]:
 
 
 @tool
-def vector_search(query: str, top_k: int = 10) -> str:
+def vector_search(query: str, top_k: int = RetrievalPresets.STANDARD) -> str:  # Issue #116: 10 → STANDARD (8)
     """向量语义搜索：从 text_chunks 表中使用 pgvector 余弦相似度检索"""
     if not query.strip():
         return json.dumps([])
 
     conn = None
     try:
-        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 10 else top_k
+        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == RetrievalPresets.STANDARD else top_k
         score_threshold = float(get_runtime_override("score_threshold", 0.40))
         milvus_results = (
             _milvus_vector_results(query, effective_top_k)
@@ -2858,7 +2858,7 @@ def vector_search(query: str, top_k: int = 10) -> str:
 
 
 @tool
-def concept_search(query: str, top_k: int = 6, include_evidence: bool = True) -> str:
+def concept_search(query: str, top_k: int = RetrievalPresets.FOCUSED, include_evidence: bool = True) -> str:  # Issue #116: 6 → FOCUSED (5)
     """概念命中并递归下钻证据：返回概念节点，并可扩展结构化/OCR/PDF 页级证据。"""
     if not query.strip():
         return json.dumps([])
@@ -2899,7 +2899,7 @@ def concept_search(query: str, top_k: int = 6, include_evidence: bool = True) ->
 
 
 @tool
-def keyword_search(query: str, top_k: int = 10) -> str:
+def keyword_search(query: str, top_k: int = RetrievalPresets.STANDARD) -> str:  # Issue #116: 10 → STANDARD (8)
     """关键词全文搜索：从 text_chunks 表中使用 PostgreSQL tsvector + ts_rank 检索"""
     if not query.strip():
         return json.dumps([])
@@ -3027,7 +3027,7 @@ def keyword_search(query: str, top_k: int = 10) -> str:
 
 
 @tool
-def category_search(query: str, top_k: int = 5) -> str:
+def category_search(query: str, top_k: int = RetrievalPresets.FOCUSED) -> str:  # Issue #116: 5 → FOCUSED (5) ✓
     """目录索引检索：在文档章节目录中搜索材料/工艺所在的章节编号和标题。
     适用场景：当不确定某材料在哪个章节时，先用此工具定位章节，再用 text_search 检索具体数据。
     返回：章节编号、章节标题、页码。
@@ -3310,7 +3310,7 @@ def topology_search(query: str, top_k: int = 10, max_depth: int = 2) -> str:
 
 
 @tool
-def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str:
+def hybrid_search(query: str, top_k: int = RetrievalPresets.STANDARD, path_constraint: str = "") -> str:  # Issue #116: 10 → STANDARD (8)
     """混合检索（pgvector + tsvector）：综合召回，适合复杂问题。
 
     Args:
@@ -3326,7 +3326,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
     path_filter_sql = "AND tc.path LIKE %s" if path_constraint else ""
     path_filter_params: tuple = (path_constraint,) if path_constraint else ()
     try:
-        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == 10 else top_k
+        effective_top_k = int(get_runtime_override("top_k", top_k)) if top_k == RetrievalPresets.STANDARD else top_k
         cfg = _get_hybrid_runtime_config(effective_top_k)
         query_family = str((_concept_analyzer.analyze(query).get("intent") or "semantic"))
         cfg = _apply_query_family_routing(query_family, cfg, effective_top_k)
@@ -3606,7 +3606,7 @@ def hybrid_search(query: str, top_k: int = 10, path_constraint: str = "") -> str
 
 
 @tool
-def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
+def text_search(query: str, top_k: int = RetrievalPresets.STANDARD, path_constraint: str = "") -> str:  # Issue #116: 8 → STANDARD (8) ✓
     """语义向量搜索+全文检索：从 text_chunks 表中检索。
 
     Args:
@@ -3764,7 +3764,7 @@ def text_search(query: str, top_k: int = 8, path_constraint: str = "") -> str:
 
 
 @tool
-def pdf_page_search(query: str, top_k: int = 8) -> str:
+def pdf_page_search(query: str, top_k: int = RetrievalPresets.STANDARD) -> str:  # Issue #116: 8 → STANDARD (8) ✓
     """PDF 页级证据检索：直接返回最接近原文页面的 text_chunks 片段，适合规则条文和兜底取证。"""
     if not query.strip():
         return json.dumps([])
@@ -3834,7 +3834,7 @@ def rule_clause_search(
     section: str = "",
     page_start: int = 0,
     page_end: int = 0,
-    top_k: int = 8,
+    top_k: int = RetrievalPresets.STANDARD,  # Issue #116: 8 → STANDARD (8) ✓
 ) -> str:
     """在限定文档/章节/页码范围内检索条文正文，适合目录命中后的二跳下钻。"""
     if not query.strip():
@@ -4629,7 +4629,7 @@ def python_eval(code: str, chunks_json: str = "") -> str:
 
 
 @tool
-def get_catalog_map(query: str, top_k: int = 12) -> str:
+def get_catalog_map(query: str, top_k: int = RetrievalPresets.BROAD) -> str:  # Issue #116: 12 → BROAD (12) ✓
     """章节目录检索：根据关键词查找相关章节的 ID 和路径，用于在调用 text_search/hybrid_search 前确定 path_constraint。
 
     调用时机：当需要检索工程标准条文、计算规则、费率说明时，先调用此工具确定目标章节路径，

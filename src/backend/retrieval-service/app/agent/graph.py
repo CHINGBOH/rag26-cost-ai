@@ -146,17 +146,17 @@ REACT_TOOLS = [
 _REACT_SYSTEM = """你是工程造价知识库问答助手，可调用以下工具检索知识库：
 
 工具说明：
-- concept_search(query, top_k=6)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
-- get_catalog_map(query, top_k=12)：**章节目录检索**，查询与关键词相关的章节ID和路径（path）；在调用 text_search/hybrid_search 前先调用此工具确定 path_constraint，避免跨册检索噪声。返回 [{chapter_id, path, title, file_name}]
-- category_search(query, top_k=5)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
-- rule_clause_search(query, doc_id='', doc_filename='', section='', page_start=0, page_end=0, top_k=8)：在已锁定文档和页段范围内二跳检索条文正文，目录命中后优先使用
-- text_search(query, top_k=10, path_constraint='')：全文+语义混合检索，适合费率标准、定额规范等文档；path_constraint 可锁定章节路径（如 '第二册电气设备安装工程/10.%'）；自动检索 fee_rates 结构化表
-- hybrid_search(query, top_k=10, path_constraint='')：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；path_constraint 可锁定章节范围；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
-- pdf_page_search(query, top_k=8)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
+- concept_search(query, top_k=RetrievalPresets.FOCUSED)：先命中问题核心概念，返回建议下钻工具与证据层级，再继续检索真实证据
+- get_catalog_map(query, top_k=RetrievalPresets.BROAD)：**章节目录检索**，查询与关键词相关的章节ID和路径（path）；在调用 text_search/hybrid_search 前先调用此工具确定 path_constraint，避免跨册检索噪声。返回 [{chapter_id, path, title, file_name}]
+- category_search(query, top_k=RetrievalPresets.FOCUSED)：目录索引检索，先用此工具确认材料/工艺所在章节编号，返回章节号+标题+页码
+- rule_clause_search(query, doc_id='', doc_filename='', section='', page_start=0, page_end=0, top_k=RetrievalPresets.STANDARD)：在已锁定文档和页段范围内二跳检索条文正文，目录命中后优先使用
+- text_search(query, top_k=RetrievalPresets.STANDARD, path_constraint='')：全文+语义混合检索，适合费率标准、定额规范等文档；path_constraint 可锁定章节路径（如 '第二册电气设备安装工程/10.%'）；自动检索 fee_rates 结构化表
+- hybrid_search(query, top_k=RetrievalPresets.STANDARD, path_constraint='')：**pgvector 向量 + BM25 全文双路融合（RRF 排序）**，同时查 text_chunks 与 chunk_vector_views；适合同义改写、语义模糊、定额子目等需要语义召回的场景；path_constraint 可锁定章节范围；是 text_search 的语义增强版，优先于 text_search 用于定额/规范类问题
+- pdf_page_search(query, top_k=RetrievalPresets.STANDARD)：PDF 页级原文检索，适合规则条文兜底取证；返回最接近原文页面的片段
 - price_query(material_name, year_month=None, specification=None)：精确查询建设工程【材料价格】（SQL），仅用于 price_records 表
 - price_trend(material_name, start_month=None, end_month=None)：时序价格走势查询，返回某材料在时间范围内的月度均价列表（走势/趋势分析必用此工具）
-- vector_search(query, top_k=10)：向量相似度检索，适合语义相关段落
-- keyword_search(query, top_k=10)：关键词全文检索，适合精确名称匹配；自动检索 fee_rates 结构化表
+- vector_search(query, top_k=RetrievalPresets.STANDARD)：向量相似度检索，适合语义相关段落
+- keyword_search(query, top_k=RetrievalPresets.STANDARD)：关键词全文检索，适合精确名称匹配；自动检索 fee_rates 结构化表
 - calculator(expression)：数学表达式计算
 - python_eval(code)：Python代码执行（适合复杂计算）
 
@@ -1756,7 +1756,7 @@ def _build_forced_rule_clause_tool_call(state: RAGAgentState) -> dict | None:
         "section": section,
         "page_start": page_start,
         "page_end": page_end,
-        "top_k": 6,
+        "top_k": RetrievalPresets.FOCUSED,  # Issue #116: 6 → FOCUSED (concept/clause boundary)
     }
     tool_hash = hashlib.md5(json.dumps(args, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     return {
@@ -1801,7 +1801,7 @@ def _build_forced_price_tool_calls(state: RAGAgentState) -> list[dict]:
                             "material_name": material,
                             "year_month": period,
                             "specification": specification,
-                            "top_k": 8,
+                            "top_k": RetrievalPresets.STANDARD,  # Issue #116: 8 → STANDARD (price query)
                         }
                         tool_hash = hashlib.md5(
                             f"price_query:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
@@ -1937,7 +1937,7 @@ def _build_forced_fee_tool_calls(state: RAGAgentState) -> list[dict]:
 
     tool_calls: list[dict] = []
     for target in search_targets:
-        args = {"query": target, "top_k": 6, "path_constraint": ""}
+        args = {"query": target, "top_k": RetrievalPresets.FOCUSED, "path_constraint": ""}  # Issue #116: 6 → FOCUSED (fee rate search)
         tool_hash = hashlib.md5(
             f"text_search:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
         ).hexdigest()[:12]
@@ -1976,7 +1976,7 @@ def _build_forced_glass_floor_tool_calls(state: RAGAgentState) -> list[dict]:
         "section": "",
         "page_start": 0,
         "page_end": 0,
-        "top_k": 4,
+        "top_k": RetrievalPresets.NARROW,  # Issue #116: 4 → NARROW (decorative narrow scope)
     }
     tool_hash = hashlib.md5(json.dumps(args, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     return [
@@ -2008,7 +2008,7 @@ def _build_forced_standard_ref_tool_calls(state: RAGAgentState) -> list[dict]:
             "2025 简易计税方法 税前工程造价 进项税额",
         ]
         for target in targets:
-            args = {"query": target, "top_k": 8, "path_constraint": ""}
+            args = {"query": target, "top_k": RetrievalPresets.STANDARD, "path_constraint": ""}  # Issue #116: 8 → STANDARD (keyword search tax)
             tool_hash = hashlib.md5(
                 f"keyword_search:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
             ).hexdigest()[:12]
@@ -2030,7 +2030,7 @@ def _build_forced_standard_ref_tool_calls(state: RAGAgentState) -> list[dict]:
             "2025 安全文明施工费费率部分 计算公式 计算基数 推荐费率",
         ]
         for target in targets:
-            args = {"query": target, "top_k": 8, "path_constraint": ""}
+            args = {"query": target, "top_k": RetrievalPresets.STANDARD, "path_constraint": ""}  # Issue #116: 8 → STANDARD (text search safety)
             tool_hash = hashlib.md5(
                 f"text_search:{json.dumps(args, ensure_ascii=False, sort_keys=True)}".encode("utf-8")
             ).hexdigest()[:12]
@@ -2057,22 +2057,22 @@ def _build_executor_fallback_tool_call(state: RAGAgentState) -> dict | None:
             search_query = extract_fee_formula_search_term(query)
         else:
             search_query = _build_rule_clause_search_query(query)
-        args = {"query": search_query, "top_k": 8}
+        args = {"query": search_query, "top_k": RetrievalPresets.STANDARD}  # Issue #116: 8 → STANDARD
         tool_name = "text_search"
     elif query_type == "price":
         material = str(entities.get("material_name") or "").strip()
         year_month = str(entities.get("year_month") or "").strip()
         if material:
-            args = {"material_name": material, "year_month": year_month, "top_k": 8}
+            args = {"material_name": material, "year_month": year_month, "top_k": RetrievalPresets.STANDARD}  # Issue #116: 8 → STANDARD
             tool_name = "price_query"
         else:
-            args = {"query": query, "top_k": 8}
+            args = {"query": query, "top_k": RetrievalPresets.STANDARD}  # Issue #116: 8 → STANDARD
             tool_name = "keyword_search"
     elif query_type == "comparison":
-        args = {"query": query, "top_k": 8}
+        args = {"query": query, "top_k": RetrievalPresets.STANDARD}  # Issue #116: 8 → STANDARD
         tool_name = "hybrid_search"
     else:
-        args = {"query": query, "top_k": 8}
+        args = {"query": query, "top_k": RetrievalPresets.STANDARD}  # Issue #116: 8 → STANDARD
         tool_name = "text_search"
 
     call_hash = hashlib.md5(
@@ -2924,7 +2924,7 @@ def navigator_node(state: RAGAgentState) -> dict:
             continue
         tried.add(kw)
         try:
-            catalog_result = get_catalog_map.invoke({"query": kw, "top_k": 8})
+            catalog_result = get_catalog_map.invoke({"query": kw, "top_k": RetrievalPresets.STANDARD})  # Issue #116: 8 → STANDARD (was 8, not 12)
             result_hits = json.loads(catalog_result) if catalog_result else []
             if result_hits:
                 all_candidate_hits.append((kw, result_hits))
@@ -2979,7 +2979,7 @@ def navigator_node(state: RAGAgentState) -> dict:
                 "keywords_tried": list(tried)[:5]
             },
             params_used={
-                "catalog_top_k": 8,
+                "catalog_top_k": RetrievalPresets.STANDARD,  # Issue #116: 8 → STANDARD
                 "max_roadmap_paths": len(roadmap) if roadmap else 0
             },
             outcome={
