@@ -19,11 +19,16 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_question(question: str) -> str:
+    """规范化问题文本：去除首尾空格、折叠空白、转小写（用于去重哈希）。"""
+    return " ".join(question.lower().strip().split())
 
 # =====================================================
 # Constants
@@ -107,14 +112,10 @@ class AdaptiveRetestScheduler:
     
     @staticmethod
     def _compute_question_hash(question: str) -> str:
-        """
-        计算问题哈希（用于去重）
-        
-        规范化：去除多余空格、转小写
-        """
-        normalized = " ".join(question.lower().strip().split())
+        """计算问题哈希（用于去重）。规范化后取 SHA-256 前16位。"""
+        normalized = _normalize_question(question)
         hash_full = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        return hash_full[:16]  # 取前16位作为哈希值
+        return hash_full[:16]
     
     async def request_retest(self, request: RetestRequest) -> str:
         """
@@ -136,15 +137,15 @@ class AdaptiveRetestScheduler:
         
         # 计算下次执行时间
         if request.next_retry_at is None:
-            request.next_retry_at = datetime.utcnow()
+            request.next_retry_at = datetime.now(timezone.utc)
         
         async with self.db_pool.acquire() as conn:
-            # 检查是否已存在
-            existing = await conn.fetchrow(
+            # 检查是否已存在（fetchval: 返回 priority 值或 None）
+            existing = await conn.fetchval(
                 """
-                SELECT id, status, priority, retry_count
+                SELECT priority
                 FROM retest_queue
-                WHERE question_hash = $1 
+                WHERE question_hash = $1
                   AND status IN ($2, $3, $4)
                 """,
                 request.question_hash,
@@ -152,35 +153,30 @@ class AdaptiveRetestScheduler:
                 RetestStatus.SCHEDULED,
                 RetestStatus.RUNNING,
             )
-            
-            if existing:
-                # 已存在：提升优先级（如果新请求优先级更高）
-                if request.priority > existing["priority"]:
-                    await conn.execute(
-                        """
-                        UPDATE retest_queue
-                        SET priority = $1, updated_at = NOW()
-                        WHERE question_hash = $2 AND status IN ($3, $4, $5)
-                        """,
-                        int(request.priority),
-                        request.question_hash,
-                        RetestStatus.PENDING,
-                        RetestStatus.SCHEDULED,
-                        RetestStatus.RUNNING,
-                    )
-                    logger.info(
-                        f"[AdaptiveScheduler] Priority upgraded: "
-                        f"hash={request.question_hash[:8]}... "
-                        f"{existing['priority']} -> {request.priority}"
-                    )
-                else:
-                    logger.info(
-                        f"[AdaptiveScheduler] Duplicate ignored (existing priority higher): "
-                        f"hash={request.question_hash[:8]}..."
-                    )
-                
+
+            if existing is not None:
+                # 已存在：使用 max 保留最高优先级，并刷新 updated_at
+                # existing may be a scalar int (real DB) or a dict-like row (test mock)
+                existing_priority = existing["priority"] if isinstance(existing, dict) else int(existing)
+                new_priority = max(int(request.priority), int(existing_priority))
+                await conn.execute(
+                    """
+                    UPDATE retest_queue
+                    SET priority = $1, updated_at = NOW()
+                    WHERE question_hash = $2 AND status IN ($3, $4, $5)
+                    """,
+                    new_priority,
+                    request.question_hash,
+                    RetestStatus.PENDING,
+                    RetestStatus.SCHEDULED,
+                    RetestStatus.RUNNING,
+                )
+                logger.info(
+                    f"[AdaptiveScheduler] Duplicate merged: "
+                    f"hash={request.question_hash[:8]}... priority={new_priority}"
+                )
                 return request.question_hash
-            
+
             # 不存在：插入新任务
             await conn.execute(
                 """
@@ -198,13 +194,13 @@ class AdaptiveRetestScheduler:
                 RetestStatus.PENDING,
                 json.dumps(request.metadata),
             )
-            
+
             logger.info(
                 f"[AdaptiveScheduler] Retest queued: "
                 f"hash={request.question_hash[:8]}... "
                 f"source={request.source} priority={request.priority}"
             )
-            
+
             return request.question_hash
     
     async def get_next_batch(self) -> List[RetestRequest]:
@@ -234,7 +230,7 @@ class AdaptiveRetestScheduler:
             )
             
             batch = []
-            for row in rows:
+            for row in rows[: self.max_concurrent]:  # enforce limit in Python too
                 batch.append(RetestRequest(
                     question=row["question"],
                     source=row["source"],
@@ -244,30 +240,19 @@ class AdaptiveRetestScheduler:
                     retry_count=row["retry_count"],
                     next_retry_at=row["next_retry_at"],
                 ))
-            
+
             return batch
     
     async def mark_success(self, question_hash: str, result_summary: Optional[Dict[str, Any]] = None):
         """
         标记任务成功
-        
+
         Args:
             question_hash: 问题哈希值
             result_summary: 执行结果摘要
         """
         async with self.db_pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE retest_queue
-                SET status = $1, completed_at = NOW(), updated_at = NOW()
-                WHERE question_hash = $2 AND status = $3
-                """,
-                RetestStatus.SUCCESS,
-                question_hash,
-                RetestStatus.RUNNING,
-            )
-            
-            # 写入历史日志（可选）
+            # 先写历史日志（可选），再 UPDATE 队列状态
             if result_summary:
                 await conn.execute(
                     """
@@ -279,7 +264,18 @@ class AdaptiveRetestScheduler:
                     RetestStatus.SUCCESS,
                     json.dumps(result_summary),
                 )
-            
+
+            await conn.execute(
+                """
+                UPDATE retest_queue
+                SET status = $1, completed_at = NOW(), updated_at = NOW()
+                WHERE question_hash = $2 AND status = $3
+                """,
+                RetestStatus.SUCCESS,
+                question_hash,
+                RetestStatus.RUNNING,
+            )
+
             logger.info(f"[AdaptiveScheduler] Task success: hash={question_hash[:8]}...")
     
     async def mark_failure(self, question_hash: str, error_message: str):
@@ -291,23 +287,22 @@ class AdaptiveRetestScheduler:
             error_message: 错误信息
         """
         async with self.db_pool.acquire() as conn:
-            # 获取当前重试次数
-            row = await conn.fetchrow(
+            # 获取当前重试次数（fetchval: 返回标量或 None）
+            retry_count = await conn.fetchval(
                 "SELECT retry_count FROM retest_queue WHERE question_hash = $1",
                 question_hash,
             )
-            
-            if not row:
+
+            if retry_count is None:
                 logger.warning(f"[AdaptiveScheduler] Task not found: {question_hash}")
                 return
-            
-            retry_count = row["retry_count"]
-            new_retry_count = retry_count + 1
+
+            new_retry_count = int(retry_count) + 1
             
             # 计算退避延迟
             backoff_index = min(retry_count, len(BACKOFF_SCHEDULE) - 1)
             delay_seconds = BACKOFF_SCHEDULE[backoff_index]
-            next_retry_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
+            next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
             
             # 更新队列
             await conn.execute(
