@@ -13,7 +13,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 
 from domain.models import Document, DocumentChunk
 from domain.ports import VectorStorePort
-from config.settings import VectorStoreConfig
+from config.loader import VectorStoreConfig  # Issue #122: migrated from config.settings
 
 try:
     from pymilvus import MilvusClient

@@ -4290,13 +4290,16 @@ async def guide_agent_stream(req: GuideAgentRequest):
                     finally:
                         loop.close()
             if aspect in ("all", "config"):
-                from config.settings import AppConfig as _AC
+                from config.loader import RAGConfig as _AC  # Issue #122: migrated from config.settings
                 try:
                     cfg = _AC()
+                    # cfg.models is Dict[str,Any] in RAGConfig; extract embedding safely
+                    _models = cfg.models if isinstance(cfg.models, dict) else {}
+                    _emb = _models.get("embedding") or {}
                     report["config"] = {
                         "vector_store": {
                             "type": cfg.vector_store.type,
-                            "uri": cfg.vector_store.uri,
+                            "uri": getattr(cfg.vector_store, "uri", None),
                             "collection": cfg.vector_store.collection_name,
                             "dim": cfg.vector_store.vector_size,
                         },
@@ -4305,9 +4308,7 @@ async def guide_agent_stream(req: GuideAgentRequest):
                             "hosts": cfg.keyword_store.hosts,
                             "index": cfg.keyword_store.index_name,
                         },
-                        "embedding": getattr(cfg.models, "embedding", None) and {
-                            "name": cfg.models.embedding.name,
-                        },
+                        "embedding": {"name": _emb.get("name")} if _emb.get("name") else None,
                         "env": {
                             "VECTOR_STORE__TYPE": runtime.vector_store_type,
                             "KEYWORD_BACKEND": runtime.keyword_backend,

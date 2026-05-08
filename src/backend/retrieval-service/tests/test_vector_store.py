@@ -1,12 +1,16 @@
 import asyncio
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, "src/backend/retrieval-service")
+# Ensure retrieval-service root is on sys.path regardless of CWD
+_SERVICE_ROOT = Path(__file__).resolve().parents[1]
+if str(_SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SERVICE_ROOT))
 
-from config.settings import VectorStoreConfig
+from config.loader import VectorStoreConfig  # Issue #122: migrated from config.settings
 from infrastructure import vector_store
 
 

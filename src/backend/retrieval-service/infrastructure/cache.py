@@ -10,7 +10,7 @@ from typing import Any, Optional, Dict
 import logging
 
 from domain.ports import CachePort
-from config.settings import CacheConfig
+from config.loader import CacheConfig  # Issue #122: migrated from config.settings
 
 logger = logging.getLogger(__name__)
 

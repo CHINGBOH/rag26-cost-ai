@@ -29,7 +29,7 @@ from app.agent.query_analyzer import (
 )
 
 from langchain_core.tools import tool
-from config.settings import AppConfig
+from config.loader import RAGConfig as AppConfig  # Issue #122: AppConfig → RAGConfig (unified loader)
 from infrastructure.vector_store import create_vector_store_adapter
 from app.runtime_config import postgres_connection_kwargs, read_runtime_config
 from app.runtime_overrides import get_runtime_override
