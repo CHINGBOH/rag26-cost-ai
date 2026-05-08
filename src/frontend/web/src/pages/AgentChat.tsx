@@ -5,6 +5,7 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useAgent, ChatMessage, AgentConfig } from '../hooks/useAgent';
+import { DEFAULT_AGENT_CONFIG } from '@rag/shared';
 import {
   useRunStore,
   PresentationPayload,
