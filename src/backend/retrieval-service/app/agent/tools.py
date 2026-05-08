@@ -5986,6 +5986,7 @@ def cluster_records(table: str, columns: str, k: int = 4, sample_per_cluster: in
 # and pivot to e.g. annual reports tomorrow.
 # ──────────────────────────────────────────────────────────────────────
 
+@tool
 def regex_extract(text: str, pattern: str, flags: str = "") -> str:
     """从一段文本里按正则提取所有匹配（含命名分组）。flags: i(忽略大小写) m(多行) s(.匹配换行)"""
     import re as _re
@@ -6019,6 +6020,7 @@ _UNIT_CATEGORIES = {
     "time":     {"s": 1.0, "min": 60.0, "h": 3600.0, "d": 86400.0, "工日": 28800.0, "月": 2592000.0, "年": 31536000.0},
 }
 
+@tool
 def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
     """单位换算：长度/面积/体积/质量/货币/时间。
     支持单位：mm/cm/m/km、mm2/m2/㎡、L/m3、g/kg/t、元/万元/亿元、min/h/d/工日 等。"""
@@ -6041,6 +6043,7 @@ def unit_convert(value: float, from_unit: str, to_unit: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+@tool
 def date_math(operation: str, a: str = "", b: str = "", days: int = 0, fmt: str = "%Y-%m-%d") -> str:
     """日期算术。operation:
        - diff:  返回 a - b 的天数差
@@ -6071,6 +6074,7 @@ def date_math(operation: str, a: str = "", b: str = "", days: int = 0, fmt: str 
         return json.dumps({"error": str(e)})
 
 
+@tool
 def compare_values(current: float, baseline: float, label: str = "") -> str:
     """比较两个数值，给出绝对差、百分比变化、基点变化（适合费率/价格对比）。"""
     try:
@@ -6092,6 +6096,7 @@ def compare_values(current: float, baseline: float, label: str = "") -> str:
         return json.dumps({"error": str(e)})
 
 
+@tool
 def number_stats(values_json: str) -> str:
     """对一组数值做描述性统计：均值/中位数/标准差/极值/分位数。values_json 为 JSON 数组。"""
     try:
@@ -6118,6 +6123,7 @@ def number_stats(values_json: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+@tool
 def chart_spec(chart_type: str, data_json: str, title: str = "", x_key: str = "x", y_key: str = "y") -> str:
     """生成可被前端 recharts 渲染的图表 spec。chart_type: line/bar/pie/area/scatter。
        data_json 为对象数组 JSON 字符串。返回 {chart_spec: ...} 供前端直接消费。"""
@@ -6141,6 +6147,7 @@ def chart_spec(chart_type: str, data_json: str, title: str = "", x_key: str = "x
         return json.dumps({"error": str(e)})
 
 
+@tool
 def proactive_explore(question: str, max_concepts: int = 3, neighbor_top_k: int = 8) -> str:
     """主动认知 — 从问题里抽取核心概念，沿图谱穿透邻居/上下游/共现实体，
     把用户没主动问、但极相关的知识点也带回来。返回:

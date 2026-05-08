@@ -10,10 +10,18 @@ import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-# Add repo root to Python path for config modules
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Add repo root to Python path for shared modules,
+# but ensure the local service directory takes precedence so the
+# service's own `config/` package (e.g. llm_timeout_policy) is found first.
+SERVICE_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = SERVICE_ROOT.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+if str(SERVICE_ROOT) not in sys.path or sys.path.index(str(SERVICE_ROOT)) > sys.path.index(str(REPO_ROOT)):
+    # Re-insert so SERVICE_ROOT comes before REPO_ROOT
+    if str(SERVICE_ROOT) in sys.path:
+        sys.path.remove(str(SERVICE_ROOT))
+    sys.path.insert(0, str(SERVICE_ROOT))
 
 from app.runtime_config import bootstrap_runtime_environment
 

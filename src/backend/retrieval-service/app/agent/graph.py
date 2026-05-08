@@ -15,6 +15,7 @@ LangGraph Hybrid Agent: Forced-RAG + ReAct 补充
   - loop_detection: 检测 ReAct 循环
 """
 
+import os
 import json
 import re
 import logging
@@ -105,7 +106,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from config.retrieval_presets import RetrievalPresets
 
-from app.agent.evaluator import evaluate_retrieval_quality
+from app.agent.evaluator import evaluate_retrieval_quality, StrictSemanticEvaluator
 from app.agent.presentation_payloads import (
     _build_presentation_payload,
     _format_citations,
