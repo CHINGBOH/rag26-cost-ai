@@ -36,6 +36,9 @@ from app.tools_api import router as tools_router
 from app.pipeline import UnifiedRetrievalPipeline
 from infrastructure.adapters.unified import UnifiedStore
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Prometheus metrics for observability
 try:
     from prometheus_client import make_asgi_app
@@ -43,9 +46,6 @@ try:
 except ImportError:
     logger.warning("⚠️ prometheus_client not installed, /metrics endpoint will not be available")
     PROMETHEUS_AVAILABLE = False
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # 全局服务实例
 _pipeline = None
