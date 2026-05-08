@@ -10,6 +10,7 @@ import httpx
 from langchain_openai import ChatOpenAI
 
 from app.runtime_config import bootstrap_llm_proxy_environment, read_runtime_config
+from config.llm_timeout_policy import LLMTimeoutPolicy
 
 _runtime = read_runtime_config()
 bootstrap_llm_proxy_environment(_runtime.llm_base_url)
@@ -140,7 +141,7 @@ def create_llm(runtime: dict[str, Any], *, thinking: bool = False, streaming: bo
         base_url=runtime["base_url"],
         temperature=0.0,
         max_tokens=4096 if thinking else 2048,
-        timeout=120 if runtime["is_local"] else 90,
+        timeout=LLMTimeoutPolicy.get_timeout(runtime),
         http_async_client=http_async_client,
         http_client=http_client,
         streaming=streaming,
