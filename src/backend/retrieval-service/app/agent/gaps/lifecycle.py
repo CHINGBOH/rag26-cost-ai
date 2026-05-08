@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from app.agent.event_taxonomy import REFUSAL_MARKERS
+from app.agent.gaps.state_machine import get_state_machine
+
+logger = logging.getLogger(__name__)
 
 
 ACTIVE_STATUSES = {"open", "in_progress"}
@@ -116,13 +120,28 @@ def transition_status_for_action(current_status: str, action: str) -> str:
     normalized = str(current_status or "open").lower()
     normalized_action = str(action or "").lower()
     if normalized_action == "resolve" and normalized == "observing":
-        return "resolved"
-    if normalized_action == "reopen" and normalized in {"observing", "resolved", "blocked"}:
-        return "open"
-    if normalized_action == "block" and normalized in {"open", "in_progress"}:
-        return "blocked"
-    if normalized_action == "mark_observing" and normalized in {"open", "in_progress"}:
-        return "observing"
-    if normalized_action == "start_repair" and normalized == "open":
-        return "in_progress"
-    return normalized
+        target = "resolved"
+    elif normalized_action == "reopen" and normalized in {"observing", "resolved", "blocked"}:
+        target = "open"
+    elif normalized_action == "block" and normalized in {"open", "in_progress"}:
+        target = "blocked"
+    elif normalized_action == "mark_observing" and normalized in {"open", "in_progress"}:
+        target = "observing"
+    elif normalized_action == "start_repair" and normalized == "open":
+        target = "in_progress"
+    else:
+        return normalized
+
+    # Issue #120: Validate transition through state machine
+    sm = get_state_machine()
+    try:
+        if not sm.is_valid_transition(normalized, target):
+            logger.warning(
+                f"[lifecycle] Action '{action}' produced invalid transition "
+                f"{normalized} → {target}. Returning current status."
+            )
+            return normalized
+    except ValueError:
+        return normalized
+
+    return target
