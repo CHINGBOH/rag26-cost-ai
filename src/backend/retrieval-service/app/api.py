@@ -17,6 +17,11 @@ from langchain_core.messages import HumanMessage
 
 from domain_models.retrieval import RetrievalRequest, RetrievalConfig
 from domain_models.api import APIResponse
+from domain_models.agent_config import (
+    AgentRequest,
+    AgentStreamRequest,
+    build_llm_config as _build_llm_config_from_domain,
+)
 from app.models import (
     SearchRequest,
     RerankRequest,
@@ -410,21 +415,7 @@ def _normalize_chunk(c: dict) -> dict:
     }
 
 
-class AgentRequest(BaseModel):
-    query: str
-    session_id: Optional[str] = None
-    max_iterations: int = 3
-    llm_route: str = "deepseek"
-    llm_provider: Optional[str] = None  # Issue #125 fix: allow None
-    llm_model: Optional[str] = None
-    llm_engine: Optional[str] = None
-
-    def resolve_llm_provider(self) -> str:
-        """Issue #125 fix: Infer provider from route if not explicitly set."""
-        if self.llm_provider:
-            return self.llm_provider
-        provider_map = {"deepseek": "deepseek", "local": "ollama", "auto": "deepseek"}
-        return provider_map.get(self.llm_route, "deepseek")
+# AgentRequest is imported from domain_models.agent_config (Issue #125)
 
 
 @router.post("/api/v1/agent")
@@ -447,6 +438,8 @@ async def agent_query(request: AgentRequest):
         # 每次请求使用独立 thread_id，避免 MemorySaver 在同一 session 内
         # 累积历史消息（含上次未清理的 tool_calls），导致 DeepSeek HTTP 400
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        # Issue #125 fix: Use _build_llm_config to resolve llm_provider
+        llm_config = _build_llm_config(request)
         initial_state = {
             "query": request.query.strip(),
             "query_type": "",
@@ -465,12 +458,7 @@ async def agent_query(request: AgentRequest):
             "category_hints": [],
             "fallback_mode": False,
             "has_tool_calls": False,
-            "llm_config": {
-                "route_mode": request.llm_route,
-                "provider": request.llm_provider,
-                "model": request.llm_model,
-                "engine": request.llm_engine,
-            },
+            "llm_config": llm_config,
             "llm_runtime": {},
             "stream_response": False,
             "synthesis_prompt": "",
@@ -544,36 +532,7 @@ import json
 from fastapi.responses import StreamingResponse
 
 
-class AgentStreamRequest(BaseModel):
-    query: str
-    session_id: Optional[str] = None
-    max_iterations: int = 3
-    score_threshold: float = 0.60
-    top_k: int = 8
-    search_mode: str = "hybrid"
-    doc_types: list = []
-    llm_route: str = "deepseek"
-    llm_provider: Optional[str] = None  # Issue #125 fix: allow None
-    llm_model: Optional[str] = None
-    llm_engine: Optional[str] = None
-
-    def resolve_llm_provider(self) -> str:
-        """
-        Issue #125 fix: Infer provider from route if not explicitly set.
-        
-        This provides backward compatibility when frontend doesn't send
-        llm_provider explicitly.
-        """
-        if self.llm_provider:
-            return self.llm_provider
-        
-        # Fallback: infer from route
-        provider_map = {
-            "deepseek": "deepseek",
-            "local": "ollama",
-            "auto": "deepseek",
-        }
-        return provider_map.get(self.llm_route, "deepseek")
+# AgentStreamRequest is imported from domain_models.agent_config (Issue #125)
 
 
 def _sse_event(event_type: str, data: dict[str, Any]) -> str:
@@ -581,14 +540,7 @@ def _sse_event(event_type: str, data: dict[str, Any]) -> str:
 
 
 def _build_llm_config(request: AgentStreamRequest | AgentRequest) -> dict[str, Any]:
-    # Issue #125 fix: Use resolve_llm_provider() for backward compatibility
-    resolved_provider = request.resolve_llm_provider() if hasattr(request, 'resolve_llm_provider') else request.llm_provider
-    return {
-        "route_mode": request.llm_route,
-        "provider": resolved_provider,
-        "model": request.llm_model,
-        "engine": request.llm_engine,
-    }
+    return _build_llm_config_from_domain(request)
 
 
 @router.post("/api/v1/agent/stream")
