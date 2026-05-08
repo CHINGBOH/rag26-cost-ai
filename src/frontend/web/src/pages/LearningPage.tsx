@@ -27,6 +27,9 @@ import {
   getDetectedProblems,
   getImprovementHistory,
   getLearningStats,
+  triageGaps,
+  retestGap,
+  transitionGap,
   LearningSummary,
   LearningProjectionDriftSummary,
   LearningRun,
@@ -134,6 +137,10 @@ export const LearningPage: React.FC = () => {
   const [driftLoading, setDriftLoading] = useState(false);
   const [driftReconciling, setDriftReconciling] = useState(false);
   const [driftNote, setDriftNote] = useState<string | null>(null);
+  const [triagePending, setTriagePending] = useState(false);
+  const [triageNote, setTriageNote] = useState<string | null>(null);
+  const [retestingGaps, setRetestingGaps] = useState<Set<string>>(new Set());
+  const [transitioning, setTransitioning] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<QualityFilter>('all');
   const [mainTab, setMainTab] = useState<MainTab>('dashboard');
   const [loading, setLoading] = useState(true);
@@ -195,6 +202,53 @@ export const LearningPage: React.FC = () => {
     setDriftNote(`已重建 ${result.rebuilt_total} 条记录，剩余 drift ${result.remaining_drift_count}。`);
     await inspectRunDrift(selectedRunId, false);
     setDriftReconciling(false);
+  };
+
+  const handleTriageAll = async (liveRetest: boolean) => {
+    setTriagePending(true);
+    setTriageNote(null);
+    const result = await triageGaps({ liveRetest, maxLiveRetests: 5, dryRun: false });
+    if (!result) {
+      setTriageNote('分类请求失败，请检查 retrieval-service 日志。');
+    } else {
+      const parts = Object.entries(result.counts)
+        .filter(([, v]) => v > 0)
+        .map(([k, v]) => `${k}:${v}`)
+        .join(' · ');
+      setTriageNote(
+        `处理 ${result.processed} 条，实时复测 ${result.live_retests_used} 次。` +
+          (parts ? ` 分类：${parts}` : ''),
+      );
+      await getLearningGapWorkbench().then((d) => d && setGapWorkbench(d));
+    }
+    setTriagePending(false);
+  };
+
+  const handleRetestGap = async (gapKey: string) => {
+    setRetestingGaps((prev) => new Set([...prev, gapKey]));
+    const result = await retestGap(gapKey);
+    if (result) {
+      const wb = await getLearningGapWorkbench();
+      if (wb) setGapWorkbench(wb);
+    }
+    setRetestingGaps((prev) => {
+      const next = new Set(prev);
+      next.delete(gapKey);
+      return next;
+    });
+  };
+
+  const handleTransitionGap = async (gapKey: string, action: string) => {
+    const key = `${gapKey}:${action}`;
+    setTransitioning((prev) => new Set([...prev, key]));
+    await transitionGap(gapKey, action);
+    const wb = await getLearningGapWorkbench();
+    if (wb) setGapWorkbench(wb);
+    setTransitioning((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   };
 
   useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
@@ -265,8 +319,36 @@ export const LearningPage: React.FC = () => {
             {g.observation_until && <span className="muted small">观察截止 {fmtDateTime(g.observation_until)}</span>}
             {g.last_reopened_at && <span className="muted small">最近重开 {fmtDateTime(g.last_reopened_at)}</span>}
             {item.allowed_actions.length > 0 && (
-              <span className="muted small">后端动作 {item.allowed_actions.join(' / ')}</span>
-            )}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                  {item.allowed_actions.includes('live_retest') && (
+                    <button
+                      className="learn-refresh"
+                      style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                      disabled={retestingGaps.has(g.gap_key ?? '')}
+                      onClick={() => g.gap_key && handleRetestGap(g.gap_key)}
+                      title="通过真实查询端点实时复测此缺口"
+                    >
+                      {retestingGaps.has(g.gap_key ?? '') ? '复测中…' : '🔄 实时复测'}
+                    </button>
+                  )}
+                  {item.allowed_actions
+                    .filter((a) => a !== 'live_retest')
+                    .map((action) => {
+                      const tKey = `${g.gap_key}:${action}`;
+                      return (
+                        <button
+                          key={action}
+                          className="learn-refresh"
+                          style={{ fontSize: '0.75rem', padding: '2px 8px' }}
+                          disabled={transitioning.has(tKey)}
+                          onClick={() => g.gap_key && handleTransitionGap(g.gap_key, action)}
+                        >
+                          {transitioning.has(tKey) ? '…' : action}
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
           </div>
         )}
         {latestEvidence && (
@@ -362,8 +444,26 @@ export const LearningPage: React.FC = () => {
         <section className="learn-card learn-gaps">
           <div className="learn-card-head">
             <h3>知识缺口生命周期 <span className="muted">({gapCounts.total})</span></h3>
-            <span className="muted small">后端 DB workbench 分桶；前端只呈现状态、证据和允许动作</span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                className="learn-refresh"
+                onClick={() => handleTriageAll(false)}
+                disabled={triagePending}
+                title="对所有活跃缺口执行策略分类（不含实时复测）"
+              >
+                {triagePending ? '分类中…' : '🗂 批量分类'}
+              </button>
+              <button
+                className="learn-refresh"
+                onClick={() => handleTriageAll(true)}
+                disabled={triagePending}
+                title="分类 + 对 poor/refused 缺口发起实时复测，确认是否已修复（最多 5 个）"
+              >
+                {triagePending ? '分类中…' : '🔄 分类 + 实时复测'}
+              </button>
+            </div>
           </div>
+          {triageNote && <p className="muted small" style={{ marginBottom: 8 }}>{triageNote}</p>}
           {!gapWorkbench || gapCounts.total === 0 ? (
             <p className="empty">暂无识别到的知识缺口 — 当前所有运行均良好。</p>
           ) : (

@@ -1000,3 +1000,114 @@ export async function getLearningStats(): Promise<any> {
     return response.json();
   } catch { return {}; }
 }
+
+// ── Gap lifecycle actions ─────────────────────────────────────────────────────
+
+export interface GapTriageResult {
+  dry_run: boolean;
+  processed: number;
+  live_retests_used: number;
+  counts: Record<string, number>;
+  actions: Array<{
+    gap_key: string;
+    previous_status: string;
+    action: string;
+    status: string;
+    reason: string;
+    applied: boolean;
+    triage_mode: string;
+  }>;
+  summary: any;
+}
+
+/** Trigger batch triage for active knowledge gaps. */
+export async function triageGaps(opts?: {
+  limit?: number;
+  activeOnly?: boolean;
+  liveRetest?: boolean;
+  consultationEndpoint?: string;
+  maxLiveRetests?: number;
+  dryRun?: boolean;
+}): Promise<GapTriageResult | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps/triage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        limit: opts?.limit ?? 50,
+        active_only: opts?.activeOnly ?? true,
+        live_retest: opts?.liveRetest ?? false,
+        consultation_endpoint: opts?.consultationEndpoint ?? null,
+        max_live_retests: opts?.maxLiveRetests ?? 5,
+        dry_run: opts?.dryRun ?? false,
+      }),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export interface GapRetestResult {
+  gap_key: string;
+  previous_status: string;
+  action: string;
+  status: string;
+  reason: string;
+  applied: boolean;
+  evidence: any;
+  evidence_id: number | null;
+  transition_id: number | null;
+  triage_mode: string;
+}
+
+/** Live-retest a single knowledge gap through the real consultation endpoint. */
+export async function retestGap(
+  gapKey: string,
+  opts?: {
+    consultationEndpoint?: string;
+    timeoutSeconds?: number;
+    dryRun?: boolean;
+    actor?: string;
+  },
+): Promise<GapRetestResult | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/v1/learning/gaps/${encodeURIComponent(gapKey)}/retest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor: opts?.actor ?? 'learning_workbench',
+        consultation_endpoint: opts?.consultationEndpoint ?? null,
+        consultation_timeout_seconds: opts?.timeoutSeconds ?? 60,
+        dry_run: opts?.dryRun ?? false,
+      }),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+/** Apply a manual lifecycle transition to one gap. */
+export async function transitionGap(
+  gapKey: string,
+  action: string,
+  reason?: string,
+): Promise<{ applied: boolean; status: string } | null> {
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/v1/learning/gaps/${encodeURIComponent(gapKey)}/transition/${encodeURIComponent(action)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor: 'learning_workbench', reason: reason ?? null }),
+      },
+    );
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
