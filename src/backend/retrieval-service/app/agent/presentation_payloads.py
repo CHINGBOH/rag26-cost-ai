@@ -180,6 +180,7 @@ def _build_answer_title(query_type: str) -> str:
         "comparison": "对比结果",
         "price": "价格摘要",
         "trend_chart": "趋势摘要",
+        "impact_analysis": "影响分析",
     }.get(query_type, "回答摘要")
 
 
@@ -245,17 +246,17 @@ def _highlight_kind(sentence: str, query_type: str) -> str:
 def _build_highlights(query_type: str, direct_answer: str, analysis_text: str) -> list[dict]:
     highlights: list[dict] = []
     seen_values: set[str] = set()
+    seen_kinds: set[str] = set()
     for sentence in [*_split_sentences(direct_answer), *_split_sentences(analysis_text)]:
         normalized = sentence.strip()
         if normalized in seen_values:
             continue
+        kind = _highlight_kind(normalized, query_type)
+        if kind in seen_kinds:
+            continue
         seen_values.add(normalized)
-        highlights.append(
-            {
-                "kind": _highlight_kind(normalized, query_type),
-                "value": normalized,
-            }
-        )
+        seen_kinds.add(kind)
+        highlights.append({"kind": kind, "value": normalized})
         if len(highlights) >= 4:
             break
     return highlights
@@ -320,16 +321,16 @@ def _build_answer_sections_presentation(
     direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
     highlights = _build_highlights(query_type, direct_answer, analysis_text)
     analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
-    sections = [
-        {
-            "kind": "analysis" if idx == 0 else "detail",
-            "body": paragraph,
-            "label": _derive_section_label(
-                "analysis" if idx == 0 else "detail", query_type, paragraph
-            ),
-        }
-        for idx, paragraph in enumerate(analysis_paragraphs[:2])
-    ]
+    seen_labels: set[str] = set()
+    qt_labels = _SECTION_LABEL_BY_QUERY_TYPE.get(query_type, {})
+    sections: list[dict] = []
+    for idx, paragraph in enumerate(analysis_paragraphs[:2]):
+        kind = "analysis" if idx == 0 else "detail"
+        label = _derive_section_label(kind, query_type, paragraph)
+        if label in seen_labels:
+            label = qt_labels.get(kind) or ("核心说明" if kind == "analysis" else "补充说明")
+        seen_labels.add(label)
+        sections.append({"kind": kind, "body": paragraph, "label": label})
     sources = _parse_citation_items(citations_text)[:4]
 
     note = None
@@ -879,10 +880,8 @@ def _validate_presentation_contract(presentation: dict | None) -> dict | None:
 
 
 def _chunks_quality_ok(chunks: list[dict]) -> bool:
-    """检查检索结果是否足够可靠用于生成 presentation。"""
     if not chunks:
         return False
-    # 至少有一个 chunk 的 score >= 0.3
     return any(c.get("score", 0) >= 0.3 for c in chunks)
 
 
@@ -894,7 +893,6 @@ def finalize_presentation_payload(
     citations_text: str,
     existing_presentation: dict | None = None,
 ) -> dict | None:
-    # F1: 检索为空/低质时降级为 no_data，避免 LLM 编造内容被包装成专业卡片
     if not _chunks_quality_ok(chunks):
         return _validate_presentation_contract({
             "type": "no_data",
@@ -902,9 +900,7 @@ def finalize_presentation_payload(
             "sources": _parse_citation_items(citations_text)[:4],
         })
 
-    # calculation_steps / impact_analysis 共享沙箱逻辑
-    # (typically answer_sections from presentation_policy_node) must not suppress the sandbox.
-    if query_type in {"calculation", "impact_analysis"}:
+    if query_type == "calculation":
         # 1) Deterministic path: build steps directly from query inputs + chunk rates.
         #    Independent of LLM prose format, so sandbox always renders when data is present.
         deterministic_steps = _build_deterministic_calculation_steps(query, chunks)
@@ -930,9 +926,14 @@ def finalize_presentation_payload(
             return _validate_presentation_contract(calc_presentation)
     if existing_presentation:
         return _validate_presentation_contract(existing_presentation)
-    return _validate_presentation_contract(
-        _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
-    )
+
+    answer_head = re.split(r"\n\s*\n", final_answer or "", maxsplit=1)[0].strip()
+    return _validate_presentation_contract({
+        "type": "plain",
+        "title": _build_answer_title(query_type),
+        "summary": answer_head,
+        "sources": _parse_citation_items(citations_text)[:4],
+    })
 
 
 def _clean_markdown_noise(text: str) -> str:

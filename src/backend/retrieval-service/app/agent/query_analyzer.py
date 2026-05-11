@@ -46,13 +46,24 @@ STANDARD_REF_KEYWORDS = [
     "计算基数", "基数", "总包管理", "发包人", "分包",
 ]
 
-# impact_analysis: 费率/价格/政策调整后产生的影响分析
-_IMPACT_KEYWORDS = [
-    "影响", "会导致", "造成", "引起", "带来", "产生",
-    "调整后", "变化后", "变更后", "修改后", "更新后",
-    "对.*的影响", "是否会影响", "会不会影响", "有何影响",
+_IMPACT_PLAIN_WORDS = [
+    "影响", "会导致", "导致", "造成", "引起", "带来", "产生",
+    "调整", "调整后", "变化", "变化后", "变更", "变更后", "修改", "修改后", "更新", "更新后",
+    "上调", "下调", "涨", "降",
     "怎么办", "如何处理", "怎么算", "如何结算",
 ]
+_IMPACT_REGEX_PATTERNS = [
+    re.compile(r"对.*的影响"),
+    re.compile(r"是否会影响"),
+    re.compile(r"会不会影响"),
+    re.compile(r"有何影响"),
+]
+
+
+def _has_impact_keyword(text: str) -> bool:
+    if any(kw in text for kw in _IMPACT_PLAIN_WORDS):
+        return True
+    return any(p.search(text) for p in _IMPACT_REGEX_PATTERNS)
 
 # ---------------------------------------------------------------------------
 # 行业别名规范化：alias -> canonical material_name（对应 price_records 实际字段值）
@@ -231,17 +242,7 @@ def _classify_intent(query: str) -> str:
     numeric_inputs = _NUMERIC_CALC_INPUT_PATTERN.findall(cleaned_query)
     if len(numeric_inputs) >= 2 and _NUMERIC_CALC_TARGET_PATTERN.search(cleaned_query):
         return "calculation"
-    # impact_analysis: 费率/价格/政策调整后的影响分析
-    # 优先级高于 standard_ref，因为 "是否会影响" 是分析意图而非规则查询
-    # 支持两种匹配模式：正则（含.*通配符）或子串包含
-    def _match_impact_kw(kw: str, text: str) -> bool:
-        if "*" in kw or "?" in kw or "[" in kw:
-            return bool(re.search(kw, text))
-        return kw in text
-
-    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and any(
-        _match_impact_kw(kw, cleaned_query) for kw in _IMPACT_KEYWORDS
-    ):
+    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _has_impact_keyword(cleaned_query):
         return "impact_analysis"
     # fee standard formula/method explanation (no numeric inputs) → rule lookup
     if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
@@ -256,15 +257,15 @@ def _classify_intent(query: str) -> str:
             return "calculation"
         if material or "信息价" in cleaned_query or year_month:
             return "price"
+    # standard_ref: 规则规范查询 — 优先级高于 calc+price 组合，避免"费率"误判为计算
+    if any(kw in q for kw in STANDARD_REF_KEYWORDS):
+        return "standard_ref"
     # calculation: 明确有公式或数值计算
     if has_calc_keyword and has_price_keyword:
         return "calculation"
     # comparison: 两个对象对比
     if any(kw in q for kw in COMPARISON_KEYWORDS):
         return "comparison"
-    # standard_ref: 规则规范查询
-    if any(kw in q for kw in STANDARD_REF_KEYWORDS):
-        return "standard_ref"
     # price: 纯价格查询
     if any(kw in q for kw in PRICE_KEYWORDS):
         return "price"

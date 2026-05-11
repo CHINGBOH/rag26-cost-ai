@@ -111,7 +111,7 @@ export interface PresentationBlock {
 }
 
 export interface PresentationPayload {
-  type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps';
+  type: 'price_comparison' | 'price_trend' | 'price_snapshot' | 'answer_sections' | 'calculation_steps' | 'plain' | 'no_data';
   query_type?: string;
   title: string;
   support_kicker?: string;
@@ -121,6 +121,7 @@ export interface PresentationPayload {
   delta_percent?: number | null;
   note?: string;
   summary?: string;
+  message?: string;
   highlights?: PresentationHighlight[];
   sections?: PresentationSection[];
   layout?: PresentationBlock[];

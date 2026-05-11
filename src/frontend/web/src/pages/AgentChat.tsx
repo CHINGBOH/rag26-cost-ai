@@ -146,29 +146,6 @@ function getHighlightBaseLabel(kind?: string, queryType?: string): string {
   return (kind && kindMap[kind]) || '关键信息';
 }
 
-function getSectionBaseLabel(kind?: string, queryType?: string): string {
-  if (kind === 'analysis') {
-    const labels: Record<string, string> = {
-      standard_ref: '依据说明',
-      price: '价格解析',
-      fee_rate: '费率解析',
-      formula: '公式推导',
-      comparison: '对比分析',
-    };
-    return (queryType && labels[queryType]) || '核心说明';
-  }
-  return '补充说明';
-}
-
-function buildDisplayLabels(
-  items: Array<{ label?: string; kind?: string }>,
-  resolver: (kind?: string) => string,
-): string[] {
-  // Prefer LLM-supplied labels; fall back to kind-resolved label without "01/02" numbering.
-  // Kept only as fallback for legacy payloads that lack `layout[]`.
-  return items.map((item) => item.label?.trim() || resolver(item.kind));
-}
-
 const LayoutBlocks: React.FC<{ blocks: PresentationBlock[] }> = ({ blocks }) => {
   if (!blocks || blocks.length === 0) return null;
   return (
@@ -474,94 +451,32 @@ export const PresentationCard: React.FC<{ presentation: PresentationPayload }> =
     }
   }, [presentation.type, presentation.points?.length]);
 
-  if (presentation.type === 'answer_sections') {
-    const hasLayout = presentation.layout && presentation.layout.length > 0;
-    const highlightLabels = hasLayout
-      ? []
-      : buildDisplayLabels(
-          presentation.highlights ?? [],
-          (kind) => getHighlightBaseLabel(kind, presentation.query_type),
-        );
-    const sectionLabels = hasLayout
-      ? []
-      : buildDisplayLabels(
-          presentation.sections ?? [],
-          (kind) => getSectionBaseLabel(kind, presentation.query_type),
-        );
-
+  if (presentation.type === 'plain' || presentation.type === 'no_data') {
     return (
-      <div className="presentation-card answer-sections">
+      <div className="presentation-card plain">
         {presentation.summary && (
           <div className="conversation-answer-card">
-            {presentation.note && <div className="conversation-answer-context">{presentation.note}</div>}
             <div
               className="conversation-answer-text"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(presentation.summary) }}
             />
           </div>
         )}
-
-        {(hasLayout) ||
-        (presentation.highlights && presentation.highlights.length > 0) ||
-        (presentation.sections && presentation.sections.length > 0) ||
-            (presentation.sources && presentation.sources.length > 0) ? (
-          <div className="presentation-support-block">
-            <div className="presentation-support-kicker">
-              {presentation.support_kicker || '补充说明'}
-            </div>
-
-            {hasLayout ? (
-              <LayoutBlocks blocks={presentation.layout!} />
-            ) : (
-              <>
-                {presentation.highlights && presentation.highlights.length > 0 && (
-                  <div className="answer-highlight-grid">
-                    {presentation.highlights.map((item, index) => (
-                      <div
-                        key={`${item.kind ?? item.label ?? 'highlight'}-${index}`}
-                        className="answer-highlight-item"
-                      >
-                        <span className="answer-highlight-label">{highlightLabels[index]}</span>
-                        <div
-                          className="answer-highlight-value"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(item.value) }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {presentation.sections && presentation.sections.length > 0 && (
-                  <div className="answer-sections-list">
-                    {presentation.sections.map((section, index) => (
-                      <div
-                        key={`${section.kind ?? section.label ?? 'section'}-${index}`}
-                        className="answer-section-item"
-                      >
-                        <div className="answer-section-label">{sectionLabels[index]}</div>
-                        <div
-                          className="answer-section-body"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(section.body) }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-
-            {presentation.sources && presentation.sources.length > 0 && (
-              <div className="presentation-footnotes">
-                {presentation.sources.map((source) => (
-                  <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
-                    <span className="presentation-footnote-label">来源 {source.index}</span>
-                    <span>{source.title} P{source.page}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+        {presentation.message && !presentation.summary && (
+          <div className="conversation-answer-card no-data-message">
+            <div className="conversation-answer-text">{presentation.message}</div>
           </div>
-        ) : null}
+        )}
+        {presentation.sources && presentation.sources.length > 0 && (
+          <div className="presentation-footnotes">
+            {presentation.sources.map((source) => (
+              <div key={`${source.index}-${source.title}-${source.page}`} className="presentation-footnote">
+                <span className="presentation-footnote-label">来源 {source.index}</span>
+                <span>{source.title} P{source.page}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -757,6 +672,7 @@ export const PresentationCard: React.FC<{ presentation: PresentationPayload }> =
         </>
       )}
 
+      {(presentation.type === 'price_trend' || presentation.type === 'price_comparison') && chartData.length > 0 && (
       <div className="presentation-chart-shell">
         {presentation.type === 'price_trend' && trendPoints.length > 0 && (
           <div className="presentation-chart-head">
@@ -861,6 +777,7 @@ export const PresentationCard: React.FC<{ presentation: PresentationPayload }> =
           </ResponsiveContainer>
         </div>
       </div>
+    )}
 
       {presentation.type === 'price_trend' && trendPoints.length > 0 && (
         <div className="trend-point-tabs">
@@ -1293,7 +1210,7 @@ const MessageBubble: React.FC<{
           {message.role === 'assistant' && message.presentation && (
             <PresentationCard presentation={message.presentation} />
           )}
-        {(!message.presentation || !['answer_sections', 'calculation_steps'].includes(message.presentation.type)) && (
+        {(!message.presentation || !['answer_sections', 'calculation_steps', 'plain', 'no_data'].includes(message.presentation.type)) && (
           <div
             className={`message-content ${message.presentation ? 'with-presentation' : ''}`}
             dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
@@ -1452,7 +1369,7 @@ const StreamingBubble: React.FC = () => {
     <div className="message-row assistant">
       <div className="message-bubble assistant streaming">
         {presentation && <PresentationCard presentation={presentation} />}
-        {(!presentation || !['answer_sections', 'calculation_steps'].includes(presentation.type)) && (
+        {(!presentation || !['answer_sections', 'calculation_steps', 'plain', 'no_data'].includes(presentation.type)) && (
           <div className={`message-content ${presentation ? 'with-presentation' : ''}`}>
             {streamingAnswer
               ? <span dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingAnswer) }} />

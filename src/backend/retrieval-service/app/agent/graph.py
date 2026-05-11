@@ -436,7 +436,6 @@ def _gather_blindspots_for_chunks(chunks: list) -> list[dict]:
 
 
 def _enrich_chunks_with_filename(chunks: list) -> list:
-    """批量查 PG，给 chunks 注入 doc_filename 字段（同时查 text_chunks 和 price_records）"""
     if not chunks:
         return chunks
     doc_ids = list({c.get("doc_id") for c in chunks if c.get("doc_id")})
@@ -444,6 +443,7 @@ def _enrich_chunks_with_filename(chunks: list) -> list:
         return chunks
     try:
         from app.agent.tools import _get_pg_conn, _put_pg_conn
+
         conn = _get_pg_conn()
         id_to_name: dict = {}
         try:
@@ -454,7 +454,6 @@ def _enrich_chunks_with_filename(chunks: list) -> list:
                     doc_ids,
                 )
                 id_to_name = {r[0]: r[1] for r in cur.fetchall()}
-                # 兜底：price_records 中查找 text_chunks 未覆盖的 doc_id
                 missing = [d for d in doc_ids if d not in id_to_name]
                 if missing:
                     m_ph = ",".join(["%s"] * len(missing))
@@ -464,6 +463,22 @@ def _enrich_chunks_with_filename(chunks: list) -> list:
                     )
                     for r in cur.fetchall():
                         id_to_name[r[0]] = r[1]
+                missing2 = [d for d in missing if d not in id_to_name]
+                if missing2:
+                    m_ph2 = ",".join(["%s"] * len(missing2))
+                    try:
+                        cur.execute(
+                            f"SELECT DISTINCT doc_id, standard_year FROM fee_rates WHERE doc_id IN ({m_ph2})",
+                            missing2,
+                        )
+                        for doc_id, year in cur.fetchall():
+                            id_to_name[doc_id] = (
+                                f"深圳市建设工程计价费率标准（{year}）"
+                                if year
+                                else doc_id
+                            )
+                    except Exception:
+                        pass
         finally:
             _put_pg_conn(conn)
         for c in chunks:
@@ -2378,7 +2393,7 @@ _PRICE_COMPARE_RE = re.compile(
     re.DOTALL
 )
 
-_INTENT_TYPES = {"price", "semantic", "calculation", "comparison", "trend_chart", "standard_ref"}
+_INTENT_TYPES = {"price", "semantic", "calculation", "comparison", "trend_chart", "standard_ref", "impact_analysis"}
 _FEE_RULE_QUERY_RE = re.compile(
     r"费率标准|企业管理费|利润率?|推荐费率|推荐系数|计算基数|计算公式|按\s*20\d{2}\s*版|如果.*为0"
 )
@@ -2519,9 +2534,10 @@ def intent_guard_node(state: RAGAgentState) -> dict:
         guard_system = (
             "你是工程造价问题路由器。任务：只判断该查询应进入哪类检索路由。"
             "必须输出 JSON，不要输出其它文本。"
-            "可选 intent: price, standard_ref, calculation, comparison, trend_chart, semantic。"
-            "优先规则：凡是“费率标准/计算基数/计算公式/如果X为0时如何计取”等条文解释问题，"
+            "可选 intent: price, standard_ref, calculation, comparison, trend_chart, semantic, impact_analysis。"
+            '优先规则：凡是\u201c费率标准/计算基数/计算公式/如果X为0时如何计取\u201d等条文解释问题，'
             "应优先判为 standard_ref，而不是 price。"
+            "如果查询追问费率变化的原因/影响/导致/调整/成本因素，应判为 impact_analysis。"
             "JSON 格式："
             '{"intent":"standard_ref","confidence":0.0,"reason":"..."}'
         )
@@ -2594,17 +2610,6 @@ def _default_presentation_policy(query: str, query_type: str, presentation: dict
             "support_kicker": "数据说明",
             "section_labels": {"analysis": "数据解读", "detail": "补充说明"},
             "highlight_labels": {"default": "关键信息", "metric": "关键数值", "detail": "数据细节"},
-        }
-    elif query_type == "impact_analysis":
-        policy = {
-            "support_kicker": "影响分析",
-            "section_labels": {"analysis": "直接影响", "detail": "场景分类"},
-            "highlight_labels": {
-                "default": "关键变化",
-                "rule": "费率变化",
-                "metric": "数值影响",
-                "detail": "场景说明",
-            },
         }
 
     if (presentation or {}).get("type") == "calculation_steps":

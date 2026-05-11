@@ -235,7 +235,7 @@ const LibraryBubble: React.FC<{
       <div className="lib-bubble-wrap">
         <div className="lib-bubble lib-bubble--assistant">
           {message.presentation && <PresentationCard presentation={message.presentation} />}
-          {(!message.presentation || !['answer_sections', 'calculation_steps'].includes(message.presentation.type)) && (
+          {(!message.presentation || !['answer_sections', 'calculation_steps', 'plain', 'no_data'].includes(message.presentation.type)) && (
             <div dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />
           )}
         </div>
