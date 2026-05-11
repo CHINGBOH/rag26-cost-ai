@@ -1,0 +1,208 @@
+.diag-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 20, 16, 0.45);
+  z-index: 200;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.diag-drawer {
+  width: min(560px, 100vw);
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-default);
+  padding: 20px 22px;
+  box-shadow: -12px 0 32px rgba(28, 20, 16, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.diag-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.diag-drawer-head h2 {
+  margin: 0;
+  font-size: var(--text-3xl);
+  color: var(--text-primary);
+}
+.diag-close {
+  background: transparent;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.diag-close:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.diag-intro {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.diag-section {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.diag-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.diag-section-head h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+}
+.diag-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diag-total {
+  font-size: var(--text-3xl);
+  font-weight: 700;
+  min-width: 32px;
+  text-align: right;
+}
+.diag-total.healthy {
+  color: var(--color-success);
+}
+.diag-total.warning {
+  color: var(--color-warning);
+}
+
+.diag-action-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.diag-action-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.diag-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diag-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+.diag-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-default);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.diag-drift-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+.diag-drift-card {
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+.diag-drift-card.has-drift {
+  border-color: var(--color-warning);
+}
+.diag-drift-card-title {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.diag-drift-card-count {
+  font-size: var(--text-4xl);
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+.diag-drift-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.diag-meta-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.diag-meta-list b {
+  color: var(--text-primary);
+}
+.diag-meta-list code {
+  background: var(--bg-surface);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: var(--text-xs);
+}
+
+.diag-run-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.diag-run-input input {
+  flex: 1;
+  min-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono, monospace);
+}
+.diag-run-input input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.diag-run-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}

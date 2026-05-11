@@ -6,6 +6,36 @@
 }
 .learn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.learn-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.learn-checkbox input { cursor: pointer; }
+.learn-checkbox:hover { color: var(--text-primary); }
+
+.learn-diagnostics-btn {
+  position: relative;
+  margin-right: 8px;
+  padding: 6px 14px; font-size: 13px;
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  color: var(--text-primary); border-radius: 6px; cursor: pointer;
+}
+.learn-diagnostics-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.learn-diagnostics-btn.has-drift { border-color: var(--color-warning); }
+.learn-diagnostics-dot {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--color-error);
+  box-shadow: 0 0 0 2px var(--bg-elevated);
+}
+
 .learn-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .kpi-card {
   background: var(--bg-surface); border: 1px solid var(--border-default);
@@ -80,72 +110,6 @@
 .learn-runs-table code { background: var(--bg-elevated); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
 .learn-run-sections { display: grid; gap: 18px; }
 .learn-run-section { display: grid; gap: 10px; overflow-x: auto; }
-.run-drift-panel {
-  margin-bottom: 16px;
-  padding: 12px;
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-}
-.run-drift-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.run-drift-summary {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-.run-drift-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
-}
-.run-drift-card {
-  padding: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface);
-}
-.run-drift-card.has-drift {
-  border-color: var(--color-warning);
-}
-.run-drift-card-title {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-  word-break: break-word;
-}
-.run-drift-card-count {
-  font-size: 24px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.run-drift-card-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.run-drift-btn {
-  padding: 4px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 11px;
-}
-.run-drift-btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
 /* ── Main tab nav ─────────────────────────────────────────────────────────── */
 .learn-main-tabs {
   display: flex;

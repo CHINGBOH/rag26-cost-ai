@@ -103,23 +103,33 @@ export const ProblemsPanel: React.FC<ProblemsPanelProps> = ({ problems }) => {
               <div className="strategies-section">
                 <h3>💡 修复建议</h3>
                 <div className="strategies-list">
-                  {strategies.map((s) => (
-                    <div key={s.strategy_id} className={`strategy-card ${s.decision}`}>
-                      <div className="header">
-                        <span className="action">{s.action_type}</span>
-                        <span className={`risk ${s.risk_level}`}>
-                          {s.risk_level === 'low' ? '✅ 低风险' : s.risk_level === 'mid' ? '⚠️ 中风险' : '🚨 高风险'}
-                        </span>
+                  {strategies.map((s) => {
+                    const decisionLabel =
+                      s.decision === 'auto_apply'
+                        ? '自动应用'
+                        : s.decision === 'pending_review'
+                        ? '待审核'
+                        : '人工决策';
+                    return (
+                      <div key={s.strategy_id} className={`strategy-card ${s.decision}`}>
+                        <div className="header">
+                          <span className="action">{s.action_type}</span>
+                          <span className={`risk ${s.risk_level}`}>
+                            {s.risk_level === 'low' ? '✅ 低风险' : s.risk_level === 'mid' ? '⚠️ 中风险' : '🚨 高风险'}
+                          </span>
+                        </div>
+                        <p className="description">{s.description}</p>
+                        <details className="strategy-detail">
+                          <summary>处置：{decisionLabel}</summary>
+                          <ul>
+                            <li>预期改进：{s.estimated_impact}%</li>
+                            <li>处置策略：{decisionLabel}（<code>{s.decision}</code>）</li>
+                            <li>动作类型：<code>{s.action_type}</code></li>
+                          </ul>
+                        </details>
                       </div>
-                      <p className="description">{s.description}</p>
-                      <div className="footer">
-                        <span>预期改进: {s.estimated_impact}%</span>
-                        <span className={`decision ${s.decision}`}>
-                          {s.decision === 'auto_apply' ? '自动应用' : s.decision === 'pending_review' ? '待审核' : '人工决策'}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </>
