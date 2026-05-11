@@ -15,6 +15,7 @@ import './LibraryPage.css';
 import { QUICK_QUESTIONS } from '../config/kb-config';
 import { SystemAssistant } from '../components/SystemAssistant';
 import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
+import { PresentationCard } from './AgentChat';
 
 /* ── Fixed config — never exposed to user ────────────── */
 const LIBRARY_CONFIG: AgentConfig = {
@@ -233,7 +234,10 @@ const LibraryBubble: React.FC<{
       <span className="lib-avatar">📚</span>
       <div className="lib-bubble-wrap">
         <div className="lib-bubble lib-bubble--assistant">
-          <div dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />
+          {message.presentation && <PresentationCard presentation={message.presentation} />}
+          {(!message.presentation || !['answer_sections', 'calculation_steps'].includes(message.presentation.type)) && (
+            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} />
+          )}
         </div>
 
         {/* Source references */}

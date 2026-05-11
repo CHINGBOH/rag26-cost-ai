@@ -255,7 +255,15 @@ _PLANNER_SYSTEM = """你是工程造价专业规划助手。收到用户问题�
 _QUERY_TYPE_INSTRUCTIONS: dict[str, str] = {
     "trend_chart": "4. 先给出趋势结论（涨/跌/平稳，涨跌幅），再列关键时间节点数据；不要仅罗列数字。若证据中已给出“价格走势 期间:YYYY-MM 均价:XX”这类月均价点，可直接按该类别月均价口径计算走势或环比，不要因为底层规格混杂而拒答，但需说明口径。",
     "comparison": "4. 先给对比结论（谁高/谁低/差距多少），再分别列各方数据，最后计算差值",
-    "calculation": "4. 先列计算公式和费率来源，再逐步计算，最后给出带单位的结果",
+    "calculation": (
+        "4. 本题是数值计算题，必须给出具体数字结果，严禁以\"费率版本不确定\"\"信息不足\"等理由拒绝计算。"
+        "若检索结果含多个版本费率（如2023版/2025版），分别代入计算，每个版本单独列一套完整计算链。"
+        "每步计算必须写成以下链式格式（缺一不可）：\n"
+        "名称 = 公式（含字母） = 数值代入展开 = 最终数值 单位\n"
+        "示例：企业管理费 = (人工费 + 机械费×0.1) × 费率 = (100 + 50×0.1) × 16.2% = 105 × 0.162 = 17.01万\n"
+        "示例：利润 = (人工费 + 材料费 + 机械费 + 企业管理费) × 利润率 = (100 + 200 + 50 + 17.01) × 5% = 367.01 × 0.05 = 18.35万\n"
+        "最终目标值（利润、造价等）必须给出数字，不得仅给公式或说\"无法确定\"。"
+    ),
     "price": "4. 给出价格数值时注明时间、规格、单位；多条记录按时间倒序排列",
     "default": "4. 先给出核心结论，再补充细节；语言自然流畅，避免机械罗列",
 }
@@ -860,95 +868,9 @@ def _extract_calc_title(prefix: str, first_segment: str, fallback_order: int) ->
     return f"步骤{fallback_order}"
 
 
-def _build_calculation_steps_presentation(
-    query: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-) -> dict | None:
-    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
-    if not answer_without_refs:
-        return None
-
-    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
-    candidate_sentences: list[str] = []
-    for part in [direct_answer, analysis_text]:
-        candidate_sentences.extend([s.strip() for s in re.split(r"[。；;]\s*", part) if s.strip()])
-
-    steps: list[dict] = []
-    seen_signatures: set[tuple[str, str]] = set()
-    for raw_sentence in candidate_sentences:
-        sentence = raw_sentence.replace("＝", "=")
-        if "=" not in sentence or not re.search(r"\d", sentence):
-            continue
-
-        prefix = ""
-        expr_text = sentence
-        if "：" in sentence:
-            maybe_prefix, maybe_expr = sentence.split("：", 1)
-            if "=" in maybe_expr:
-                prefix = maybe_prefix.strip()
-                expr_text = maybe_expr.strip()
-
-        segments = [seg.strip(" ，,") for seg in re.split(r"\s*=\s*", _normalize_math_text(expr_text)) if seg.strip(" ，,")]
-        if len(segments) < 3:
-            continue
-
-        title = _extract_calc_title(prefix, segments[0], len(steps) + 1)
-        expression_segments = segments[1:] if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z（）()]+", segments[0]) else segments
-        if len(expression_segments) < 2:
-            continue
-
-        result_text = expression_segments[-1]
-        calc_chain = expression_segments[:-1]
-        if not calc_chain:
-            continue
-
-        formula = calc_chain[0]
-        substituted = " = ".join(calc_chain)
-        copy_expression = _extract_copy_expression(formula, substituted)
-        if not copy_expression:
-            continue
-
-        result_match = re.search(r"(-?\d+(?:\.\d+)?)\s*(万元|万|元|%)?", result_text)
-        unit = result_match.group(2) if result_match else ""
-        result_value = result_match.group(1) if result_match else result_text
-
-        signature = (title, result_value)
-        if signature in seen_signatures:
-            continue
-        seen_signatures.add(signature)
-
-        steps.append(
-            {
-                "order": len(steps) + 1,
-                "title": title,
-                "formula": formula,
-                "substituted": substituted,
-                "result": result_value,
-                "result_text": result_text,
-                "unit": unit,
-                "copy_expression": copy_expression,
-            }
-        )
-
-    if not steps:
-        return None
-
-    analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
-    layout = _build_layout_blocks(direct_answer, analysis_paragraphs, "calculation")
-
-    return {
-        "type": "calculation_steps",
-        "title": "计算沙箱",
-        "note": query if len(query) <= 40 else None,
-        "summary": _build_summary_text("calculation", direct_answer),
-        "highlights": _build_highlights("calculation", direct_answer, analysis_text),
-        "steps": steps,
-        "layout": layout,
-        "sources": _parse_citation_items(citations_text)[:4],
-    }
-
+# NOTE: _build_calculation_steps_presentation canonical version is in
+# presentation_payloads.py; the local duplicate previously at this position was
+# deleted (issue #132) — it shadowed the deterministic-first path.
 
 def _parse_price_point(chunk: dict) -> dict | None:
     metadata = chunk.get("metadata") or {}
@@ -1135,26 +1057,11 @@ def _build_presentation_payload(query: str, query_type: str, chunks: list[dict])
     }
 
 
-def finalize_presentation_payload(
-    query: str,
-    query_type: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-    existing_presentation: dict | None = None,
-) -> dict | None:
-    if existing_presentation:
-        return existing_presentation
-    if query_type == "calculation":
-        calc_presentation = _build_calculation_steps_presentation(
-            query=query,
-            final_answer=final_answer,
-            chunks=chunks,
-            citations_text=citations_text,
-        )
-        if calc_presentation:
-            return calc_presentation
-    return _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
+# NOTE: finalize_presentation_payload is imported from presentation_payloads at module top.
+# The previous local duplicate was deleted (issue #132) — it shadowed the import and
+# called the local _build_calculation_steps_presentation, bypassing the deterministic
+# step generator. Same reason _build_calculation_steps_presentation duplicate is gone
+# (see canonical version in presentation_payloads.py).
 
 
 def _clean_markdown_noise(text: str) -> str:

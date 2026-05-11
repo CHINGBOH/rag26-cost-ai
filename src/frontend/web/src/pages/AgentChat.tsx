@@ -463,7 +463,7 @@ function sanitizePresentationPayload(p: PresentationPayload): PresentationPayloa
   return p;
 }
 
-const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation: rawPresentation }) => {
+export const PresentationCard: React.FC<{ presentation: PresentationPayload }> = ({ presentation: rawPresentation }) => {
   const presentation = sanitizePresentationPayload(rawPresentation);
   const [activeTrendIndex, setActiveTrendIndex] = useState(0);
 

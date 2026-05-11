@@ -441,6 +441,135 @@ def _extract_calc_title(prefix: str, first_segment: str, fallback_order: int) ->
     return f"步骤{fallback_order}"
 
 
+# ── Deterministic calculation step generation (issue #132) ─────────────────
+#
+# Bypass LLM text parsing entirely: read numeric inputs from query and fee
+# rates from retrieved chunks, then build steps from fixed formula templates.
+# Result: sandbox always renders when query + chunks have the data, regardless
+# of how the LLM phrases its prose answer.
+
+_COST_INPUT_RE = re.compile(
+    r"(人工费|材料费|机械费|设备费)\s*[为是＝=]?\s*(\d+(?:\.\d+)?)\s*(万|元|亿)?"
+)
+_FEE_VERSION_RE = re.compile(r"【(20\d{2}版)费率标准】\s*(企业管理费|利润|安全文明施工费)")
+_RECOMMENDED_RATE_RE = re.compile(r"推荐费率[:：为]?\s*(\d+(?:\.\d+)?)\s*%")
+_PROFIT_RATE_HINT_RE = re.compile(r"利润[^。\n]{0,30}推荐费率[为:：]?\s*(\d+(?:\.\d+)?)\s*%")
+
+
+def _extract_cost_inputs_from_query(query: str) -> dict[str, float]:
+    """Extract 人工费/材料费/机械费/设备费 numeric values from query (in 万元 unit)."""
+    found: dict[str, float] = {}
+    for label, value, unit in _COST_INPUT_RE.findall(query):
+        v = float(value)
+        if unit == "亿":
+            v *= 10000.0
+        elif unit == "元":
+            v /= 10000.0
+        # default unit 万 or unspecified
+        if label not in found:
+            found[label] = v
+    return found
+
+
+def _extract_fee_rates_from_chunks(chunks: list[dict]) -> dict[str, dict[str, float]]:
+    """
+    Group fee rates by version: {"2023版": {"企业管理费": 0.162, "利润": 0.05}, ...}
+    """
+    result: dict[str, dict[str, float]] = {}
+    for chunk in chunks:
+        content = str(chunk.get("content") or "")
+        if not content:
+            continue
+        ver_match = _FEE_VERSION_RE.search(content)
+        if not ver_match:
+            continue
+        version, item = ver_match.group(1), ver_match.group(2)
+        bucket = result.setdefault(version, {})
+        # primary item rate (the one this chunk is keyed on)
+        rate_match = _RECOMMENDED_RATE_RE.search(content)
+        if rate_match and item not in bucket:
+            bucket[item] = float(rate_match.group(1)) / 100.0
+        # opportunistic: same chunk often mentions 利润推荐费率 too
+        profit_match = _PROFIT_RATE_HINT_RE.search(content)
+        if profit_match and "利润" not in bucket:
+            bucket["利润"] = float(profit_match.group(1)) / 100.0
+    return result
+
+
+def _fmt_num(value: float) -> str:
+    """Round to 4 significant decimals, strip trailing zeros."""
+    s = f"{value:.4f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _build_deterministic_calculation_steps(
+    query: str, chunks: list[dict]
+) -> list[dict] | None:
+    """
+    Build calculation_steps[] from structured data (query inputs + chunk rates).
+    Returns None if the data isn't sufficient (caller falls back to LLM parsing).
+    """
+    costs = _extract_cost_inputs_from_query(query)
+    if "人工费" not in costs or "机械费" not in costs:
+        return None
+    rates_by_version = _extract_fee_rates_from_chunks(chunks)
+    if not rates_by_version:
+        return None
+
+    人工 = costs.get("人工费", 0.0)
+    材料 = costs.get("材料费", 0.0)
+    机械 = costs.get("机械费", 0.0)
+
+    steps: list[dict] = []
+    DEFAULT_PROFIT_RATE = 0.05  # 利润率行业惯例 5%，仅在 chunks 未抽到时使用
+
+    for version in sorted(rates_by_version.keys()):
+        rates = rates_by_version[version]
+        管理费率 = rates.get("企业管理费")
+        if 管理费率 is None:
+            continue
+        利润率 = rates.get("利润", DEFAULT_PROFIT_RATE)
+
+        # Step: 企业管理费 = (人工费 + 机械费×0.1) × 企业管理费费率
+        base1 = 人工 + 机械 * 0.1
+        管理费 = base1 * 管理费率
+        steps.append({
+            "order": len(steps) + 1,
+            "title": f"{version}·企业管理费",
+            "formula": "(人工费 + 机械费×0.1) × 企业管理费费率",
+            "substituted": (
+                f"({_fmt_num(人工)} + {_fmt_num(机械)}×0.1) × {_fmt_num(管理费率*100)}% "
+                f"= {_fmt_num(base1)} × {_fmt_num(管理费率)} = {_fmt_num(管理费)}"
+            ),
+            "result": _fmt_num(管理费),
+            "result_text": f"{_fmt_num(管理费)}万",
+            "unit": "万",
+            "copy_expression": f"({_fmt_num(人工)} + {_fmt_num(机械)} * 0.1) * {_fmt_num(管理费率)}",
+        })
+
+        # Step: 利润 = (人工费 + 材料费 + 机械费 + 企业管理费) × 利润率
+        base2 = 人工 + 材料 + 机械 + 管理费
+        利润 = base2 * 利润率
+        steps.append({
+            "order": len(steps) + 1,
+            "title": f"{version}·利润",
+            "formula": "(人工费 + 材料费 + 机械费 + 企业管理费) × 利润率",
+            "substituted": (
+                f"({_fmt_num(人工)} + {_fmt_num(材料)} + {_fmt_num(机械)} + {_fmt_num(管理费)}) "
+                f"× {_fmt_num(利润率*100)}% = {_fmt_num(base2)} × {_fmt_num(利润率)} = {_fmt_num(利润)}"
+            ),
+            "result": _fmt_num(利润),
+            "result_text": f"{_fmt_num(利润)}万",
+            "unit": "万",
+            "copy_expression": (
+                f"({_fmt_num(人工)} + {_fmt_num(材料)} + {_fmt_num(机械)} + {_fmt_num(管理费)}) "
+                f"* {_fmt_num(利润率)}"
+            ),
+        })
+
+    return steps if steps else None
+
+
 def _build_calculation_steps_presentation(
     query: str,
     final_answer: str,
@@ -760,6 +889,21 @@ def finalize_presentation_payload(
     # calculation_steps always takes priority for calculation queries — existing_presentation
     # (typically answer_sections from presentation_policy_node) must not suppress the sandbox.
     if query_type == "calculation":
+        # 1) Deterministic path: build steps directly from query inputs + chunk rates.
+        #    Independent of LLM prose format, so sandbox always renders when data is present.
+        deterministic_steps = _build_deterministic_calculation_steps(query, chunks)
+        if deterministic_steps:
+            answer_head = re.split(r"\n\s*\n", final_answer or "", maxsplit=1)[0].strip()
+            return _validate_presentation_contract({
+                "type": "calculation_steps",
+                "title": "计算沙箱",
+                "note": query if len(query) <= 40 else None,
+                "summary": _build_summary_text("calculation", answer_head),
+                "highlights": [],
+                "steps": deterministic_steps,
+                "sources": _parse_citation_items(citations_text)[:4],
+            })
+        # 2) Fallback: parse calculation chains from LLM text answer.
         calc_presentation = _build_calculation_steps_presentation(
             query=query,
             final_answer=final_answer,
