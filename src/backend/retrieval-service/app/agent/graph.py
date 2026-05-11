@@ -3798,6 +3798,21 @@ def synthesize_node(state: RAGAgentState) -> dict:
     except Exception:
         pass
 
+    # F3 (#135): 答对题时实时找匹配的 active 缺口并触发 lifecycle 决策
+    # fire-and-forget，不阻塞响应；失败完全吞掉
+    try:
+        from app.agent.gaps.realtime_resolver import try_resolve_gap_for_answer
+        try_resolve_gap_for_answer(
+            query=query,
+            final_answer=final_answer,
+            chunks=all_chunks,
+            confidence=float((evaluation or {}).get("confidence") or 0),
+            information_gain=float((evaluation or {}).get("information_gain") or 0),
+            refused=any(m in final_answer for m in REFUSAL_MARKERS),
+        )
+    except Exception:
+        pass
+
     followup_suggestions = build_followup_suggestions(query, all_chunks, final_answer, max_n=5)
 
     return {
