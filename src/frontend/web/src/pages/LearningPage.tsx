@@ -217,14 +217,15 @@ export const LearningPage: React.FC = () => {
     const qualityClass = presentation.quality || g.quality;
     const badgeLabel = QUALITY_ZH[presentation.badge] ?? QUALITY_ZH[presentation.quality] ?? presentation.quality;
     const causeText = g.cause_type ? CAUSE_TYPE_ZH[g.cause_type] ?? g.cause_type : null;
+    const queryShort = g.query.length > 70 ? g.query.slice(0, 70) + '…' : g.query;
     return (
       <li key={g.gap_key ?? g.problem_id ?? `${g.query}-${index}`} className={`gap-item q-${qualityClass}`}>
-        <div className="gap-q">{g.query}</div>
+        <div className="gap-q" title={g.query.length > 70 ? g.query : undefined}>{queryShort}</div>
         <div className="gap-meta">
           {renderGapStatusBadge(g.status)}
           {presentation.refused && <span className="badge refused">系统答不出</span>}
           {causeText && <span className="muted small">{causeText}</span>}
-          <span className="muted small">{fmtDateTime(g.ts)}</span>
+          <span className="muted small gap-time">{fmtDateTime(g.ts)}</span>
         </div>
 
         {g.resolution_plan && (
@@ -472,25 +473,22 @@ export const LearningPage: React.FC = () => {
           </div>
           {triageNote && <p className="muted small" style={{ marginBottom: 8 }}>{triageNote}</p>}
           {!gapWorkbench || gapCounts.total === 0 ? (
-            <p className="empty">暂无识别到的知识缺口 — 当前所有运行均良好。</p>
+            <p className="empty">没有未解决的问题 — 系统目前表现良好。</p>
           ) : (
             <div className="gap-workbench">
               {GAP_BUCKETS.map((bucket) => {
                 const items = gapWorkbench.buckets[bucket.key] || [];
+                if (items.length === 0) return null;
+                // 「已搞定」默认折叠（通常很多，但不需要每次都看）
+                const startOpen = bucket.key !== 'resolved';
                 return (
-                  <div key={bucket.key} className="gap-bucket">
-                    <div className="learn-card-head">
-                      <h4>{bucket.title} <span className="muted">({items.length})</span></h4>
-                      <span className="muted small">{bucket.hint}</span>
-                    </div>
-                    {items.length === 0 ? (
-                      <p className="empty">暂无{bucket.title}问题。</p>
-                    ) : (
-                      <ul className="gap-list">
-                        {items.map(renderGapItem)}
-                      </ul>
-                    )}
-                  </div>
+                  <details key={bucket.key} className="gap-bucket" open={startOpen}>
+                    <summary className="gap-bucket-summary">
+                      <span className="gap-bucket-title">{bucket.title}</span>
+                      <span className="gap-bucket-count">{items.length}</span>
+                    </summary>
+                    <ul className="gap-list">{items.map(renderGapItem)}</ul>
+                  </details>
                 );
               })}
             </div>

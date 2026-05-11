@@ -13,9 +13,12 @@ export const StatusTab: React.FC<StatusTabProps> = ({ signals, signalsSummary })
     <DashboardPanel />
 
     {signals && signalsSummary ? (
-      <section className="learn-card learn-signals-card">
+      <details className="learn-card learn-signals-card learn-signals-collapsed">
+        <summary className="learn-signals-summary">
+          <span>📡 详细信号监控</span>
+          <span className="muted small">点开看技术统计（开发用）</span>
+        </summary>
         <div className="learn-card-head">
-          <h3>📡 实时信号监控</h3>
           <span className="muted small">采集于 {fmtDateTime(signals.timestamp)}</span>
         </div>
 
@@ -103,12 +106,8 @@ export const StatusTab: React.FC<StatusTabProps> = ({ signals, signalsSummary })
             </div>
           </div>
         )}
-      </section>
-    ) : (
-      <section className="learn-card">
-        <p className="empty">正在加载信号数据...</p>
-      </section>
-    )}
+      </details>
+    ) : null}
   </>
 );
 

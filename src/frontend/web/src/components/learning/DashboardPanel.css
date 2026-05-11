@@ -149,6 +149,21 @@
   50% { opacity: 0.7; }
 }
 
+.event-tech-detail { margin-top: 4px; font-size: 11px; }
+.event-tech-detail > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 10px;
+  list-style: revert;
+}
+.event-tech-detail > summary:hover { color: var(--text-primary); }
+.event-tech-detail .event-route,
+.event-tech-detail .event-description {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
 /* 告警部分 */
 .alerts-section {
   background: var(--bg-surface);

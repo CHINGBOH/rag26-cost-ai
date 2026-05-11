@@ -42,65 +42,10 @@ export const DashboardPanel: React.FC = () => {
 
   if (loading || !dashboard) return <div className="loading">⏳ 加载看板中...</div>;
 
-  const { health, key_metrics, improvement_trend, alerts, recent_events } = dashboard;
-
-  const healthColor = 
-    health.status === 'good' ? '#2ecc71' : 
-    health.status === 'warning' ? '#f39c12' : 
-    '#e74c3c';
-  
-  const healthEmoji = 
-    health.status === 'good' ? '✅' : 
-    health.status === 'warning' ? '⚠️' : 
-    '🚨';
+  const { improvement_trend, alerts, recent_events } = dashboard;
 
   return (
     <div className="dashboard-panel">
-      {/* 健康度指示 */}
-      <div className="health-card" style={{ borderLeftColor: healthColor }}>
-        <div className="health-emoji">{healthEmoji}</div>
-        <div className="health-info">
-          <h3>系统健康度</h3>
-          <div className="health-score">
-            <div className="score-number">{health.score}</div>
-            <div className="score-bar">
-              <div className="fill" style={{ width: `${health.score}%`, backgroundColor: healthColor }}></div>
-            </div>
-            <div className="score-text">
-              {health.status === 'good' ? '运行正常' : health.status === 'warning' ? '需要关注' : '需要紧急处理'}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 关键指标 */}
-      <div className="key-metrics-grid">
-        <div className="metric-card">
-          <span className="label">待审核</span>
-          <span className={`value ${key_metrics.pending_approvals > 0 ? 'warning' : ''}`}>
-            {key_metrics.pending_approvals}
-          </span>
-          <span className="hint">个待审核项</span>
-        </div>
-        <div className="metric-card">
-          <span className="label">最后运行</span>
-          <span className="value">
-            {key_metrics.last_run 
-              ? new Date(key_metrics.last_run).toLocaleDateString('zh-CN')
-              : '从未'
-            }
-          </span>
-          <span className="hint">时间</span>
-        </div>
-        <div className="metric-card">
-          <span className="label">系统状态</span>
-          <span className={`value ${key_metrics.running ? 'running' : 'idle'}`}>
-            {key_metrics.running ? '🔄 运行中' : '✓ 就绪'}
-          </span>
-          <span className="hint">当前状态</span>
-        </div>
-      </div>
-
       {/* 告警 */}
       {alerts.length > 0 && (
         <div className="alerts-section">
@@ -124,7 +69,7 @@ export const DashboardPanel: React.FC = () => {
       {/* 改进趋势图 */}
       {improvement_trend.length > 0 && (
         <div className="chart-container">
-          <h3>📊 成功率趋势（30 天）</h3>
+          <h3>📈 近 30 天表现</h3>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={improvement_trend}>
               <CartesianGrid strokeDasharray="3 3" />
@@ -134,36 +79,36 @@ export const DashboardPanel: React.FC = () => {
                 textAnchor="end"
                 height={60}
               />
-              <YAxis yAxisId="left" label={{ value: '成功率', angle: -90, position: 'insideLeft' }} />
-              <YAxis 
-                yAxisId="right" 
-                orientation="right" 
-                label={{ value: '修复数', angle: 90, position: 'insideRight' }}
+              <YAxis yAxisId="left" label={{ value: '答对比例', angle: -90, position: 'insideLeft' }} />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
+                label={{ value: '修好的问题', angle: 90, position: 'insideRight' }}
               />
-              <Tooltip 
+              <Tooltip
                 contentStyle={{ backgroundColor: '#fff', border: '1px solid #ddd' }}
                 formatter={(value, name) => {
-                  if (name === 'rate') return [Number(value).toFixed(2), '成功率'];
-                  if (name === 'fixed') return [value, '修复数'];
+                  if (name === '答对比例') return [Number(value).toFixed(2), '答对比例'];
+                  if (name === '修好的问题') return [value, '修好的问题'];
                   return [value, name];
                 }}
               />
               <Legend />
-              <Line 
-                yAxisId="left" 
-                type="monotone" 
-                dataKey="rate" 
-                stroke="#2ecc71" 
-                name="成功率"
+              <Line
+                yAxisId="left"
+                type="monotone"
+                dataKey="rate"
+                stroke="#2ecc71"
+                name="答对比例"
                 strokeWidth={2}
                 dot={{ r: 4 }}
               />
-              <Line 
-                yAxisId="right" 
-                type="monotone" 
-                dataKey="fixed" 
-                stroke="#3498db" 
-                name="修复数"
+              <Line
+                yAxisId="right"
+                type="monotone"
+                dataKey="fixed"
+                stroke="#3498db"
+                name="修好的问题"
                 strokeWidth={2}
                 dot={{ r: 4 }}
               />
@@ -172,34 +117,38 @@ export const DashboardPanel: React.FC = () => {
         </div>
       )}
 
-      {/* 最近事件 */}
+      {/* 最近做过的事 */}
       {recent_events.length > 0 && (
         <div className="recent-events">
-          <h3>📋 最近事件 ({recent_events.length})</h3>
+          <h3>🕐 最近做过的事 ({recent_events.length})</h3>
           <div className="events-list">
-            {recent_events.slice(0, 8).map((event, i) => (
-              <div key={i} className={`event-item status-${event.status}`}>
-                <div className="event-time">
-                  {event.timestamp 
-                    ? new Date(event.timestamp).toLocaleTimeString('zh-CN')
-                    : '—'
-                  }
+            {recent_events.slice(0, 8).map((event, i) => {
+              const statusText =
+                event.status === 'verified' ? '✅ 已验证' :
+                event.status === 'pending_review' ? '📋 等批准' :
+                event.status === 'approved' ? '🕓 已批准' :
+                event.status === 'applied' ? '📝 已生效' :
+                event.status === 'rejected' ? '🚫 已拒绝' :
+                event.status === 'reverted' ? '↩️ 已撤销' :
+                '⏳ 处理中';
+              return (
+                <div key={i} className={`event-item status-${event.status}`}>
+                  <div className="event-time">
+                    {event.timestamp
+                      ? new Date(event.timestamp).toLocaleTimeString('zh-CN')
+                      : '—'}
+                  </div>
+                  <div className="event-content">
+                    <div className={`event-status status-${event.status}`}>{statusText}</div>
+                    <details className="event-tech-detail">
+                      <summary>看技术细节</summary>
+                      <div className="event-route"><code>{event.route}</code></div>
+                      <div className="event-description">{event.description}</div>
+                    </details>
+                  </div>
                 </div>
-                <div className="event-content">
-                  <div className="event-route">{event.route}</div>
-                  <div className="event-description">{event.description}</div>
-                </div>
-                <div className={`event-status status-${event.status}`}>
-                  {event.status === 'verified' && '✅ 已验证'}
-                  {event.status === 'pending_review' && '📋 待审核'}
-                  {event.status === 'approved' && '🕓 已批准'}
-                  {event.status === 'applied' && '📝 已应用'}
-                  {event.status === 'rejected' && '🚫 已拒绝'}
-                  {event.status === 'reverted' && '↩️ 已撤销'}
-                  {event.status === 'pending' && '⏳ 待处理'}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
