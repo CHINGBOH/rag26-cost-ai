@@ -1,9 +1,9 @@
 /* 待审核样式 */
 .reviews-panel {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 20px;
-  height: calc(100vh - 200px);
+  min-height: 400px;
   overflow-y: auto;
 }
 
@@ -11,12 +11,13 @@
   margin-top: 0;
   margin-bottom: 16px;
   font-size: 16px;
+  color: var(--text-primary);
 }
 
 .reviews-panel .empty {
   text-align: center;
   padding: 40px 20px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .reviews-panel .empty p {
@@ -30,14 +31,14 @@
 }
 
 .review-card {
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .review-card .header {
   padding: 12px;
-  background: #f5f5f5;
+  background: var(--bg-elevated);
   cursor: pointer;
   display: flex;
   gap: 12px;
@@ -47,20 +48,20 @@
 }
 
 .review-card .header:hover {
-  background: #efefef;
+  background: var(--bg-hover);
 }
 
 .review-card .timestamp {
   flex: 0 0 auto;
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
   min-width: 150px;
 }
 
 .review-card .action {
   flex: 1;
   font-size: 13px;
-  color: #333;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -72,19 +73,19 @@
 
 .review-card .toggle {
   flex: 0 0 auto;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .review-card .content {
   padding: 16px;
-  border-top: 1px solid #eee;
-  background: #fafafa;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-surface);
 }
 
 .review-card .description {
   margin: 0 0 12px 0;
   font-size: 13px;
-  color: #666;
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -93,7 +94,7 @@
   gap: 16px;
   margin: 16px 0;
   align-items: center;
-  background: #fff;
+  background: var(--bg-elevated);
   padding: 12px;
   border-radius: 4px;
 }
@@ -107,23 +108,23 @@
 
 .review-card .metric span {
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .review-card .metric strong {
   font-size: 16px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .review-card .arrow {
   font-size: 16px;
-  color: #ddd;
+  color: var(--border-default);
   flex: 0 0 auto;
 }
 
 .review-card .delta {
   padding: 8px 12px;
-  background: #e8f5e9;
+  background: rgba(21, 128, 61, 0.1);
   border-radius: 4px;
   display: flex;
   flex-direction: column;
@@ -133,16 +134,16 @@
 
 .review-card .delta span {
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .review-card .delta strong {
   font-size: 14px;
-  color: #2ecc71;
+  color: var(--color-success);
 }
 
 .review-card .delta strong.positive {
-  color: #2ecc71;
+  color: var(--color-success);
 }
 
 .review-card .actions {
@@ -155,16 +156,18 @@
   flex: 1;
   min-height: 60px;
   padding: 8px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   font-size: 12px;
   font-family: inherit;
   resize: vertical;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .review-card textarea:focus {
   outline: none;
-  border-color: #1976d2;
+  border-color: var(--border-highlight);
 }
 
 .review-card .buttons {
@@ -189,23 +192,23 @@
 }
 
 .review-card .approve {
-  background: #2ecc71;
-  color: white;
+  background: var(--color-success);
+  color: var(--text-inverse);
   flex: 1;
 }
 
 .review-card .approve:hover:not(:disabled) {
-  background: #27ae60;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  opacity: 0.88;
+  box-shadow: var(--shadow-xs);
 }
 
 .review-card .reject {
-  background: #e74c3c;
-  color: white;
+  background: var(--color-error);
+  color: var(--text-inverse);
   flex: 1;
 }
 
 .review-card .reject:hover:not(:disabled) {
-  background: #c0392b;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  opacity: 0.88;
+  box-shadow: var(--shadow-xs);
 }

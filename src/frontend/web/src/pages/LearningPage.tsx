@@ -26,7 +26,6 @@ import {
   getSignalsSummary,
   getDetectedProblems,
   getImprovementHistory,
-  getLearningStats,
   triageGaps,
   retestGap,
   transitionGap,
@@ -131,7 +130,7 @@ export const LearningPage: React.FC = () => {
   const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
   const [problems, setProblems] = useState<ProblemReport[]>([]);
   const [historyEvents, setHistoryEvents] = useState<ImprovementEvent[]>([]);
-  const [learningStats, setLearningStats] = useState<any>(null);
+  const [historySummary, setHistorySummary] = useState<any>(null);
   const [selectedRunDrift, setSelectedRunDrift] = useState<LearningProjectionDriftSummary | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [driftLoading, setDriftLoading] = useState(false);
@@ -147,7 +146,7 @@ export const LearningPage: React.FC = () => {
 
   const refresh = async () => {
     setLoading(true);
-    const [s, interactionData, learningLoopData, gapWorkbenchData, b, convs, fb, eng, sig, sigSum, probData, histData, statsData] = await Promise.all([
+    const [s, interactionData, learningLoopData, gapWorkbenchData, b, convs, fb, eng, sig, sigSum, probData, histData] = await Promise.all([
       getLearningSummary(),
       getLearningRuns(50, filter === 'all' ? undefined : filter, 'interaction'),
       getLearningRuns(30, undefined, 'learning_loop'),
@@ -160,7 +159,6 @@ export const LearningPage: React.FC = () => {
       getSignalsSummary(),
       getDetectedProblems(),
       getImprovementHistory(30),
-      getLearningStats(),
     ]);
     setSummary(s);
     setInteractionRuns(interactionData);
@@ -174,7 +172,7 @@ export const LearningPage: React.FC = () => {
     setSignalsSummary(sigSum);
     setProblems(probData.problems);
     setHistoryEvents(histData.events);
-    setLearningStats(statsData);
+    setHistorySummary(histData.summary);
     setLoading(false);
   };
 
@@ -1186,7 +1184,7 @@ export const LearningPage: React.FC = () => {
       {mainTab === 'history' && (
       <ImprovementHistoryPanel
         events={historyEvents}
-        stats={learningStats}
+        stats={{ summary: historySummary, effectiveness: historySummary }}
       />
       )}
     </div>

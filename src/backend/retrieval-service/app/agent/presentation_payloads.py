@@ -454,7 +454,7 @@ def _build_calculation_steps_presentation(
     direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
     candidate_sentences: list[str] = []
     for part in [direct_answer, analysis_text]:
-        candidate_sentences.extend([s.strip() for s in re.split(r"[。；;]\s*", part) if s.strip()])
+        candidate_sentences.extend([s.strip() for s in re.split(r"[。；;\n]\s*", part) if s.strip()])
 
     steps: list[dict] = []
     seen_signatures: set[tuple[str, str]] = set()
@@ -757,8 +757,8 @@ def finalize_presentation_payload(
     citations_text: str,
     existing_presentation: dict | None = None,
 ) -> dict | None:
-    if existing_presentation:
-        return _validate_presentation_contract(existing_presentation)
+    # calculation_steps always takes priority for calculation queries — existing_presentation
+    # (typically answer_sections from presentation_policy_node) must not suppress the sandbox.
     if query_type == "calculation":
         calc_presentation = _build_calculation_steps_presentation(
             query=query,
@@ -768,6 +768,8 @@ def finalize_presentation_payload(
         )
         if calc_presentation:
             return _validate_presentation_contract(calc_presentation)
+    if existing_presentation:
+        return _validate_presentation_contract(existing_presentation)
     return _validate_presentation_contract(
         _build_answer_sections_presentation(query, query_type, final_answer, chunks, citations_text)
     )

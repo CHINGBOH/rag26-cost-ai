@@ -218,14 +218,14 @@ def _classify_intent(query: str) -> str:
         return "comparison"
     if any(kw in q for kw in COMPARISON_KEYWORDS) and len(period_mentions) >= 2:
         return "comparison"
-    # fee standard formula/method explanation should be treated as rule lookup, not numeric calculation
-    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
-        return "standard_ref"
-    # numeric calculation problem: query supplies cost values and asks for a derived figure
+    # numeric calculation problem wins over standard_ref: query supplies concrete cost values
     # e.g. "人工费100万、材料费200万、机械费50万 ... 利润为多少？"
     numeric_inputs = _NUMERIC_CALC_INPUT_PATTERN.findall(cleaned_query)
     if len(numeric_inputs) >= 2 and _NUMERIC_CALC_TARGET_PATTERN.search(cleaned_query):
         return "calculation"
+    # fee standard formula/method explanation (no numeric inputs) → rule lookup
+    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
+        return "standard_ref"
     has_price_keyword = any(kw in q for kw in PRICE_KEYWORDS)
     has_calc_keyword = any(kw in q for kw in CALC_KEYWORDS)
     if has_price_keyword:

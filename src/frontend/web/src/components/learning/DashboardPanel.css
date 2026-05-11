@@ -2,35 +2,35 @@
   display: grid;
   gap: 16px;
   padding: 20px;
-  background: #f5f5f5;
+  background: var(--bg-primary);
 }
 
 .dashboard-error {
   padding: 20px;
-  background: #f8d7da;
+  background: rgba(185, 28, 28, 0.1);
   border-radius: 8px;
   text-align: center;
-  color: #721c24;
+  color: var(--color-error);
 }
 
 .dashboard-error button {
   margin-top: 12px;
   padding: 8px 16px;
-  background: #721c24;
-  color: #fff;
+  background: var(--color-error);
+  color: var(--text-inverse);
   border: none;
   border-radius: 4px;
   cursor: pointer;
 }
 
 .dashboard-error button:hover {
-  background: #5a151b;
+  opacity: 0.88;
 }
 
 .loading {
   padding: 40px 20px;
   text-align: center;
-  color: #666;
+  color: var(--text-muted);
   font-size: 16px;
 }
 
@@ -40,10 +40,10 @@
   gap: 20px;
   align-items: center;
   padding: 24px;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   border-left: 4px solid;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-xs);
 }
 
 .health-emoji {
@@ -58,7 +58,7 @@
 .health-info h3 {
   margin: 0 0 12px 0;
   font-size: 14px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -72,12 +72,12 @@
 .score-number {
   font-size: 36px;
   font-weight: bold;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .score-bar {
   height: 10px;
-  background: #eee;
+  background: var(--bg-elevated);
   border-radius: 5px;
   overflow: hidden;
   width: 100%;
@@ -91,7 +91,7 @@
 
 .score-text {
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
   margin-top: 4px;
 }
 
@@ -103,45 +103,45 @@
 }
 
 .metric-card {
-  background: #fff;
+  background: var(--bg-surface);
   padding: 16px;
   border-radius: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   text-align: center;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  border-top: 3px solid #e8e8e8;
+  box-shadow: var(--shadow-xs);
+  border-top: 3px solid var(--border-default);
 }
 
 .metric-card .label {
   font-size: 12px;
-  color: #999;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
 .metric-card .value {
   font-size: 24px;
   font-weight: bold;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .metric-card .value.warning {
-  color: #f39c12;
+  color: var(--color-warning);
 }
 
 .metric-card .value.running {
-  color: #e74c3c;
+  color: var(--color-error);
   animation: pulse 2s infinite;
 }
 
 .metric-card .hint {
   font-size: 11px;
-  color: #bbb;
+  color: var(--text-muted);
 }
 
 .metric-card .value.idle {
-  color: #2ecc71;
+  color: var(--color-success);
 }
 
 @keyframes pulse {
@@ -150,10 +150,10 @@
 }
 
 .drift-section {
-  background: #fff;
+  background: var(--bg-surface);
   padding: 16px;
   border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-xs);
 }
 
 .drift-section-head {
@@ -174,6 +174,7 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .drift-total {
@@ -186,25 +187,25 @@
 }
 
 .drift-total.healthy {
-  background: #d4edda;
-  color: #155724;
+  background: rgba(21, 128, 61, 0.12);
+  color: var(--color-success);
 }
 
 .drift-total.warning {
-  background: #fff3cd;
-  color: #856404;
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--color-warning);
 }
 
 .drift-empty {
   margin: 0;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
 .drift-note {
   margin: 0 0 12px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--text-secondary);
 }
 
 .drift-grid {
@@ -214,20 +215,20 @@
 }
 
 .drift-card {
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 14px;
-  background: #fafafa;
+  background: var(--bg-elevated);
 }
 
 .drift-card.has-drift {
-  border-color: #f39c12;
-  background: #fffaf0;
+  border-color: var(--color-warning);
+  background: rgba(180, 83, 9, 0.04);
 }
 
 .drift-card-title {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 8px;
   word-break: break-word;
 }
@@ -235,7 +236,7 @@
 .drift-card-count {
   font-size: 28px;
   font-weight: 700;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 
@@ -244,22 +245,22 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px 10px;
   font-size: 11px;
-  color: #777;
+  color: var(--text-muted);
 }
 
 .drift-reconcile-btn {
   border: none;
   border-radius: 6px;
   padding: 8px 12px;
-  background: #1f6feb;
-  color: #fff;
+  background: var(--color-info);
+  color: var(--text-inverse);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .drift-reconcile-btn:hover:not(:disabled) {
-  background: #1a5fd0;
+  opacity: 0.88;
 }
 
 .drift-reconcile-btn:disabled {
@@ -269,16 +270,17 @@
 
 /* 告警部分 */
 .alerts-section {
-  background: #fff;
+  background: var(--bg-surface);
   padding: 16px;
   border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-xs);
 }
 
 .alerts-section h3 {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .alerts-list {
@@ -298,15 +300,15 @@
 }
 
 .alert-warning {
-  background: #fff3cd;
-  border-left-color: #f39c12;
-  color: #856404;
+  background: rgba(180, 83, 9, 0.08);
+  border-left-color: var(--color-warning);
+  color: var(--color-warning);
 }
 
 .alert-critical {
-  background: #f8d7da;
-  border-left-color: #e74c3c;
-  color: #721c24;
+  background: rgba(185, 28, 28, 0.08);
+  border-left-color: var(--color-error);
+  color: var(--color-error);
 }
 
 .alert .severity-icon {
@@ -316,6 +318,7 @@
 
 .alert .message {
   flex: 1;
+  color: var(--text-primary);
 }
 
 .alert .time {
@@ -326,30 +329,32 @@
 
 /* 图表容器 */
 .chart-container {
-  background: #fff;
+  background: var(--bg-surface);
   padding: 16px;
   border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-xs);
 }
 
 .chart-container h3 {
   margin: 0 0 16px 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 /* 最近事件 */
 .recent-events {
-  background: #fff;
+  background: var(--bg-surface);
   padding: 16px;
   border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--shadow-xs);
 }
 
 .recent-events h3 {
   margin: 0 0 12px 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .events-list {
@@ -360,8 +365,8 @@
 
 .event-item {
   padding: 12px;
-  border-left: 4px solid #ddd;
-  background: #fafafa;
+  border-left: 4px solid var(--border-default);
+  background: var(--bg-elevated);
   border-radius: 4px;
   display: grid;
   grid-template-columns: 80px 1fr 100px;
@@ -371,24 +376,24 @@
 }
 
 .event-item.status-verified {
-  border-left-color: #2ecc71;
+  border-left-color: var(--color-success);
 }
 
 .event-item.status-applied {
-  border-left-color: #3498db;
+  border-left-color: var(--color-info);
 }
 
 .event-item.status-reverted {
-  border-left-color: #e67e22;
+  border-left-color: var(--color-warning);
 }
 
 .event-item.status-pending {
-  border-left-color: #95a5a6;
+  border-left-color: var(--text-muted);
 }
 
 .event-time {
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -398,7 +403,7 @@
 
 .event-route {
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -406,7 +411,7 @@
 }
 
 .event-description {
-  color: #666;
+  color: var(--text-secondary);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -424,31 +429,31 @@
 }
 
 .event-status.status-verified {
-  background: #d4edda;
-  color: #155724;
+  background: rgba(21, 128, 61, 0.12);
+  color: var(--color-success);
 }
 
 .event-status.status-applied {
-  background: #d1ecf1;
-  color: #0c5460;
+  background: rgba(3, 105, 161, 0.12);
+  color: var(--color-info);
 }
 
 .event-status.status-reverted {
-  background: #fff3cd;
-  color: #856404;
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--color-warning);
 }
 
 .event-status.status-pending {
-  background: #e2e3e5;
-  color: #383d41;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
 }
 
 /* 空状态 */
 .empty-state {
   padding: 60px 20px;
   text-align: center;
-  color: #999;
-  background: #fff;
+  color: var(--text-muted);
+  background: var(--bg-surface);
   border-radius: 6px;
 }
 
@@ -460,7 +465,7 @@
 .empty-state .hint {
   font-size: 12px;
   margin-top: 8px;
-  color: #bbb;
+  color: var(--text-muted);
 }
 
 /* 响应式设计 */

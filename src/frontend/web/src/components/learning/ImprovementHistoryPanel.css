@@ -1,9 +1,9 @@
 /* 迭代历史样式 */
 .improvement-history-panel {
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 20px;
-  height: calc(100vh - 200px);
+  min-height: 400px;
   overflow-y: auto;
 }
 
@@ -16,10 +16,10 @@
 }
 
 .stat-card {
-  background: #f5f5f5;
+  background: var(--bg-elevated);
   padding: 16px;
   border-radius: 6px;
-  border-left: 4px solid #3498db;
+  border-left: 4px solid var(--color-info);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -27,29 +27,29 @@
 }
 
 .stat-card:hover {
-  background: #efefef;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-xs);
 }
 
 .stat-card.success {
-  border-left-color: #2ecc71;
+  border-left-color: var(--color-success);
 }
 
 .stat-card.failed {
-  border-left-color: #e74c3c;
+  border-left-color: var(--color-error);
 }
 
 .stat-card.reverted {
-  border-left-color: #95a5a6;
+  border-left-color: var(--text-muted);
 }
 
 .stat-card.improvement {
-  border-left-color: #f39c12;
+  border-left-color: var(--color-warning);
 }
 
 .stat-card .label {
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -58,66 +58,68 @@
 .stat-card .value {
   font-size: 24px;
   font-weight: bold;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .stat-card.success .value {
-  color: #2ecc71;
+  color: var(--color-success);
 }
 
 .stat-card.failed .value {
-  color: #e74c3c;
+  color: var(--color-error);
 }
 
 .stat-card.improvement .value {
-  color: #f39c12;
+  color: var(--color-warning);
 }
 
 /* 图表容器 */
 .chart-container {
-  background: #f9f9f9;
+  background: var(--bg-elevated);
   padding: 16px;
   border-radius: 6px;
   margin-bottom: 24px;
-  border: 1px solid #eee;
+  border: 1px solid var(--border-default);
 }
 
 .chart-container h3 {
   margin: 0 0 12px 0;
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 /* 历史详情表格 */
 .history-table {
   margin-top: 24px;
+  overflow-x: auto;
 }
 
 .history-table h3 {
   margin: 0 0 12px 0;
   font-size: 14px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .history-table .empty {
   text-align: center;
-  color: #999;
+  color: var(--text-muted);
   padding: 20px;
 }
 
 .history-table table {
   width: 100%;
+  min-width: 800px;
   border-collapse: collapse;
   margin-top: 12px;
-  background: #fff;
-  border: 1px solid #eee;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .history-table thead {
-  background: #f5f5f5;
-  border-bottom: 2px solid #ddd;
+  background: var(--bg-elevated);
+  border-bottom: 2px solid var(--border-default);
 }
 
 .history-table th {
@@ -125,16 +127,16 @@
   text-align: left;
   font-weight: bold;
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .history-table td {
   padding: 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border-default);
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .history-table tr:last-child td {
@@ -142,36 +144,36 @@
 }
 
 .history-table tr:hover {
-  background: #f9f9f9;
+  background: var(--bg-elevated);
 }
 
 .history-table tr.status-verified {
-  background: #f0f8f4;
+  background: rgba(21, 128, 61, 0.06);
 }
 
 .history-table tr.status-applied {
-  background: #f0f4ff;
+  background: rgba(3, 105, 161, 0.06);
 }
 
 .history-table tr.status-reverted {
-  background: #f5f5f5;
+  background: var(--bg-elevated);
 }
 
 .history-table tr.status-failed {
-  background: #fff0f0;
+  background: rgba(185, 28, 28, 0.06);
 }
 
 .history-table .delta {
-  color: #2ecc71;
+  color: var(--color-success);
   font-weight: bold;
 }
 
 .history-table .delta.negative {
-  color: #e74c3c;
+  color: var(--color-error);
 }
 
 .history-table .delta.neutral {
-  color: #999;
+  color: var(--text-muted);
 }
 
 .history-time-cell,
@@ -183,7 +185,7 @@
 }
 
 .history-subtle {
-  color: #999;
+  color: var(--text-muted);
   font-size: 11px;
   margin-top: 4px;
 }
@@ -200,30 +202,30 @@
 }
 
 .history-status-pill.status-pending_review {
-  background: rgba(245, 158, 11, 0.12);
-  color: #b45309;
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--color-warning);
 }
 
 .history-status-pill.status-approved,
 .history-status-pill.status-applied {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
+  background: rgba(3, 105, 161, 0.12);
+  color: var(--color-info);
 }
 
 .history-status-pill.status-verified {
-  background: rgba(34, 197, 94, 0.12);
-  color: #15803d;
+  background: rgba(21, 128, 61, 0.12);
+  color: var(--color-success);
 }
 
 .history-status-pill.status-reverted,
 .history-status-pill.status-rejected {
   background: rgba(107, 114, 128, 0.14);
-  color: #4b5563;
+  color: var(--text-secondary);
 }
 
 .history-status-pill.status-failed {
-  background: rgba(239, 68, 68, 0.12);
-  color: #b91c1c;
+  background: rgba(185, 28, 28, 0.12);
+  color: var(--color-error);
 }
 
 .history-detail-list {
@@ -234,30 +236,30 @@
 
 .history-detail-list code,
 .history-action code {
-  background: #f2f4f7;
+  background: var(--bg-elevated);
   padding: 1px 5px;
   border-radius: 4px;
 }
 
 .history-action {
   font-weight: 600;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 8px;
   line-height: 1.5;
 }
 
 .history-note {
   padding: 8px 10px;
-  background: #f7f7f7;
+  background: var(--bg-elevated);
   border-radius: 6px;
-  color: #555;
+  color: var(--text-secondary);
 }
 
 .history-error {
   padding: 8px 10px;
-  background: rgba(231, 76, 60, 0.08);
+  background: rgba(185, 28, 28, 0.08);
   border-radius: 6px;
-  color: #c0392b;
+  color: var(--color-error);
   font-weight: 500;
 }
 
@@ -266,6 +268,6 @@
   align-items: center;
   gap: 8px;
   font-weight: 700;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 6px;
 }

@@ -2,25 +2,26 @@
 .problems-panel {
   display: flex;
   gap: 20px;
-  height: calc(100vh - 200px);
-  background: #fff;
+  min-height: 400px;
+  background: var(--bg-surface);
   border-radius: 8px;
   overflow: hidden;
 }
 
 .problems-list {
   flex: 0 0 35%;
-  background: #fff;
+  background: var(--bg-surface);
   border-radius: 8px;
   padding: 16px;
   overflow-y: auto;
-  border-right: 1px solid #eee;
+  border-right: 1px solid var(--border-default);
 }
 
 .problems-list h3 {
   margin-top: 0;
   font-size: 16px;
   margin-bottom: 12px;
+  color: var(--text-primary);
 }
 
 .problem-items {
@@ -31,8 +32,8 @@
 
 .problem-item {
   padding: 12px;
-  border-left: 4px solid #3498db;
-  background: #f9f9f9;
+  border-left: 4px solid var(--color-info);
+  background: var(--bg-elevated);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s;
@@ -40,13 +41,13 @@
 
 .problem-item:hover,
 .problem-item.selected {
-  background: #f0f0f0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-xs);
 }
 
 .problem-item.selected {
-  background: #e3f2fd;
-  border-left-color: #1976d2;
+  background: var(--color-primary-light);
+  border-left-color: var(--color-primary);
 }
 
 .problem-item .header {
@@ -63,29 +64,29 @@
 }
 
 .problem-item .category {
-  background: #f0f0f0;
+  background: var(--bg-hover);
   padding: 2px 6px;
   border-radius: 2px;
   font-size: 11px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .problem-item .route {
-  color: #999;
+  color: var(--text-muted);
   font-size: 11px;
   flex: 1;
 }
 
 .problem-item .description {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 4px 0;
   line-height: 1.4;
 }
 
 .problem-item .confidence {
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
   margin-top: 4px;
 }
 
@@ -99,7 +100,7 @@
 .problem-detail .loading {
   text-align: center;
   padding: 40px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .analysis-section,
@@ -112,30 +113,30 @@
   margin-top: 0;
   margin-bottom: 12px;
   font-size: 16px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .root-cause {
-  background: #f9f9f9;
+  background: var(--bg-elevated);
   padding: 12px;
   border-radius: 4px;
-  border-left: 3px solid #2ecc71;
+  border-left: 3px solid var(--color-success);
   margin-bottom: 8px;
   line-height: 1.6;
 }
 
 .confidence {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 12px;
 }
 
 .confidence strong {
-  color: #333;
+  color: var(--text-primary);
 }
 
 .evidence {
-  background: #f5f5f5;
+  background: var(--bg-elevated);
   padding: 12px;
   border-radius: 4px;
   margin-bottom: 12px;
@@ -144,7 +145,7 @@
 .evidence h4 {
   margin: 0 0 8px 0;
   font-size: 13px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .evidence-group {
@@ -153,7 +154,7 @@
 
 .evidence-group strong {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .evidence-group ul {
@@ -164,7 +165,7 @@
 
 .evidence-group li {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 2px 0;
 }
 
@@ -175,28 +176,28 @@
 }
 
 .strategy-card {
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 12px;
-  background: #f9f9f9;
+  background: var(--bg-elevated);
   transition: all 0.2s;
 }
 
 .strategy-card:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  background: #fff;
+  box-shadow: var(--shadow-sm);
+  background: var(--bg-surface);
 }
 
 .strategy-card.auto_apply {
-  border-left: 3px solid #2ecc71;
+  border-left: 3px solid var(--color-success);
 }
 
 .strategy-card.pending_review {
-  border-left: 3px solid #f39c12;
+  border-left: 3px solid var(--color-warning);
 }
 
 .strategy-card.manual_only {
-  border-left: 3px solid #e74c3c;
+  border-left: 3px solid var(--color-error);
 }
 
 .strategy-card .header {
@@ -209,7 +210,7 @@
 .strategy-card .action {
   font-weight: bold;
   font-size: 13px;
-  color: #333;
+  color: var(--text-primary);
 }
 
 .strategy-card .risk {
@@ -219,7 +220,7 @@
 
 .strategy-card .description {
   font-size: 12px;
-  color: #666;
+  color: var(--text-secondary);
   margin: 8px 0;
   line-height: 1.4;
 }
@@ -229,7 +230,7 @@
   justify-content: space-between;
   margin-top: 8px;
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .strategy-card .decision {
@@ -240,22 +241,22 @@
 }
 
 .strategy-card .decision.auto_apply {
-  background: #e8f5e9;
-  color: #2ecc71;
+  background: rgba(21, 128, 61, 0.12);
+  color: var(--color-success);
 }
 
 .strategy-card .decision.pending_review {
-  background: #fff3e0;
-  color: #f39c12;
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--color-warning);
 }
 
 .strategy-card .decision.manual_only {
-  background: #ffebee;
-  color: #e74c3c;
+  background: rgba(185, 28, 28, 0.12);
+  color: var(--color-error);
 }
 
 .empty {
   text-align: center;
-  color: #999;
+  color: var(--text-muted);
   padding: 20px;
 }
