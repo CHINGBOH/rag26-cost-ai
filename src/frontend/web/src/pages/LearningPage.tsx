@@ -181,6 +181,16 @@ export const LearningPage: React.FC = () => {
   const observingCount = gapWorkbench?.counts.observing ?? 0;
   const pendingReviewCount = historyEvents.filter((e) => e.status === 'pending_review').length;
 
+  // F1+F2 闭环健康检查（#135）：自动复测器最后跑过多久？超过 15 分钟视为可能停跑
+  const listenerLastRunTs = engine?.last_run?.ts;
+  const listenerStaleMinutes = (() => {
+    if (!listenerLastRunTs) return null;
+    const ts = typeof listenerLastRunTs === 'string' ? Date.parse(listenerLastRunTs) : Number(listenerLastRunTs);
+    if (!Number.isFinite(ts)) return null;
+    return Math.floor((Date.now() - ts) / 60000);
+  })();
+  const listenerStale = listenerStaleMinutes !== null && listenerStaleMinutes > 15;
+
   const healthStatus = dashboard?.health.status;
   const healthTone: 'good' | 'warn' | 'bad' | undefined =
     healthStatus === 'good' ? 'good' : healthStatus === 'warning' ? 'warn' : healthStatus === 'critical' ? 'bad' : undefined;
@@ -414,13 +424,15 @@ export const LearningPage: React.FC = () => {
               : `还有 ${unresolvedGapCount} 个问题`
           }
           hint={
-            unresolvedGapCount === 0
+            listenerStale
+              ? `⚠️ 自动复测器已 ${listenerStaleMinutes} 分钟没跑了，列表可能过时`
+              : unresolvedGapCount === 0
               ? '没有未解决的问题'
               : observingCount > 0
-              ? `其中 ${observingCount} 个先观察一阵子`
+              ? `其中 ${observingCount} 个观察期满会自动结案`
               : '系统正在想办法'
           }
-          tone={unresolvedGapCount === 0 ? 'good' : unresolvedGapCount <= 5 ? 'warn' : 'bad'}
+          tone={listenerStale ? 'bad' : unresolvedGapCount === 0 ? 'good' : unresolvedGapCount <= 5 ? 'warn' : 'bad'}
         />
         <KpiCard
           label="等你拍板"

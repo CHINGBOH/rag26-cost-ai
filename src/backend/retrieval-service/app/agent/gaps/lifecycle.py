@@ -83,6 +83,29 @@ def is_policy_boundary_gap(gap: dict[str, Any]) -> bool:
     return any(pattern.search(text) for pattern in _POLICY_PATTERNS)
 
 
+def _observation_window_expired(gap: dict[str, Any]) -> bool:
+    """Return True if gap is in observing state and observation_until has passed."""
+    if str(gap.get("status") or "").lower() != "observing":
+        return False
+    observation_until = gap.get("observation_until")
+    if not observation_until:
+        return False
+    try:
+        from datetime import datetime, timezone
+        if isinstance(observation_until, (int, float)):
+            # epoch milliseconds
+            until_dt = datetime.fromtimestamp(observation_until / 1000.0, tz=timezone.utc)
+        elif isinstance(observation_until, str):
+            until_dt = datetime.fromisoformat(observation_until.replace("Z", "+00:00"))
+            if until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=timezone.utc)
+        else:
+            until_dt = observation_until  # datetime already
+        return datetime.now(timezone.utc) >= until_dt
+    except Exception:
+        return False
+
+
 def decide_from_live_retest(gap: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
     current_status = str(gap.get("status") or "open").lower()
     if is_policy_boundary_gap(gap):
@@ -91,13 +114,21 @@ def decide_from_live_retest(gap: dict[str, Any], evidence: dict[str, Any]) -> di
             "status": "blocked",
             "reason": "Live consultation retest confirmed policy, out-of-domain, or fabrication boundary",
         }
-    if (
+    passing = (
         evidence.get("ok")
         and evidence.get("quality") == "good"
         and not evidence.get("refused")
         and not evidence.get("generic_answer")
         and int(evidence.get("chunks_count") or 0) > 0
-    ):
+    )
+    if passing:
+        # 观察期已过 + 复测仍然通过 → 自动 resolve（关闭闭环）
+        if current_status == "observing" and _observation_window_expired(gap):
+            return {
+                "action": "resolve_after_observation",
+                "status": "resolved",
+                "reason": "Observation window expired and live retest continues to pass — auto-resolved",
+            }
         return {
             "action": "observe_fixed",
             "status": "observing",

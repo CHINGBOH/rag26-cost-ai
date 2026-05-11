@@ -428,6 +428,26 @@ class LearningScheduler:
                 issue_number=config.repair_promotion_issue_number,
                 issue_url=config.repair_promotion_issue_url,
             )
+
+        # F2 (#135): 扫描 observation_window 已过期的 observing gap，复测决策是否 resolve
+        # 没有这一步，gap 会永远卡在 observing 状态，前端「待解决问题」永远不减少
+        observation_resolutions: list[dict[str, Any]] = []
+        if not config.dry_run:
+            try:
+                observation_resolutions = await self._resolve_expired_observing_gaps(
+                    repository=repository,
+                    actor=config.actor,
+                    config=config,
+                )
+                if observation_resolutions:
+                    logger.info(
+                        "learning_gap_listener.observation_window_check resolved=%s actions=%s",
+                        sum(1 for r in observation_resolutions if r.get("action") == "resolve_after_observation"),
+                        [r.get("action") for r in observation_resolutions],
+                    )
+            except Exception as exc:
+                logger.warning("observation_window_check failed: %s", exc)
+
         summary = GapWorkbenchService(repository=repository).build(
             include_resolved=False,
             limit=int(config.limit or 20),
@@ -451,9 +471,54 @@ class LearningScheduler:
             "live_retests_used": len(actions),
             "counts": counts,
             "repair_promotions": repair_promotions,
+            "observation_resolutions": observation_resolutions,
+            "observation_resolutions_count": len(observation_resolutions),
             "summary": summary,
             "actions": actions,
         }
+
+    async def _resolve_expired_observing_gaps(
+        self,
+        *,
+        repository: "KnowledgeGapRepository",
+        actor: str,
+        config,
+    ) -> list[dict[str, Any]]:
+        """F2 (#135): 扫描 observation_window 已过期的 observing gap，复测后决策是否 resolve。
+
+        Without this, gaps stay stuck in observing forever even when the system has
+        clearly fixed them, because decide_from_live_retest 永远只会把 observing 复测
+        结果继续返回 observing 状态。
+        """
+        expired_gaps = repository.fetch_gaps(
+            statuses=["observing"],
+            limit=int(getattr(config, "limit", 20) or 20),
+        )
+        # 客户端过滤过期窗口（避免后端 SQL 改动）
+        from app.agent.gaps.lifecycle import _observation_window_expired
+        expired_gaps = [g for g in expired_gaps if _observation_window_expired(g)]
+        if not expired_gaps:
+            return []
+
+        # 限制本轮处理数量（避免一次性把所有过期 gap 全跑）
+        retest_limit = max(1, int(getattr(config, "max_live_retests", 3) or 3))
+        retester = GapRetestService(repository=repository)
+        results: list[dict[str, Any]] = []
+        for gap in expired_gaps[:retest_limit]:
+            try:
+                result = await retester.retest_gap(
+                    gap,
+                    actor=actor,
+                    consultation_endpoint=config.consultation_endpoint,
+                    timeout_seconds=config.consultation_timeout_seconds,
+                    max_iterations=config.max_iterations,
+                    observation_window_days=config.observation_window_days,
+                    dry_run=config.dry_run,
+                )
+                results.append(result)
+            except Exception as exc:
+                logger.warning("expired_observing_retest_failed gap_key=%s err=%s", gap.get("gap_key"), exc)
+        return results
     
     async def run_learning_loop_with_run_id(
         self,
