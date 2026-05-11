@@ -6,6 +6,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import mermaid from 'mermaid';
+import { getConversations } from '../services/metricsApi';
 import './SystemAssistant.css';
 
 mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
@@ -187,23 +188,15 @@ export const SystemAssistant: React.FC = () => {
     if (!open || historyHydratedRef.current) return;
     historyHydratedRef.current = true;
     (async () => {
-      try {
-        const res = await fetch('/api/v1/learning/conversations?source=guide&limit=20');
-        if (!res.ok) return;
-        const data = await res.json();
-        const rows: Array<{ user_content: string; assistant_content: string }> =
-          Array.isArray(data) ? data : (data?.turns ?? []);
-        if (!mountedRef.current || rows.length === 0) return;
-        // Oldest first
-        const restored: Msg[] = [];
-        rows.slice().reverse().forEach((r) => {
-          if (r.user_content) restored.push({ role: 'user', content: r.user_content });
-          if (r.assistant_content) restored.push({ role: 'assistant', content: r.assistant_content });
-        });
-        setMessages((prev) => (prev.length === 0 ? restored : prev));
-      } catch {
-        // best-effort hydration; ignore failures
-      }
+      const rows = await getConversations(20, 'guide');
+      if (!mountedRef.current || rows.length === 0) return;
+      // Oldest first
+      const restored: Msg[] = [];
+      rows.slice().reverse().forEach((r) => {
+        if (r.user_content) restored.push({ role: 'user', content: r.user_content });
+        if (r.assistant_content) restored.push({ role: 'assistant', content: r.assistant_content });
+      });
+      setMessages((prev) => (prev.length === 0 ? restored : prev));
     })();
   }, [open]);
 

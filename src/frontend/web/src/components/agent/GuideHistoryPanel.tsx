@@ -8,15 +8,9 @@
 
 import { useEffect, useState } from 'react';
 import { fmtTime } from '../../utils/dateUtils';
+import { getConversations, ConversationTurn } from '../../services/metricsApi';
 
-interface GuideTurn {
-  id: number;
-  session_id: string;
-  user_content: string;
-  assistant_content: string;
-  status: string;
-  ts: string;
-}
+type GuideTurn = ConversationTurn;
 
 interface GuideStats {
   total: number;
@@ -58,10 +52,7 @@ export const GuideHistoryPanel: React.FC = () => {
   const load = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/v1/learning/conversations?source=guide&limit=50');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : data?.turns ?? [];
+      const list = await getConversations(50, 'guide');
       setTurns(list);
       setError('');
     } catch (e: any) {
