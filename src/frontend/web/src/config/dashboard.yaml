@@ -32,7 +32,7 @@ llm:
     deepseek:
       name: "DeepSeek"
       icon: "🐋"
-      apiKey: "sk-783e95788a34443682fc02c4e8affa6f"
+      apiKey: "${VITE_DEEPSEEK_API_KEY}"
       baseURL: "https://api.deepseek.com"
       models:
         - id: "deepseek-chat"
