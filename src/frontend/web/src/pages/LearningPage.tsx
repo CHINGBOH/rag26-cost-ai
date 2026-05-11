@@ -39,6 +39,7 @@ import {
   ImprovementEvent,
 } from '../services/metricsApi';
 import { SystemDiagnosticsDrawer } from '../components/learning/SystemDiagnosticsDrawer';
+import { AdvancedDataDrawer } from '../components/learning/AdvancedDataDrawer';
 import { StatusTab } from './learning/StatusTab';
 import { IssuesTab } from './learning/IssuesTab';
 import { ImprovementsTab } from './learning/ImprovementsTab';
@@ -48,9 +49,7 @@ import {
   QualityFilter,
   MainTab,
   QUALITY_ZH,
-  TYPE_ZH,
   OUTCOME_FAMILY_ZH,
-  ENGINE_TRIGGER_MODE_ZH,
   GAP_SCOPE_ZH,
   CAUSE_TYPE_ZH,
   GAP_ACTION_ZH,
@@ -74,6 +73,7 @@ export const LearningPage: React.FC = () => {
   const [historyEvents, setHistoryEvents] = useState<ImprovementEvent[]>([]);
   const [historySummary, setHistorySummary] = useState<any>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [triagePending, setTriagePending] = useState(false);
   const [triageNote, setTriageNote] = useState<string | null>(null);
   const [retestingGaps, setRetestingGaps] = useState<Set<string>>(new Set());
@@ -174,7 +174,6 @@ export const LearningPage: React.FC = () => {
   const qual = summary?.by_quality || { good: 0, weak: 0, failure: 0 };
   const total = summary?.total_runs || 0;
   const errorCount = (qual.weak || 0) + (qual.failure || 0);
-  const refusedCount = summary?.refused_count ?? 0;
   const errorRate = total > 0 ? Math.round((errorCount / total) * 100) : 0;
 
   const unresolvedGapCount =
@@ -182,10 +181,7 @@ export const LearningPage: React.FC = () => {
   const observingCount = gapWorkbench?.counts.observing ?? 0;
   const pendingReviewCount = historyEvents.filter((e) => e.status === 'pending_review').length;
 
-  const healthScore = dashboard?.health.score;
   const healthStatus = dashboard?.health.status;
-  const healthEmoji =
-    healthStatus === 'good' ? '✅' : healthStatus === 'warning' ? '⚠️' : healthStatus === 'critical' ? '🚨' : '—';
   const healthTone: 'good' | 'warn' | 'bad' | undefined =
     healthStatus === 'good' ? 'good' : healthStatus === 'warning' ? 'warn' : healthStatus === 'critical' ? 'bad' : undefined;
 
@@ -220,135 +216,107 @@ export const LearningPage: React.FC = () => {
     };
     const qualityClass = presentation.quality || g.quality;
     const badgeLabel = QUALITY_ZH[presentation.badge] ?? QUALITY_ZH[presentation.quality] ?? presentation.quality;
+    const causeText = g.cause_type ? CAUSE_TYPE_ZH[g.cause_type] ?? g.cause_type : null;
     return (
       <li key={g.gap_key ?? g.problem_id ?? `${g.query}-${index}`} className={`gap-item q-${qualityClass}`}>
         <div className="gap-q">{g.query}</div>
         <div className="gap-meta">
-          <span className={`badge q-${qualityClass}`} title={presentation.reason}>{badgeLabel}</span>
           {renderGapStatusBadge(g.status)}
-          {presentation.refused && <span className="badge refused">拒答</span>}
-          <span className="muted small">片段 {presentation.chunks_count}</span>
-          <span className="muted small">置信 {presentation.confidence.toFixed(2)}</span>
-          {typeof g.priority === 'number' && <span className="muted small">优先级 {g.priority}</span>}
-          {g.scope_type && <span className="muted small">范围 {GAP_SCOPE_ZH[g.scope_type] ?? g.scope_type}</span>}
-          {g.scope_id && <span className="muted small">对象 {g.scope_id}</span>}
-          {g.affected_route && <span className="muted small">路径 {g.affected_route}</span>}
-          {g.cause_type && (
-            <span className="muted small" title={`后端字段：${g.cause_type}`}>
-              成因 {CAUSE_TYPE_ZH[g.cause_type] ?? g.cause_type}
-            </span>
-          )}
-          {typeof g.frequency === 'number' && <span className="muted small">频次 {g.frequency}</span>}
-          {!!g.reopen_count && <span className="muted small">复发 {g.reopen_count}</span>}
-          {g.source && <span className="muted small">来源 {g.source}</span>}
+          {presentation.refused && <span className="badge refused">系统答不出</span>}
+          {causeText && <span className="muted small">{causeText}</span>}
           <span className="muted small">{fmtDateTime(g.ts)}</span>
         </div>
-        {(g.cluster_id || g.linked_event_id || g.owner || item.allowed_actions.length > 0) && (
-          <div className="gap-meta">
-            {g.cluster_id && (
-              <span className="muted small" title={`完整簇 ID：${g.cluster_id}`}>
-                所属问题簇 <code>{g.cluster_id.slice(0, 8)}…</code>
-              </span>
+
+        {g.resolution_plan && (
+          <p className="gap-preview"><strong>处理方案：</strong>{g.resolution_plan}</p>
+        )}
+
+        {item.allowed_actions.length > 0 && (
+          <div className="gap-actions">
+            {item.allowed_actions.includes('live_retest') && (
+              <button
+                className="learn-refresh gap-action-btn"
+                disabled={retestingGaps.has(g.gap_key ?? '')}
+                onClick={() => g.gap_key && handleRetestGap(g.gap_key)}
+                title="让系统重新回答一次，看现在能不能答好"
+              >
+                {retestingGaps.has(g.gap_key ?? '') ? '复测中…' : '🔄 再试一次'}
+              </button>
             )}
-            {g.linked_event_id != null && (
-              <span className="muted small">关联事件 <code>#{g.linked_event_id}</code></span>
-            )}
-            {g.owner && <span className="muted small">负责人 {g.owner}</span>}
-            {g.first_seen_at && <span className="muted small">首次 {fmtDateTime(g.first_seen_at)}</span>}
-            {g.last_seen_at && <span className="muted small">最近 {fmtDateTime(g.last_seen_at)}</span>}
-            {g.verified_at && <span className="muted small">验证 {fmtDateTime(g.verified_at)}</span>}
-            {g.observation_until && <span className="muted small">观察截止 {fmtDateTime(g.observation_until)}</span>}
-            {g.last_reopened_at && <span className="muted small">最近重开 {fmtDateTime(g.last_reopened_at)}</span>}
-            {item.allowed_actions.length > 0 && (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-                  {item.allowed_actions.includes('live_retest') && (
-                    <button
-                      className="learn-refresh"
-                      style={{ fontSize: '0.75rem', padding: '2px 8px' }}
-                      disabled={retestingGaps.has(g.gap_key ?? '')}
-                      onClick={() => g.gap_key && handleRetestGap(g.gap_key)}
-                      title="通过真实查询端点实时复测此缺口"
-                    >
-                      {retestingGaps.has(g.gap_key ?? '') ? '复测中…' : '🔄 实时复测'}
-                    </button>
-                  )}
-                  {item.allowed_actions
-                    .filter((a) => a !== 'live_retest')
-                    .map((action) => {
-                      const tKey = `${g.gap_key}:${action}`;
-                      const label = GAP_ACTION_ZH[action] ?? action;
-                      return (
-                        <button
-                          key={action}
-                          className="learn-refresh"
-                          style={{ fontSize: '0.75rem', padding: '2px 8px' }}
-                          disabled={transitioning.has(tKey)}
-                          onClick={() => g.gap_key && handleTransitionGap(g.gap_key, action)}
-                          title={`后端动作：${action}`}
-                        >
-                          {transitioning.has(tKey) ? '…' : label}
-                        </button>
-                      );
-                    })}
-                </div>
-              )}
+            {item.allowed_actions
+              .filter((a) => a !== 'live_retest')
+              .map((action) => {
+                const tKey = `${g.gap_key}:${action}`;
+                const label = GAP_ACTION_ZH[action] ?? action;
+                return (
+                  <button
+                    key={action}
+                    className="learn-refresh gap-action-btn"
+                    disabled={transitioning.has(tKey)}
+                    onClick={() => g.gap_key && handleTransitionGap(g.gap_key, action)}
+                    title={`后端动作：${action}`}
+                  >
+                    {transitioning.has(tKey) ? '…' : label}
+                  </button>
+                );
+              })}
           </div>
         )}
-        {latestEvidence && (
-          <p
-            className="gap-preview"
-            title={
-              latestEvidence.outcome_code
-                ? `后端 outcome_code：${latestEvidence.outcome_code}`
-                : undefined
-            }
-          >
-            <strong>最新证据：</strong>
-            {OUTCOME_FAMILY_ZH[latestEvidence.outcome_code ?? ''] ??
-              QUALITY_ZH[latestEvidence.quality ?? ''] ??
-              latestEvidence.quality ??
-              latestEvidence.evidence_type}
-            {typeof latestEvidence.chunks_count === 'number' ? ` · 片段 ${latestEvidence.chunks_count}` : ''}
-            {typeof latestEvidence.http_status === 'number' ? ` · HTTP ${latestEvidence.http_status}` : ''}
-            {latestEvidence.recorded_at ? ` · ${fmtDateTime(latestEvidence.recorded_at)}` : ''}
-          </p>
-        )}
-        {repairTask && (
-          <p className="gap-preview">
-            <strong>修复任务：</strong>
-            #{repairTask.id} · {repairTask.task_type} · {repairTask.status}
-            {repairTask.issue_url ? (
-              <>
-                {' · '}
-                <a href={repairTask.issue_url} target="_blank" rel="noreferrer">
-                  issue #{repairTask.issue_number ?? repairTask.issue_url}
-                </a>
-              </>
-            ) : null}
-            {repairTask.updated_at ? ` · ${fmtDateTime(repairTask.updated_at)}` : ''}
-          </p>
-        )}
-        {g.resolution_plan && (
-          <p className="gap-preview"><strong>处置摘要：</strong>{g.resolution_plan}</p>
-        )}
+
         {(latestEvidence?.answer_preview || g.answer_preview) && (
-          <details>
-            <summary className="muted small">查看答案预览</summary>
+          <details className="gap-detail">
+            <summary>看看系统答的什么</summary>
             <p className="gap-preview">{latestEvidence?.answer_preview || g.answer_preview}</p>
           </details>
         )}
+
         {g.sample_queries && g.sample_queries.length > 1 && (
-          <details>
-            <summary className="muted small">查看同簇问题（{g.sample_queries.length}）</summary>
-            <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+          <details className="gap-detail">
+            <summary>类似问题（共 {g.sample_queries.length} 个）</summary>
+            <ul className="gap-sample-list">
               {g.sample_queries.map((sample, sampleIndex) => (
-                <li key={`${g.gap_key ?? g.query}-${sampleIndex}`} className="muted small" style={{ listStyle: 'disc' }}>
-                  {sample}
-                </li>
+                <li key={`${g.gap_key ?? g.query}-${sampleIndex}`}>{sample}</li>
               ))}
             </ul>
           </details>
         )}
+
+        <details className="gap-detail gap-detail-tech">
+          <summary>技术细节（开发用）</summary>
+          <ul className="gap-tech-list">
+            <span className={`badge q-${qualityClass}`} title={presentation.reason}>{badgeLabel}</span>
+            <li>片段 {presentation.chunks_count} · 置信 {presentation.confidence.toFixed(2)}</li>
+            {typeof g.priority === 'number' && <li>优先级 {g.priority}</li>}
+            {g.scope_type && <li>范围 {GAP_SCOPE_ZH[g.scope_type] ?? g.scope_type}{g.scope_id ? ` · 对象 ${g.scope_id}` : ''}</li>}
+            {g.affected_route && <li>路径 <code>{g.affected_route}</code></li>}
+            {typeof g.frequency === 'number' && <li>出现频次 {g.frequency}</li>}
+            {!!g.reopen_count && <li>复发次数 {g.reopen_count}</li>}
+            {g.source && <li>来源 {g.source}</li>}
+            {g.cluster_id && <li>问题簇 <code>{g.cluster_id.slice(0, 12)}</code></li>}
+            {g.linked_event_id != null && <li>关联事件 <code>#{g.linked_event_id}</code></li>}
+            {g.owner && <li>负责人 {g.owner}</li>}
+            {g.first_seen_at && <li>首次 {fmtDateTime(g.first_seen_at)}</li>}
+            {g.last_seen_at && <li>最近 {fmtDateTime(g.last_seen_at)}</li>}
+            {g.verified_at && <li>验证 {fmtDateTime(g.verified_at)}</li>}
+            {g.observation_until && <li>观察截止 {fmtDateTime(g.observation_until)}</li>}
+            {g.last_reopened_at && <li>最近重开 {fmtDateTime(g.last_reopened_at)}</li>}
+            {latestEvidence && (
+              <li title={latestEvidence.outcome_code ? `outcome_code：${latestEvidence.outcome_code}` : undefined}>
+                最新证据：{OUTCOME_FAMILY_ZH[latestEvidence.outcome_code ?? ''] ?? latestEvidence.quality ?? latestEvidence.evidence_type}
+                {typeof latestEvidence.chunks_count === 'number' ? ` · 片段 ${latestEvidence.chunks_count}` : ''}
+                {typeof latestEvidence.http_status === 'number' ? ` · HTTP ${latestEvidence.http_status}` : ''}
+              </li>
+            )}
+            {repairTask && (
+              <li>
+                修复任务 #{repairTask.id} · {repairTask.task_type} · {repairTask.status}
+                {repairTask.issue_url && (
+                  <> · <a href={repairTask.issue_url} target="_blank" rel="noreferrer">issue #{repairTask.issue_number ?? ''}</a></>
+                )}
+              </li>
+            )}
+          </ul>
+        </details>
       </li>
     );
   };
@@ -362,6 +330,13 @@ export const LearningPage: React.FC = () => {
         subtitle="agent 运行记录 · 知识缺口 · 反馈分布"
         actions={
           <>
+            <button
+              className="learn-diagnostics-btn"
+              onClick={() => setAdvancedOpen(true)}
+              title="盲点聚类、工具频率、问题类型分布、学习引擎"
+            >
+              📊 高级数据
+            </button>
             <button
               className={`learn-diagnostics-btn${driftCount > 0 ? ' has-drift' : ''}`}
               onClick={() => setDiagnosticsOpen(true)}
@@ -385,48 +360,89 @@ export const LearningPage: React.FC = () => {
         onAfterReconcile={refresh}
       />
 
-      {/* KPI 卡片 */}
+      <AdvancedDataDrawer
+        open={advancedOpen}
+        onClose={() => setAdvancedOpen(false)}
+        blindspots={blindspots}
+        topTools={topTools}
+        topTypes={topTypes}
+        engine={engine}
+      />
+
+      {/* KPI 卡片 — 大白话视角 */}
       <div className="learn-kpi-grid">
         <KpiCard
-          label="系统健康度"
-          value={healthScore != null ? `${healthEmoji} ${healthScore}` : '—'}
+          label="今天表现"
+          value={
+            healthStatus === 'good'
+              ? '😊 状态不错'
+              : healthStatus === 'warning'
+              ? '🤔 有点问题'
+              : healthStatus === 'critical'
+              ? '😣 需要照顾'
+              : '⏳ 加载中…'
+          }
           hint={
             healthStatus === 'good'
-              ? '运行正常'
+              ? '系统在正常工作'
               : healthStatus === 'warning'
-              ? '需要关注'
+              ? '建议看一下下面的「问题」标签'
               : healthStatus === 'critical'
-              ? '需要紧急处理'
-              : '加载中…'
+              ? '请马上去看「问题」标签'
+              : ''
           }
           tone={healthTone}
         />
         <KpiCard
-          label="回答 / 错误"
-          value={`${total} / ${errorCount}`}
+          label="最近答题"
+          value={total > 0 ? `回答了 ${total} 个问题` : '还没人来问'}
           hint={
             total > 0
-              ? `错误率 ${errorRate}%${refusedCount > 0 ? ` · 拒答 ${refusedCount}` : ''}`
-              : '暂无样本'
+              ? errorCount > 0
+                ? `其中 ${errorCount} 个回答得不太好`
+                : '全部回答都不错 👍'
+              : ''
           }
-          tone={errorRate <= 30 ? 'good' : errorRate <= 60 ? 'warn' : 'bad'}
+          tone={total === 0 ? undefined : errorRate <= 30 ? 'good' : errorRate <= 60 ? 'warn' : 'bad'}
         />
         <KpiCard
-          label="未解决缺口"
-          value={unresolvedGapCount}
-          hint={observingCount > 0 ? `其中观察期 ${observingCount}` : '处理中 + 观察期'}
+          label="待解决问题"
+          value={
+            unresolvedGapCount === 0
+              ? '✅ 全清了'
+              : `还有 ${unresolvedGapCount} 个问题`
+          }
+          hint={
+            unresolvedGapCount === 0
+              ? '没有未解决的问题'
+              : observingCount > 0
+              ? `其中 ${observingCount} 个先观察一阵子`
+              : '系统正在想办法'
+          }
           tone={unresolvedGapCount === 0 ? 'good' : unresolvedGapCount <= 5 ? 'warn' : 'bad'}
         />
         <KpiCard
-          label="待审核改进"
-          value={pendingReviewCount}
-          hint={pendingReviewCount > 0 ? '需要人工决策' : '当前无积压'}
+          label="等你拍板"
+          value={
+            pendingReviewCount === 0
+              ? '✅ 没有积压'
+              : `${pendingReviewCount} 个建议`
+          }
+          hint={
+            pendingReviewCount === 0
+              ? '系统暂时不需要你做决定'
+              : '去「改进队列」标签批准或拒绝'
+          }
           tone={pendingReviewCount === 0 ? 'good' : 'warn'}
         />
         <KpiCard
-          label="用户反馈"
-          value={`+${feedbackPositive} / -${feedbackNegative}`}
-          hint={feedbackTotal > 0 ? `共 ${feedbackTotal} 条` : '暂无反馈'}
+          label="用户评价"
+          value={
+            feedbackTotal === 0
+              ? '还没人评价'
+              : `${feedbackPositive} 人点赞 · ${feedbackNegative} 人吐槽`
+          }
+          hint={feedbackTotal === 0 ? '可以让朋友试用一下' : `共收到 ${feedbackTotal} 条反馈`}
         />
       </div>
 
@@ -481,148 +497,7 @@ export const LearningPage: React.FC = () => {
           )}
         </section>
 
-        {/* 盲点聚类 */}
-        <section className="learn-card learn-gaps">
-          <div className="learn-card-head">
-            <h3>盲点聚类 <span className="muted">({blindspots.length})</span></h3>
-            <span className="muted small">语义相近的失败问题分组，提示批量短板</span>
-          </div>
-          {blindspots.length === 0 ? (
-            <p className="empty">尚未形成可聚合的盲点（需 ≥ 2 个相近失败问题）。</p>
-          ) : (
-            <ul className="gap-list">
-              {blindspots.map((c, i) => (
-                <li key={i} className="gap-item q-failure">
-                  <div className="gap-q">代表问题：{c.representative}</div>
-                  <div className="gap-meta">
-                    <span className="badge q-failure">规模 {c.size}</span>
-                    <span className="muted small">{c.diagnosis}</span>
-                  </div>
-                  <details>
-                    <summary className="muted small">展开相似问题（{c.queries?.length ?? 0}个）</summary>
-                    <ul style={{ marginTop: 6, paddingLeft: 18 }}>
-                      {(c.queries || []).map((q, j) => (
-                        <li key={j} className="muted small" style={{ listStyle: 'disc' }}>
-                          {q}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {/* 工具使用频率 */}
-        <section className="learn-card">
-          <div className="learn-card-head">
-            <h3>工具使用频率</h3>
-          </div>
-          {topTools.length === 0 ? (
-            <p className="empty">暂无工具调用记录。</p>
-          ) : (
-            <ul className="bar-list">
-              {topTools.map(([tool, count]) => {
-                const max = topTools[0][1];
-                const pct = Math.max(2, Math.round((count / max) * 100));
-                return (
-                  <li key={tool}>
-                    <div className="bar-label">
-                      <code>{tool}</code>
-                      <span className="muted small">{count}</span>
-                    </div>
-                    <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%` }} /></div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        {/* 问题类型分布 */}
-        <section className="learn-card">
-          <div className="learn-card-head">
-            <h3>问题类型分布</h3>
-          </div>
-          {topTypes.length === 0 ? (
-            <p className="empty">暂无类型数据。</p>
-          ) : (
-            <ul className="bar-list">
-              {topTypes.map(([type, count]) => {
-                const max = topTypes[0][1];
-                const pct = Math.max(2, Math.round((count / max) * 100));
-                return (
-                  <li key={type}>
-                    <div className="bar-label">
-                      <code>{TYPE_ZH[type] ?? type}</code>
-                      <span className="muted small">{count}</span>
-                    </div>
-                    <div className="bar-track"><div className="bar-fill alt" style={{ width: `${pct}%` }} /></div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
       </div>
-
-      {/* 学习引擎 — 触发条件透明化 */}
-      <section className="learn-card learn-engine-card" style={{ marginTop: 16 }}>
-        <div className="learn-card-head">
-          <h3>🧠 学习引擎</h3>
-          <span className="muted small">
-            {engine ? `触发模式：${ENGINE_TRIGGER_MODE_ZH[engine.trigger_mode] ?? engine.trigger_mode}` : '加载中…'}
-          </span>
-        </div>
-        {engine ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div>
-              <p className="muted small" style={{ marginTop: 0 }}>{engine.trigger_description}</p>
-              <table className="learn-runs-table" style={{ marginTop: 8 }}>
-                <thead><tr><th>触发条件</th><th>状态</th><th>说明</th></tr></thead>
-                <tbody>
-                  {engine.trigger_conditions.map((c, i) => (
-                    <tr key={i}>
-                      <td>{c.name}</td>
-                      <td><span className={`badge q-${c.active ? 'good' : 'weak'}`}>{c.active ? '已启用' : '未启用'}</span></td>
-                      <td className="muted small">{c.command ? <code>{c.command}</code> : (c.note || '—')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div>
-              <h4 style={{ marginTop: 0 }}>上次回归</h4>
-              {engine.last_run.summary ? (
-                <ul className="learn-engine-stats">
-                  <li>时间：<code>{engine.last_run.ts ? fmtDateTime(engine.last_run.ts) : '—'}</code></li>
-                  <li>金标题数：<b>{engine.last_run.summary.total ?? '—'}</b></li>
-                  <li>通过：<b>{engine.last_run.summary.passed ?? '—'}</b></li>
-                  <li>平均置信：<b>{engine.last_run.summary.avg_confidence?.toFixed(2) ?? '—'}</b></li>
-                </ul>
-              ) : (
-                <p className="muted small">无历史回归记录。运行 <code>python tests/test_agent_16.py</code> 生成。</p>
-              )}
-              <h4>近 24h 信号</h4>
-              <ul className="learn-engine-stats">
-                <li>弱/失败运行：<b>{engine.signals_24h.weak_or_failed_runs}</b></li>
-                <li>带评论的负面反馈：<b>{engine.signals_24h.pending_negative_feedback_with_text}</b></li>
-              </ul>
-              {engine.next_actions.length > 0 && (
-                <>
-                  <h4>建议下一步</h4>
-                  <ul className="learn-engine-stats">
-                    {engine.next_actions.map((a, i) => <li key={i}>{a}</li>)}
-                  </ul>
-                </>
-              )}
-            </div>
-          </div>
-        ) : (
-          <p className="muted">加载中…</p>
-        )}
-      </section>
 
       {/* 主 Tab 导航 */}
       <div className="learn-main-tabs">

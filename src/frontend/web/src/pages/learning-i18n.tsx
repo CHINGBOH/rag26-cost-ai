@@ -79,18 +79,18 @@ export const GAP_BUCKETS: Array<{
   title: string;
   hint: string;
 }> = [
-  { key: 'active', title: '待处理', hint: 'open / in_progress，监听器会实际调用咨询端口复测' },
-  { key: 'observing', title: '观察期', hint: '已被真实回答验证，等待观察窗口结束' },
-  { key: 'blocked', title: '已阻塞', hint: '政策/越界/伪造类问题，不再当普通知识缺口占位' },
-  { key: 'resolved', title: '已解决', hint: '后端生命周期已关闭的问题' },
+  { key: 'active', title: '还在弄', hint: '系统还没搞定，正在想办法' },
+  { key: 'observing', title: '观察一阵', hint: '看起来好了，再观察几天确认不会复发' },
+  { key: 'blocked', title: '搞不定', hint: '太难了或者超出能力范围' },
+  { key: 'resolved', title: '已搞定', hint: '问题已经解决' },
 ];
 
 export function renderGapStatusBadge(status?: string) {
-  if (status === 'resolved') return <span className="badge status-resolved">✅ 已解决</span>;
-  if (status === 'observing') return <span className="badge status-observing">👀 观察期</span>;
-  if (status === 'in_progress') return <span className="badge status-in-progress">🔄 处理中</span>;
-  if (status === 'open') return <span className="badge status-open">❌ 未开始</span>;
-  if (status === 'blocked') return <span className="badge status-blocked">🚫 被阻止</span>;
+  if (status === 'resolved') return <span className="badge status-resolved">✅ 已搞定</span>;
+  if (status === 'observing') return <span className="badge status-observing">👀 观察中</span>;
+  if (status === 'in_progress') return <span className="badge status-in-progress">🔄 正在弄</span>;
+  if (status === 'open') return <span className="badge status-open">❌ 还没弄</span>;
+  if (status === 'blocked') return <span className="badge status-blocked">🚫 搞不定</span>;
   return null;
 }
 
