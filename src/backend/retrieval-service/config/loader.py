@@ -34,9 +34,9 @@ class VectorStoreConfig(BaseSettings):
     """向量存储配置"""
     model_config = SettingsConfigDict(extra="forbid")
     
-    type: str = "qdrant"
+    type: str = "milvus"
     host: str = "localhost"
-    port: int = Field(default=6333, ge=1, le=65535)
+    port: int = Field(default=19530, ge=1, le=65535)
     collection_name: str = "documents"
     vector_size: int = Field(default=1024, ge=1)
     timeout: int = 30

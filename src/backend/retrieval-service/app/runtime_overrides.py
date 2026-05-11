@@ -46,7 +46,7 @@ ALLOWED_RUNTIME_OVERRIDES: dict[str, RuntimeOverrideSpec] = {
         type_name="str",
         validator=lambda value: value in {"qdrant", "milvus", "pgvector"},
         normalizer=lambda value: "pgvector" if value == "qdrant" else value,
-        legacy_default="qdrant",
+        legacy_default="milvus",
     ),
 }
 

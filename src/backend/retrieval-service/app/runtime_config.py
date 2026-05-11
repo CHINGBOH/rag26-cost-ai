@@ -171,7 +171,7 @@ def read_runtime_config(*, refresh: bool = False) -> RetrievalRuntimeConfig:
     redis_url = os.environ.get("REDIS_URL") or _build_redis_url_from_env_or_file(file_config)
 
     vector_store_type = vector_backend_override or os.environ.get("VECTOR_STORE__TYPE") or _nested(
-        file_config, "vector_store", "type", default="qdrant"
+        file_config, "vector_store", "type", default="milvus"
     )
     keyword_backend = keyword_backend_override or os.environ.get("KEYWORD_BACKEND") or _derive_keyword_backend(
         _nested(file_config, "keyword_store", "type", default="elasticsearch")

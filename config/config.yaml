@@ -127,7 +127,7 @@ vector_store:
   collection_name: documents
   host: localhost
   pool_size: 10
-  port: 6333
+  port: 19530
   timeout: 30
-  type: qdrant
+  type: milvus
   vector_size: 1024

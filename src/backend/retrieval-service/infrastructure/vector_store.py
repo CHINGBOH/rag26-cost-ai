@@ -5,6 +5,7 @@
 
 from typing import Any, List, Tuple
 import asyncio
+import hashlib
 import inspect
 import json
 import numpy as np
@@ -14,11 +15,6 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from domain.models import Document, DocumentChunk
 from domain.ports import VectorStorePort
 from config.loader import VectorStoreConfig  # Issue #122: migrated from config.settings
-
-try:
-    from pymilvus import MilvusClient
-except ImportError:
-    MilvusClient = None
 
 
 def _call_with_supported_kwargs(target: Any, **kwargs: Any) -> Any:
@@ -201,109 +197,121 @@ class QdrantVectorStoreAdapter(VectorStorePort):
 
 
 class MilvusVectorStoreAdapter(VectorStorePort):
-    """Milvus 向量存储适配器。"""
+    """Milvus 向量存储适配器（REST API v2）。
+
+    Python 3.13 + gRPC 兼容性问题，改用 Milvus RESTful v2 API。
+    """
 
     def __init__(self, config: VectorStoreConfig):
         self.config = config
-        self._client: Any | None = None
+        self._base: str = ""
+        self._connected: bool = False
         self._connect()
 
-    def _build_uri(self) -> str:
-        if self.config.uri:
-            return self.config.uri
+    def _build_base(self) -> str:
         scheme = "https" if self.config.secure else "http"
         port = self.config.port if self.config.port != 6333 else 19530
         return f"{scheme}://{self.config.host}:{port}"
 
     def _connect(self) -> None:
-        """连接到 Milvus 并确保集合存在。"""
-        if MilvusClient is None:
-            print("Milvus 客户端不可用: pymilvus 未安装")
-            return
+        import requests as _r
 
-        password = self.config.password.get_secret_value() if self.config.password else ""
-        token = f"{self.config.username}:{password}" if self.config.username and password else None
-
+        self._base = self._build_base()
         try:
-            self._client = _call_with_supported_kwargs(
-                MilvusClient,
-                uri=self._build_uri(),
-                token=token,
-                user=self.config.username or None,
-                password=password or None,
-                db_name=self.config.database,
-                database=self.config.database,
+            resp = _r.post(
+                f"{self._base}/v2/vectordb/collections/list",
+                json={},
+                timeout=10,
             )
-            self._ensure_collection()
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("code") == 0:
+                self._connected = True
+                self._ensure_collection()
+            else:
+                print(f"Milvus REST 连接失败: {body}")
         except Exception as e:
-            print(f"Milvus 连接失败: {e}")
-            self._client = None
+            print(f"Milvus REST 连接失败: {e}")
 
     def _ensure_collection(self) -> None:
-        if self._client is None:
-            return
+        import requests as _r
 
         try:
-            exists = _call_with_supported_kwargs(
-                self._client.has_collection,
-                collection_name=self.config.collection_name,
+            resp = _r.post(
+                f"{self._base}/v2/vectordb/collections/has",
+                json={"collectionName": self.config.collection_name},
+                timeout=10,
             )
-            if not exists:
-                _call_with_supported_kwargs(
-                    self._client.create_collection,
-                    collection_name=self.config.collection_name,
-                    dimension=self.config.vector_size,
-                    metric_type=self.config.metric_type,
-                    consistency_level=self.config.consistency_level,
-                )
+            if resp.status_code == 200 and resp.json().get("data", {}).get("has", True):
+                return
+
+            resp = _r.post(
+                f"{self._base}/v2/vectordb/collections/create",
+                json={
+                    "collectionName": self.config.collection_name,
+                    "dimension": self.config.vector_size,
+                    "metricType": self.config.metric_type,
+                    "autoId": False,
+                    "enableDynamicField": True,
+                },
+                timeout=15,
+            )
+            body = resp.json()
+            if body.get("code") != 0:
+                print(f"Milvus 创建集合失败: {body}")
+                self._connected = False
+                return
+
+            _r.post(
+                f"{self._base}/v2/vectordb/indexes/create",
+                json={
+                    "collectionName": self.config.collection_name,
+                    "indexParams": [{
+                        "fieldName": "vector",
+                        "indexType": "AUTOINDEX",
+                        "metricType": self.config.metric_type,
+                    }],
+                },
+                timeout=15,
+            )
+            _r.post(
+                f"{self._base}/v2/vectordb/collections/load",
+                json={"collectionName": self.config.collection_name},
+                timeout=15,
+            )
         except Exception as e:
             print(f"Milvus 集合初始化失败: {e}")
-            self._client = None
+            self._connected = False
 
-    def _normalize_hits(self, results: Any) -> list[Any]:
-        if isinstance(results, list) and results and isinstance(results[0], list):
-            return results[0]
-        if isinstance(results, list):
-            return results
-        return []
+    @staticmethod
+    def _str_to_int64(s: str) -> int:
+        h = hashlib.sha256(s.encode()).digest()[:8]
+        return int.from_bytes(h, "big", signed=True)
 
-    def _extract_hit(self, hit: Any) -> tuple[str, dict[str, Any], float]:
-        if isinstance(hit, dict):
-            entity = hit.get("entity")
-            payload = dict(entity) if isinstance(entity, dict) else {
-                key: value
-                for key, value in hit.items()
-                if key not in {"id", "distance", "score", "entity", "vector"}
-            }
-            record_id = hit.get("id") or payload.get("id") or ""
-            score = hit.get("distance", hit.get("score", 0.0))
-            return str(record_id), payload, float(score or 0.0)
-
-        entity = getattr(hit, "entity", None)
-        payload = dict(entity) if isinstance(entity, dict) else {}
-        record_id = getattr(hit, "id", payload.get("id", ""))
-        score = getattr(hit, "distance", getattr(hit, "score", 0.0))
-        return str(record_id), payload, float(score or 0.0)
+    @staticmethod
+    def _extract_hit_rest(hit: dict) -> tuple[str, dict[str, Any], float]:
+        record_id = str(hit.get("id", ""))
+        distance = float(hit.get("distance", 0.0))
+        payload = {
+            k: v for k, v in hit.items()
+            if k not in ("id", "vector", "distance")
+        }
+        return record_id, payload, distance
 
     def is_available(self) -> bool:
-        if self._client is None:
+        if not self._connected:
             return False
+        import requests as _r
+
         try:
-            _call_with_supported_kwargs(
-                self._client.describe_collection,
-                collection_name=self.config.collection_name,
+            resp = _r.post(
+                f"{self._base}/v2/vectordb/collections/describe",
+                json={"collectionName": self.config.collection_name},
+                timeout=5,
             )
-            return True
+            return resp.status_code == 200 and resp.json().get("code") == 0
         except Exception:
-            try:
-                return bool(
-                    _call_with_supported_kwargs(
-                        self._client.has_collection,
-                        collection_name=self.config.collection_name,
-                    )
-                )
-            except Exception:
-                return False
+            return False
 
     async def search(
         self, query_vector: np.ndarray, top_k: int = 30, score_threshold: float = 0.6
@@ -311,26 +319,46 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         if not self.is_available():
             return []
 
+        import requests as _r
+
         try:
             loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
-                lambda: _call_with_supported_kwargs(
-                    self._client.search,
-                    collection_name=self.config.collection_name,
-                    data=[query_vector.tolist()],
-                    limit=top_k,
-                    search_params={"metric_type": self.config.metric_type},
-                    output_fields=["content", "doc_id", "title", "page", "section", "chunk_type"],
+                lambda: _r.post(
+                    f"{self._base}/v2/vectordb/entities/search",
+                    json={
+                        "collectionName": self.config.collection_name,
+                        "data": [query_vector.tolist()],
+                        "limit": top_k,
+                        "outputFields": [
+                            "content", "doc_id", "title",
+                            "page", "section", "chunk_type",
+                        ],
+                    },
+                    timeout=30,
                 ),
             )
+            body = result.json()
+            if body.get("code") != 0:
+                print(f"Milvus search 错误: {body}")
+                return []
+
+            raw_hits = body.get("data", [])
+            if raw_hits and isinstance(raw_hits[0], list):
+                raw_hits = raw_hits[0]
+            if not raw_hits:
+                return []
 
             documents = []
-            for hit in self._normalize_hits(results):
-                record_id, payload, score = self._extract_hit(hit)
-                if self.config.metric_type != "L2" and score < score_threshold:
+            for hit in raw_hits:
+                record_id, payload, distance = self._extract_hit_rest(hit)
+                if self.config.metric_type != "L2" and distance < score_threshold:
                     continue
-                documents.append((_build_document_from_payload(record_id, payload), score))
+                documents.append((
+                    _build_document_from_payload(record_id, payload),
+                    distance,
+                ))
             return documents
         except Exception as e:
             print(f"Milvus 向量搜索失败: {e}")
@@ -340,32 +368,39 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         if not self.is_available():
             return False
 
+        import requests as _r
+
         try:
             rows = []
             for index, doc in enumerate(documents):
-                rows.append(
-                    {
-                        "id": doc.id,
-                        "vector": vectors[index].tolist(),
-                        "content": doc.content,
-                        "doc_id": doc.doc_id,
-                        "title": doc.doc_title,
-                        "page": doc.page,
-                        "section": doc.section,
-                        "chunk_type": doc.chunk_type,
-                        **doc.metadata,
-                    }
-                )
+                rows.append({
+                    "id": self._str_to_int64(doc.id),
+                    "vector": vectors[index].tolist(),
+                    "content": doc.content,
+                    "doc_id": doc.doc_id,
+                    "title": doc.doc_title,
+                    "page": doc.page,
+                    "section": doc.section,
+                    "chunk_type": doc.chunk_type,
+                    **doc.metadata,
+                })
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
-                lambda: _call_with_supported_kwargs(
-                    self._client.upsert,
-                    collection_name=self.config.collection_name,
-                    data=rows,
+                lambda: _r.post(
+                    f"{self._base}/v2/vectordb/entities/upsert",
+                    json={
+                        "collectionName": self.config.collection_name,
+                        "data": rows,
+                    },
+                    timeout=60,
                 ),
             )
+            body = result.json()
+            if body.get("code") != 0:
+                print(f"Milvus upsert 错误: {body}")
+                return False
             return True
         except Exception as e:
             print(f"Milvus 向量插入失败: {e}")
@@ -377,20 +412,27 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         if not doc_ids:
             return True
 
-        expression = "doc_id in [" + ", ".join(json.dumps(doc_id) for doc_id in doc_ids) + "]"
+        import requests as _r
+
+        expression = (
+            "doc_id in [" + ", ".join(json.dumps(doc_id) for doc_id in doc_ids) + "]"
+        )
 
         try:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
-                lambda: _call_with_supported_kwargs(
-                    self._client.delete,
-                    collection_name=self.config.collection_name,
-                    filter=expression,
-                    expr=expression,
+                lambda: _r.post(
+                    f"{self._base}/v2/vectordb/entities/delete",
+                    json={
+                        "collectionName": self.config.collection_name,
+                        "filter": expression,
+                    },
+                    timeout=30,
                 ),
             )
-            return True
+            body = result.json()
+            return body.get("code") == 0
         except Exception as e:
             print(f"Milvus 向量删除失败: {e}")
             return False
