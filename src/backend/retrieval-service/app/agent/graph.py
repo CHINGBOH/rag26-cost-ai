@@ -2595,6 +2595,17 @@ def _default_presentation_policy(query: str, query_type: str, presentation: dict
             "section_labels": {"analysis": "数据解读", "detail": "补充说明"},
             "highlight_labels": {"default": "关键信息", "metric": "关键数值", "detail": "数据细节"},
         }
+    elif query_type == "impact_analysis":
+        policy = {
+            "support_kicker": "影响分析",
+            "section_labels": {"analysis": "直接影响", "detail": "场景分类"},
+            "highlight_labels": {
+                "default": "关键变化",
+                "rule": "费率变化",
+                "metric": "数值影响",
+                "detail": "场景说明",
+            },
+        }
 
     if (presentation or {}).get("type") == "calculation_steps":
         policy["support_kicker"] = "计算过程"

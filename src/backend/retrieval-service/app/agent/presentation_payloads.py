@@ -878,6 +878,14 @@ def _validate_presentation_contract(presentation: dict | None) -> dict | None:
     return presentation
 
 
+def _chunks_quality_ok(chunks: list[dict]) -> bool:
+    """检查检索结果是否足够可靠用于生成 presentation。"""
+    if not chunks:
+        return False
+    # 至少有一个 chunk 的 score >= 0.3
+    return any(c.get("score", 0) >= 0.3 for c in chunks)
+
+
 def finalize_presentation_payload(
     query: str,
     query_type: str,
@@ -886,9 +894,17 @@ def finalize_presentation_payload(
     citations_text: str,
     existing_presentation: dict | None = None,
 ) -> dict | None:
-    # calculation_steps always takes priority for calculation queries — existing_presentation
+    # F1: 检索为空/低质时降级为 no_data，避免 LLM 编造内容被包装成专业卡片
+    if not _chunks_quality_ok(chunks):
+        return _validate_presentation_contract({
+            "type": "no_data",
+            "message": "未检索到相关依据，无法给出可靠结论",
+            "sources": _parse_citation_items(citations_text)[:4],
+        })
+
+    # calculation_steps / impact_analysis 共享沙箱逻辑
     # (typically answer_sections from presentation_policy_node) must not suppress the sandbox.
-    if query_type == "calculation":
+    if query_type in {"calculation", "impact_analysis"}:
         # 1) Deterministic path: build steps directly from query inputs + chunk rates.
         #    Independent of LLM prose format, so sandbox always renders when data is present.
         deterministic_steps = _build_deterministic_calculation_steps(query, chunks)

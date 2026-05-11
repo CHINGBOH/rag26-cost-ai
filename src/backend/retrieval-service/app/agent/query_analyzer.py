@@ -46,6 +46,14 @@ STANDARD_REF_KEYWORDS = [
     "计算基数", "基数", "总包管理", "发包人", "分包",
 ]
 
+# impact_analysis: 费率/价格/政策调整后产生的影响分析
+_IMPACT_KEYWORDS = [
+    "影响", "会导致", "造成", "引起", "带来", "产生",
+    "调整后", "变化后", "变更后", "修改后", "更新后",
+    "对.*的影响", "是否会影响", "会不会影响", "有何影响",
+    "怎么办", "如何处理", "怎么算", "如何结算",
+]
+
 # ---------------------------------------------------------------------------
 # 行业别名规范化：alias -> canonical material_name（对应 price_records 实际字段值）
 # 用于 _normalize_material() 把同义词查询词映射为 DB 中存储的规范名称
@@ -202,7 +210,7 @@ _MATERIAL_QUERY_NOISE_RE = re.compile(
 
 
 class QueryAnalysis(TypedDict):
-    intent: str          # 'price' | 'semantic' | 'calculation' | 'comparison' | 'trend_chart' | 'standard_ref'
+    intent: str          # 'price' | 'semantic' | 'calculation' | 'comparison' | 'trend_chart' | 'standard_ref' | 'impact_analysis'
     entities: dict       # {year_month, material_name, material_names, spec, unit}
     sub_queries: list    # 分解后的子查询列表
 
@@ -223,6 +231,18 @@ def _classify_intent(query: str) -> str:
     numeric_inputs = _NUMERIC_CALC_INPUT_PATTERN.findall(cleaned_query)
     if len(numeric_inputs) >= 2 and _NUMERIC_CALC_TARGET_PATTERN.search(cleaned_query):
         return "calculation"
+    # impact_analysis: 费率/价格/政策调整后的影响分析
+    # 优先级高于 standard_ref，因为 "是否会影响" 是分析意图而非规则查询
+    # 支持两种匹配模式：正则（含.*通配符）或子串包含
+    def _match_impact_kw(kw: str, text: str) -> bool:
+        if "*" in kw or "?" in kw or "[" in kw:
+            return bool(re.search(kw, text))
+        return kw in text
+
+    if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and any(
+        _match_impact_kw(kw, cleaned_query) for kw in _IMPACT_KEYWORDS
+    ):
+        return "impact_analysis"
     # fee standard formula/method explanation (no numeric inputs) → rule lookup
     if _FEE_STANDARD_HINT_PATTERN.search(cleaned_query) and _FORMULA_EXPLAIN_PATTERN.search(cleaned_query):
         return "standard_ref"
