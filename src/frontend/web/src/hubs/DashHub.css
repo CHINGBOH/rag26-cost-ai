@@ -1,0 +1,63 @@
+/* DashHub — 综合面板包装层样式 */
+
+.dashhub {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ── 子标签栏 ─────────────────────────── */
+
+.dashhub-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.dashhub-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  border-radius: 6px 6px 0 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  margin-bottom: -1px;
+}
+
+.dashhub-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.dashhub-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent, #6366f1);
+  font-weight: 600;
+}
+
+.dashhub-tab-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ── 内容区 ───────────────────────────── */
+
+.dashhub-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

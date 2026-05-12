@@ -1,49 +1,38 @@
 /**
- * 主应用 — 6 页架构
- * 每个页面都有真实后端 API 支撑
+ * 主应用 — 三板块架构 (#141)
+ * 💬 咨询  /
+ * ⛓  管道  /pipeline
+ * 🧩 综合  /hub/:tab  (运行时·检索·运维·系统·学习·Agent)
  */
 
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 
 // Core pages
-import { LibraryPage } from './pages/LibraryPage';
-import { AgentChat } from './pages/AgentChat';
-import { AgentManagePage } from './pages/AgentManagePage';
-import { AgentRuntimePage } from './pages/AgentRuntimePage';
-import { SearchPage } from './pages/SearchPage';
-import { PipelinePage } from './pages/PipelinePage';
-import { SystemPage } from './pages/SystemPage';
-import { OpsPage } from './pages/OpsPage';
-import { LearningPage } from './pages/LearningPage';
+import { LibraryPage }   from './pages/LibraryPage';
+import { AgentChat }     from './pages/AgentChat';
+import { PipelinePage }  from './pages/PipelinePage';
+
+// Hub wrapper
+import { DashHub } from './hubs/DashHub';
 
 // Archive pages (hidden from nav)
 import AgentRuntimeDeepDive from './components/common/AgentRuntimeDeepDive';
-import AgentRuntimeFolk from './components/common/AgentRuntimeFolk';
-import DocsReader from './components/common/DocsReader';
+import AgentRuntimeFolk     from './components/common/AgentRuntimeFolk';
+import DocsReader           from './components/common/DocsReader';
 
 import './App.css';
 import './styles/theme.css';
 
 const NAV_ITEMS = [
-  { path: '/', label: '咨询馆员', icon: '📚' },
-  { path: '/runtime', label: '运行时', icon: '⚡' },
-  { path: '/search', label: '检索', icon: '🔍' },
-  { path: '/pipeline', label: '管道', icon: '⛓' },
-  { path: '/ops', label: '运维', icon: '🛡' },
-  { path: '/system', label: '系统', icon: '⚙' },
-  { path: '/learning', label: '学习', icon: '🧠' },
-  { path: '/agents', label: 'Agent', icon: '🤖' },
+  { path: '/',         label: '咨询馆员', icon: '📚' },
+  { path: '/pipeline', label: '管道',    icon: '⛓'  },
+  { path: '/hub',      label: '综合面板', icon: '🧩' },
 ];
 
 const ROUTE_MODULE: [string, string][] = [
-  ['/runtime', 'runtime'],
-  ['/search',   'search'],
+  ['/hub',      'hub'],
   ['/pipeline', 'pipeline'],
-  ['/ops',      'ops'],
-  ['/system',   'system'],
-  ['/learning', 'learning'],
-  ['/agents',   'agents'],
   ['/pro',      'library'],
   ['/',         'library'],
 ];
@@ -64,6 +53,11 @@ function Navigation() {
     document.documentElement.dataset.module = getModule(location.pathname);
   }, [location.pathname]);
 
+  const isActive = (path: string) =>
+    path === '/'
+      ? location.pathname === '/'
+      : location.pathname.startsWith(path);
+
   return (
     <header className="app-nav">
       <div className="nav-brand">
@@ -75,8 +69,8 @@ function Navigation() {
         {NAV_ITEMS.map(({ path, label, icon }) => (
           <Link
             key={path}
-            to={path}
-            className={`nav-link ${location.pathname === path ? 'active' : ''}`}
+            to={path === '/hub' ? '/hub/runtime' : path}
+            className={`nav-link ${isActive(path) ? 'active' : ''}`}
           >
             <span aria-hidden="true" className="nav-icon">{icon}</span>
             {label}
@@ -94,19 +88,25 @@ export default function App() {
         <Navigation />
         <main className="app-main">
           <Routes>
-            <Route path="/" element={<LibraryPage />} />
-            <Route path="/pro" element={<AgentChat />} />
-            <Route path="/runtime" element={<AgentRuntimePage />} />
-            <Route path="/search" element={<SearchPage />} />
+            {/* ── 三大板块 ── */}
+            <Route path="/"         element={<LibraryPage />} />
+            <Route path="/pro"      element={<AgentChat />} />
             <Route path="/pipeline" element={<PipelinePage />} />
-            <Route path="/ops" element={<OpsPage />} />
-            <Route path="/system" element={<SystemPage />} />
-            <Route path="/learning" element={<LearningPage />} />
-            <Route path="/agents" element={<AgentManagePage />} />
-            {/* Archive pages, hidden from nav */}
-            <Route path="/archive/deep-dive" element={<AgentRuntimeDeepDive />} />
+            <Route path="/hub/:tab" element={<DashHub />} />
+            <Route path="/hub"      element={<Navigate to="/hub/runtime" replace />} />
+
+            {/* ── 旧路由重定向（向后兼容） ── */}
+            <Route path="/runtime"  element={<Navigate to="/hub/runtime"  replace />} />
+            <Route path="/search"   element={<Navigate to="/hub/search"   replace />} />
+            <Route path="/ops"      element={<Navigate to="/hub/ops"      replace />} />
+            <Route path="/system"   element={<Navigate to="/hub/system"   replace />} />
+            <Route path="/learning" element={<Navigate to="/hub/learning" replace />} />
+            <Route path="/agents"   element={<Navigate to="/hub/agents"   replace />} />
+
+            {/* ── 归档页 ── */}
+            <Route path="/archive/deep-dive"      element={<AgentRuntimeDeepDive />} />
             <Route path="/archive/deep-dive-folk" element={<AgentRuntimeFolk />} />
-            <Route path="/archive/docs" element={<DocsReader />} />
+            <Route path="/archive/docs"           element={<DocsReader />} />
           </Routes>
         </main>
       </div>
