@@ -28,16 +28,8 @@ import { PageHeader } from '../components/common/PageHeader';
 import { SystemDiagnosticsDrawer } from '../components/learning/SystemDiagnosticsDrawer';
 import './SystemPage.css';
 import { fmtUnixDateTime } from '../utils/dateUtils';
-
-const STORE_DISPLAY: Record<string, { label: string; emoji: string }> = {
-  postgresql: { label: 'PostgreSQL', emoji: '🐘' },
-  postgres: { label: 'PostgreSQL', emoji: '🐘' },
-  qdrant: { label: 'Qdrant', emoji: '🧭' },
-  elasticsearch: { label: 'Elasticsearch', emoji: '🔎' },
-  neo4j: { label: 'Neo4j', emoji: '🕸️' },
-  redis: { label: 'Redis', emoji: '⚡' },
-  milvus: { label: 'Milvus', emoji: '📡' },
-};
+// 存储引擎显示元数据统一从 locale 层读取，不在此硬编码
+import { STORE_DISPLAY } from '../locales/stores';
 
 function StoreCard({ name, store }: { name: string; store: ArchitectureStore }) {
   const meta = STORE_DISPLAY[name] ?? { label: name, emoji: '📦' };
