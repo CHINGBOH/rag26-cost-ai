@@ -16,27 +16,8 @@ import {
 import { PageHeader } from '../components/common/PageHeader';
 import './OpsPage.css';
 import { fmtTime } from '../utils/dateUtils';
-
-const SVC_ICONS: Record<string, string> = {
-  go_gateway: '🔀', retrieval: '🔍', python_legacy: '🐍',
-  nodejs: '⚙️', ocr: '📄', llama_server: '🤖',
-  postgresql: '🐘', postgres: '🐘', qdrant: '🧭',
-  elasticsearch: '🔎', neo4j: '🕸️', redis: '⚡', milvus: '📡',
-};
-
-const SERVICE_LABELS: Record<string, { label: string; port: number }> = {
-  go_gateway:    { label: 'Go 网关',    port: 8080 },
-  retrieval:     { label: '检索服务',    port: 8002 },
-  python_legacy: { label: 'Python (旧)', port: 8000 },
-  nodejs:        { label: 'Node 编排',   port: 3001 },
-  ocr:           { label: 'OCR',         port: 8001 },
-  llama_server:  { label: 'LLM',         port: 11434 },
-  postgresql:    { label: 'PgSQL',       port: 5432 },
-  qdrant:        { label: 'Qdrant',      port: 6333 },
-  elasticsearch: { label: 'Elasticsearch', port: 9200 },
-  neo4j:         { label: 'Neo4j',       port: 7474 },
-  redis:         { label: 'Redis',       port: 6379 },
-};
+// 后端英文 key → 中文标签/图标的集中翻译层，组件不内联硬编码
+import { SVC_ICONS, SERVICE_LABELS, translateStatus, statusClass } from '../locales/services';
 
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
@@ -120,13 +101,9 @@ export const OpsPage: React.FC = () => {
         {serviceEntries.map(({ key }) => {
           const svc = getStatus(key);
           const meta = SERVICE_LABELS[key] || { label: key, port: 0 };
-          const klass = svc.status === 'healthy' ? 'healthy'
-            : svc.status === 'degraded' ? 'degraded'
-            : svc.status === 'not_running' ? 'not-running'
-            : svc.status === 'unknown' ? 'unknown' : 'unhealthy';
-          const statusTip = svc.status === 'healthy' ? '正常'
-            : svc.status === 'degraded' ? '降级'
-            : svc.status === 'not_running' ? '未启用' : '异常';
+          // 后端返回英文 status → locale 层统一翻译为中文和 CSS 类名
+          const klass   = statusClass(svc.status);
+          const statusTip = translateStatus(svc.status);
           return (
             <div key={key} className={`svc-chip ${klass}`}
               title={`${meta.label}${svc.latency_ms > 0 ? ' · ' + svc.latency_ms + '毫秒' : ''} · ${statusTip}`}>
