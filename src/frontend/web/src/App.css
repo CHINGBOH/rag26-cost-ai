@@ -21,11 +21,13 @@ body {
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;        /* 固定视口高度，短内容页不再出现底部空白 */
+  overflow: hidden;
 }
 
 .app-main {
   flex: 1;
+  min-height: 0;        /* flex 子元素必须设置以允许缩小 */
   overflow-y: auto;
 }
 
