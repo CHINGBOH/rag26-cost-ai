@@ -399,3 +399,24 @@
 .runtime-dev-details[open] > summary::before { content: '▼ '; }
 .runtime-dev-details[open] > summary { border-radius: 6px 6px 0 0; margin-bottom: 4px; }
 .runtime-3col--two { grid-template-columns: 1fr 1fr !important; }
+
+/* UX#142 fix — topo/guide collapsed by default */
+.runtime-topo-details {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.runtime-topo-details > summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary, #64748b);
+  background: var(--bg-secondary, #f8fafc);
+  list-style: none;
+  user-select: none;
+}
+.runtime-topo-details > summary::-webkit-details-marker { display: none; }
+.runtime-topo-details > summary::before { content: '▶ '; font-size: 10px; }
+.runtime-topo-details[open] > summary::before { content: '▼ '; }

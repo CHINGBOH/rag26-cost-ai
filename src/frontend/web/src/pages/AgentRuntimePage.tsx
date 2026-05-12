@@ -226,8 +226,11 @@ export function AgentRuntimePage() {
 
   return (
     <div className="runtime-page">
-      <AgentFlowPanel />
-      <GuideHistoryPanel />
+      <details className="runtime-topo-details">
+        <summary>🗺 Agent 拓扑 · 工具注册表</summary>
+        <AgentFlowPanel />
+        <GuideHistoryPanel />
+      </details>
       <AdvancedDataDrawer
         open={advancedOpen}
         onClose={() => setAdvancedOpen(false)}
