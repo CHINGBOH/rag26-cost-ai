@@ -187,7 +187,7 @@ export const SearchPage: React.FC = () => {
       return (
         <div className="tool-results">
           <div className="tool-results-meta">
-            <strong>{result.length}</strong> 条结果 · {response.latency_ms} ms
+            <strong>{result.length}</strong> 条结果 · {response.latency_ms} 毫秒
           </div>
           {result.length === 0 && <div className="tool-empty">暂无匹配结果</div>}
           {result.map((item: any, i: number) => (
@@ -222,7 +222,7 @@ export const SearchPage: React.FC = () => {
     }
     return (
       <div className="tool-results">
-        <div className="tool-results-meta">{response.latency_ms} ms</div>
+        <div className="tool-results-meta">{response.latency_ms} 毫秒</div>
         <pre className="tool-result-pre">
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </pre>
@@ -233,7 +233,7 @@ export const SearchPage: React.FC = () => {
   if (loadError) {
     return (
       <div className="toolbox-page">
-        <PageHeader title="检索工具箱" subtitle="Agent 工具沙盒" />
+        <PageHeader title="检索工具箱" subtitle="高级检索工具（开发调试用）" />
         <div className="tool-error">加载工具失败：{loadError}</div>
       </div>
     );
@@ -243,7 +243,7 @@ export const SearchPage: React.FC = () => {
     <div className="toolbox-page">
       <PageHeader
         title="检索工具箱"
-        subtitle={`Agent 工具沙盒 · 共 ${tools.length} 个原子能力`}
+        subtitle={`高级检索工具（开发调试用）· 共 ${tools.length} 个工具`}
         actions={
           <button className="toolbox-help-btn" onClick={() => setShowHelp(true)} title="使用说明">
             📖 使用说明
@@ -349,7 +349,7 @@ export const SearchPage: React.FC = () => {
                       className={showRaw ? 'active' : ''}
                       onClick={() => setShowRaw(true)}
                     >
-                      Raw
+                      原始数据
                     </button>
                   </div>
                   {!showRaw && renderResult()}
@@ -367,12 +367,12 @@ export const SearchPage: React.FC = () => {
                   <ul>
                     {history.map((h, i) => (
                       <li key={i}>
-                        <code>{h.tool}</code> · {h.latency_ms} ms ·{' '}
+                        <code>{h.tool}</code> · {h.latency_ms} 毫秒 ·{' '}
                         {h.error
                           ? `❌ ${h.error}`
                           : Array.isArray(h.result)
                           ? `${h.result.length} 条`
-                          : 'ok'}
+                          : '成功'}
                       </li>
                     ))}
                   </ul>

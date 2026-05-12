@@ -95,10 +95,10 @@ function renderMd(md: string): string {
 }
 
 const ROLE_GROUPS: Array<{ key: string; label: string; match: (role: string) => boolean }> = [
-  { key: 'orchestrator', label: 'Orchestrator', match: (r) => /orchestrat/i.test(r) },
-  { key: 'reviewer',     label: 'Reviewer',     match: (r) => /(review|qa|security|inspector)/i.test(r) },
-  { key: 'specialist',   label: 'Specialist',   match: (r) => /(specialist|planner|debugger|devops|ops)/i.test(r) },
-  { key: 'worker',       label: 'Worker',       match: (r) => /worker|engineer/i.test(r) },
+  { key: 'orchestrator', label: '总调度', match: (r) => /orchestrat/i.test(r) },
+  { key: 'reviewer',     label: '审核者', match: (r) => /(review|qa|security|inspector)/i.test(r) },
+  { key: 'specialist',   label: '专项助手', match: (r) => /(specialist|planner|debugger|devops|ops)/i.test(r) },
+  { key: 'worker',       label: '执行者', match: (r) => /worker|engineer/i.test(r) },
 ];
 
 function groupOf(role: string): string {
@@ -207,7 +207,7 @@ const AgentManagePage: React.FC = () => {
 
   return (
     <div className="agent-manage-page">
-      <PageHeader title="Agent 定义浏览器" subtitle=".agent/agents/*.md — 只读浏览仓库 Agent 系统" />
+      <PageHeader title="AI 助手列表" subtitle="查看系统中各 AI 助手的职责与配置（只读）" />
 
       {agentsErr && <div className="agm-error">加载 registry 失败：{agentsErr}</div>}
 
@@ -291,7 +291,7 @@ const AgentManagePage: React.FC = () => {
               <div className="agm-detail-head">
                 <div>
                   <h1>{detail.name}</h1>
-                  <div className="agm-detail-id">@{detail.id} · <code>{detail.path}</code></div>
+                  <div className="agm-detail-id">@{detail.id}</div>
                 </div>
                 <div className="agm-detail-actions">
                   <span className="agm-detail-meta">
@@ -311,7 +311,7 @@ const AgentManagePage: React.FC = () => {
               {/* Frontmatter table */}
               {Object.keys(detail.frontmatter || {}).length > 0 && (
                 <div className="agm-fm">
-                  <div className="agm-fm-title">Frontmatter</div>
+                  <div className="agm-fm-title">配置信息</div>
                   <table>
                     <tbody>
                       {Object.entries(detail.frontmatter).map(([k, v]) => (

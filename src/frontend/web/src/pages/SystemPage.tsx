@@ -198,7 +198,7 @@ export const SystemPage: React.FC = () => {
       {/* 1. 架构总览 ─────────────────────────────────────── */}
       <section className="sys-section">
         <div className="sys-section-head">
-          <h2>实时架构（6 库反射）</h2>
+          <h2>各数据库实时状态</h2>
           <div className="sys-section-meta">
             {archSummary ? (
               <span className={archSummary.up === archSummary.total ? 'meta-ok' : 'meta-warn'}>
@@ -207,7 +207,7 @@ export const SystemPage: React.FC = () => {
             ) : null}
             <span className="meta-mute">
               {lastArchAt ? `更新于 ${new Date(lastArchAt).toLocaleTimeString()}` : ''}
-              {archLoading ? '（刷新中…）' : ''}
+              {archLoading ? ' 刷新中…' : ''}
             </span>
           </div>
         </div>
@@ -227,7 +227,7 @@ export const SystemPage: React.FC = () => {
         <div className="sys-section-head">
           <h2>系统配置</h2>
           <div className="sys-section-meta">
-            <span className="meta-mute">来源 /api/v1/system/config</span>
+            <span className="meta-mute">运行时配置参数</span>
           </div>
         </div>
         {config ? (
@@ -303,7 +303,7 @@ export const SystemPage: React.FC = () => {
         <div className="sys-section-head">
           <h2>构建与运行时</h2>
           <div className="sys-section-meta">
-            <span className="meta-mute">来源 /api/v1/system/version</span>
+            <span className="meta-mute">服务版本与运行信息</span>
           </div>
         </div>
         {version ? (

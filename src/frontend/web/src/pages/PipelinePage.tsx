@@ -29,10 +29,10 @@ const SERVICE_LABELS: Record<string, string> = {
 
 const STATUS_LABELS: Record<string, string> = {
   queued: '排队中',
-  ocr: 'OCR',
-  chunk: '切块',
-  embed: '嵌入',
-  ingest: '入库',
+  ocr: '识别文字中',
+  chunk: '切段中',
+  embed: '编码中',
+  ingest: '写入中',
   done: '完成',
   failed: '失败',
 };
@@ -81,7 +81,7 @@ export const PipelinePage: React.FC = () => {
     const r = await pipelineUpload(file);
     setUploading(false);
     if (r.ok) {
-      setUploadResult({ ok: true, msg: `已提交 · job ${r.job_id?.slice(0, 8)}` });
+      setUploadResult({ ok: true, msg: '文件已提交，系统正在处理，请稍候…' });
       setFile(null);
       if (fileRef.current) fileRef.current.value = '';
       refreshJobs();
@@ -114,11 +114,11 @@ export const PipelinePage: React.FC = () => {
 
   return (
     <div className="pipeline-page">
-      <PageHeader title="数据管道" subtitle="一键上传 → OCR → 切块 → 嵌入 → 入库" />
+      <PageHeader title="文档上传" subtitle="上传文件，系统自动识别、整理并写入知识库" />
 
       <div className="pipeline-grid">
         <section className="pipeline-card">
-          <h2>知识库连通性</h2>
+          <h2>各数据库状态</h2>
           {arch ? (
             <div className="health-grid">
               {services.map((s) => (
@@ -126,7 +126,7 @@ export const PipelinePage: React.FC = () => {
                   <StatusDot status={s.status} />
                   <span className="health-label">{s.label}</span>
                   <span className="health-status">
-                    {s.configured ? s.status : '未配置'}
+                    {!s.configured ? '未配置' : s.status === 'healthy' ? '正常' : s.status === 'unhealthy' ? '异常' : '未知'}
                   </span>
                 </div>
               ))}
@@ -138,7 +138,9 @@ export const PipelinePage: React.FC = () => {
           )}
           {arch && (
             <div className="health-footer">
-              整体 <strong>{overall}</strong>
+              整体 <strong>
+                {overall === 'ok' ? '全部正常' : overall === 'degraded' ? '部分异常' : overall === 'down' ? '不可用' : '检查中'}
+              </strong>
               <span className="health-time">
                 更新于 {fmtTime(arch.generated_at)}
               </span>
@@ -197,9 +199,9 @@ export const PipelinePage: React.FC = () => {
                 <tr style={{ textAlign: 'left', color: '#64748b', borderBottom: '1px solid #e2e8f0' }}>
                   <th style={{ padding: '8px 6px' }}>文件</th>
                   <th style={{ padding: '8px 6px' }}>状态</th>
-                  <th style={{ padding: '8px 6px' }}>OCR页</th>
-                  <th style={{ padding: '8px 6px' }}>字符</th>
-                  <th style={{ padding: '8px 6px' }}>切块</th>
+                  <th style={{ padding: '8px 6px' }}>识别页数</th>
+                  <th style={{ padding: '8px 6px' }}>字符数</th>
+                  <th style={{ padding: '8px 6px' }}>片段数</th>
                   <th style={{ padding: '8px 6px' }}>耗时</th>
                   <th style={{ padding: '8px 6px' }}>提交</th>
                 </tr>
@@ -227,7 +229,7 @@ export const PipelinePage: React.FC = () => {
                     <td style={{ padding: '6px' }}>{j.ocr_pages ?? '-'}</td>
                     <td style={{ padding: '6px' }}>{j.text_chars ?? '-'}</td>
                     <td style={{ padding: '6px' }}>{j.chunks_inserted != null ? `${j.chunks_inserted}/${j.chunks_total ?? '?'}` : '-'}</td>
-                    <td style={{ padding: '6px' }}>{j.duration_ms != null ? `${j.duration_ms}ms` : '-'}</td>
+                    <td style={{ padding: '6px' }}>{j.duration_ms != null ? `${j.duration_ms}毫秒` : '-'}</td>
                     <td style={{ padding: '6px', color: '#64748b' }}>{fmtDateTime(j.created_at)}</td>
                   </tr>
                 ))}

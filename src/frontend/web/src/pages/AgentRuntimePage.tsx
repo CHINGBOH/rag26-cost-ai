@@ -247,7 +247,7 @@ export function AgentRuntimePage() {
           <span>工具调用 {display.toolCalls.length}</span>
           <span>检索片段 {display.chunkCount}</span>
           <span>迭代 {display.iterations}</span>
-          {display.durationMs > 0 && <span>{display.durationMs}ms</span>}
+          {display.durationMs > 0 && <span>{display.durationMs}毫秒</span>}
           <button className="runtime-advanced-btn" onClick={() => setAdvancedOpen(true)}>
             📊 高级数据
           </button>
@@ -318,7 +318,7 @@ export function AgentRuntimePage() {
         <main className="runtime-center">
           <section className="panel">
             <div className="panel-head">
-              <h3>共享状态（Channel）</h3>
+              <h3>运行状态</h3>
               {live && display.isStreaming && <span className="dot live" />}
             </div>
             <pre className="channel-box">{JSON.stringify(channel, null, 2)}</pre>
@@ -326,7 +326,7 @@ export function AgentRuntimePage() {
 
           <section className="panel">
             <div className="panel-head">
-              <h3>规划步骤（Plan）</h3>
+              <h3>执行计划</h3>
             </div>
             {display.planSteps.length === 0 ? (
               <p className="muted small">无 plan（直答 / 简单意图 / 未到 planner 节点）。</p>
@@ -341,7 +341,7 @@ export function AgentRuntimePage() {
 
           <section className="panel">
             <div className="panel-head">
-              <h3>工具调用（Tool Calls）· {display.toolCalls.length} 次</h3>
+              <h3>工具调用 · {display.toolCalls.length} 次</h3>
             </div>
             {display.toolCalls.length === 0 ? (
               <p className="muted small">本次运行未调用 ReAct 工具（agent 直接走了线性管道）。</p>
@@ -354,11 +354,11 @@ export function AgentRuntimePage() {
                       <code className="tool-name">{tc.tool}</code>
                       <span className={`tool-status status-${tc.status}`}>{tc.status}</span>
                       {tc.duration_ms != null && (
-                        <span className="muted small">{tc.duration_ms}ms</span>
+                        <span className="muted small">{tc.duration_ms}毫秒</span>
                       )}
                     </div>
                     <div className="tool-args">
-                      <span className="muted">args:</span>{' '}
+                      <span className="muted">参数：</span>
                       <code>{fmtArgs(tc.args)}</code>
                     </div>
                     {tc.result != null && (
@@ -385,10 +385,10 @@ export function AgentRuntimePage() {
           <section className="panel">
             <div className="panel-head">
               <h3>
-                节点轨迹（Node Trajectory）
+                执行路径
                 {selectedTrace && (
                   <span className="muted small" style={{ marginLeft: 8 }}>
-                    追踪 {selectedTrace.trace_id.slice(0, 8)} · {selectedTrace.nodes.length} 节点 · {selectedTrace.duration_ms ?? 0}毫秒
+                    {selectedTrace.nodes.length} 步 · {selectedTrace.duration_ms ?? 0}毫秒
                   </span>
                 )}
               </h3>
@@ -412,13 +412,13 @@ export function AgentRuntimePage() {
                         v{n.version}
                       </span>
                       <code style={{ color: '#0f172a', fontWeight: 600 }}>{n.node}</code>
-                      <span className="muted small">{n.latency_ms}ms</span>
+                      <span className="muted small">{n.latency_ms}毫秒</span>
                       {n.iteration_at_entry != null && (
-                        <span className="muted small">iter={n.iteration_at_entry}</span>
+                        <span className="muted small">第{n.iteration_at_entry}轮</span>
                       )}
                       {n.tool_calls.length > 0 && (
                         <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '1px 6px', borderRadius: 6, fontSize: 11 }}>
-                          {n.tool_calls.length} tool
+                          {n.tool_calls.length} 工具
                         </span>
                       )}
                       {n.error && <span style={{ color: '#dc2626', fontSize: 12 }}>⚠ {n.error}</span>}
@@ -439,7 +439,7 @@ export function AgentRuntimePage() {
                       <div className="muted small" style={{ marginTop: 4 }}>
                         {n.tool_calls.map((tc, i) => (
                           <span key={i} style={{ marginRight: 8 }}>
-                            🔧 <code>{tc.tool}</code>{tc.duration_ms != null ? ` (${tc.duration_ms}ms)` : ''}
+                            🔧 <code>{tc.tool}</code>{tc.duration_ms != null ? ` (${tc.duration_ms}毫秒)` : ''}
                           </span>
                         ))}
                       </div>
@@ -453,7 +453,7 @@ export function AgentRuntimePage() {
           {/* R9: Server Trace History */}
           <section className="panel">
             <div className="panel-head">
-              <h3>历史记录（Server Traces）<span className="muted">({serverTraces.length})</span></h3>
+              <h3>历史记录 <span className="muted">({serverTraces.length})</span></h3>
             </div>
             {serverTraces.length === 0 ? (
               <p className="muted small">暂无服务端持久化轨迹。运行一次 agent 即可生成。</p>
@@ -470,7 +470,7 @@ export function AgentRuntimePage() {
                       <span>{fmtUnixTime(t.started_ts)}</span>
                       <span>{t.node_count} 节点</span>
                       {t.iterations != null && <span>{t.iterations} 迭代</span>}
-                      {t.duration_ms != null && <span>{t.duration_ms}ms</span>}
+                      {t.duration_ms != null && <span>{t.duration_ms}毫秒</span>}
                     </div>
                   </li>
                 ))}
@@ -513,7 +513,7 @@ const ToolResultPreview: React.FC<{ tool: string; result: unknown }> = ({ tool, 
 
   return (
     <details>
-      <summary>result</summary>
+      <summary>返回结果</summary>
       <pre>{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
     </details>
   );

@@ -218,7 +218,7 @@ export const OpsPage: React.FC = () => {
               <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
               <Tooltip contentStyle={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 6, fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="latency" name="延迟 (ms)" fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="latency" name="延迟（毫秒）" fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -226,7 +226,7 @@ export const OpsPage: React.FC = () => {
 
       {ops && ops.top_paths.length > 0 && (
         <div className="ops-paths-card">
-          <h3>请求量 TOP 路径 (60s)</h3>
+          <h3>最热接口（近 60 秒）</h3>
           <ul className="paths-list">
             {ops.top_paths.map((p) => (
               <li key={p.path}>
@@ -354,7 +354,7 @@ const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency,
       {role && <div className="svc-role">{role}</div>}
       <div className="svc-meta">
         <span className={`svc-status-label ${klass}`}>{statusLabel}</span>
-        {latency > 0 && <span className="svc-latency">{latency}ms</span>}
+        {latency > 0 && <span className="svc-latency">{latency}毫秒</span>}
       </div>
     </div>
   );
