@@ -13,9 +13,11 @@ import {
 import { useAgent } from '../hooks/useAgent';
 import { useRunStore } from '../stores/useRunStore';
 import {
-  getAgentTraces, getAgentTrace,
-  AgentTraceSummary, AgentTrace,
+  getAgentTraces, getAgentTrace, getLearningEngine, getLearningBlindspots,
+  getLearningSummary,
+  AgentTraceSummary, AgentTrace, LearningEngineStatus, BlindspotCluster,
 } from '../services/metricsApi';
+import { AdvancedDataDrawer } from '../components/learning/AdvancedDataDrawer';
 import './AgentRuntimePage.css';
 import { fmtTime, fmtUnixTime } from '../utils/dateUtils';
 import { AgentFlowPanel } from '../components/agent/AgentFlowPanel';
@@ -80,6 +82,25 @@ export function AgentRuntimePage() {
   const [input, setInput] = useState('安装工程消耗量标准中送配电装置系统调试的计算规则是什么?');
   const [history, setHistory] = useState<RunSnapshot[]>(() => loadHistory());
   const [viewing, setViewing] = useState<RunSnapshot | null>(null);
+
+  // 高级数据抽屉（来自学习模块）
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [engine, setEngine] = useState<LearningEngineStatus | null>(null);
+  const [blindspots, setBlindspots] = useState<BlindspotCluster[]>([]);
+  const [topTools, setTopTools] = useState<[string, number][]>([]);
+  const [topTypes, setTopTypes] = useState<[string, number][]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const [eng, bs, s] = await Promise.all([
+        getLearningEngine(), getLearningBlindspots(2), getLearningSummary(),
+      ]);
+      setEngine(eng);
+      setBlindspots(bs?.clusters || []);
+      setTopTools(Object.entries(s?.tool_frequency || {}).slice(0, 8) as [string, number][]);
+      setTopTypes(Object.entries(s?.type_frequency || {}).sort((a, b) => b[1] - a[1]).slice(0, 6) as [string, number][]);
+    })();
+  }, []);
 
   // R9: server-side traces (persisted node trajectory)
   const [serverTraces, setServerTraces] = useState<AgentTraceSummary[]>([]);
@@ -207,6 +228,14 @@ export function AgentRuntimePage() {
     <div className="runtime-page">
       <AgentFlowPanel />
       <GuideHistoryPanel />
+      <AdvancedDataDrawer
+        open={advancedOpen}
+        onClose={() => setAdvancedOpen(false)}
+        blindspots={blindspots}
+        topTools={topTools}
+        topTypes={topTypes}
+        engine={engine}
+      />
       <header className="runtime-header">
         <div>
           <h1>Agent 运行时</h1>
@@ -219,6 +248,9 @@ export function AgentRuntimePage() {
           <span>检索片段 {display.chunkCount}</span>
           <span>迭代 {display.iterations}</span>
           {display.durationMs > 0 && <span>{display.durationMs}ms</span>}
+          <button className="runtime-advanced-btn" onClick={() => setAdvancedOpen(true)}>
+            📊 高级数据
+          </button>
         </div>
       </header>
 

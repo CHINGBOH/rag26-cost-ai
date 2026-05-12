@@ -6,7 +6,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import {
   getHealthDetail, getLlmMetrics, getOpsMetrics,
-  HealthDetailResponse, OpsMetricsResponse,
+  getLatestSignals, getSignalsSummary, getFeedbackStats,
+  HealthDetailResponse, OpsMetricsResponse, SignalAggregation, SignalSummary, FeedbackStats,
 } from '../services/metricsApi';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -35,15 +36,24 @@ export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
   const [llmStatus, setLlmStatus] = useState<string>('—');
   const [ops, setOps] = useState<OpsMetricsResponse | null>(null);
+  const [signals, setSignals] = useState<SignalAggregation | null>(null);
+  const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
+  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const { isConnected } = useWebSocket('dashboard');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = async () => {
-    const [hd, llm, m] = await Promise.allSettled([getHealthDetail(), getLlmMetrics(), getOpsMetrics(60)]);
+    const [hd, llm, m, sig, sigSum, fb] = await Promise.allSettled([
+      getHealthDetail(), getLlmMetrics(), getOpsMetrics(60),
+      getLatestSignals(100), getSignalsSummary(), getFeedbackStats(100),
+    ]);
     if (hd.status === 'fulfilled') setHealthDetail(hd.value);
     if (llm.status === 'fulfilled')
       setLlmStatus(llm.value.status === 'ok' ? '在线' : llm.value.message ?? '离线');
     if (m.status === 'fulfilled' && m.value) setOps(m.value);
+    if (sig.status === 'fulfilled') setSignals(sig.value);
+    if (sigSum.status === 'fulfilled') setSignalsSummary(sigSum.value);
+    if (fb.status === 'fulfilled') setFeedbackStats(fb.value);
   };
 
   useEffect(() => {
@@ -236,12 +246,70 @@ export const OpsPage: React.FC = () => {
         <div className="ops-info-card">
           <span className="ops-info-label">最后刷新</span>
           <span className="ops-info-value">
-            {healthDetail?.timestamp
-              ? fmtTime(healthDetail.timestamp)
-              : '—'}
+            {healthDetail?.timestamp ? fmtTime(healthDetail.timestamp) : '—'}
           </span>
         </div>
       </div>
+
+      {/* 信号监控（来自学习模块） */}
+      {signalsSummary && (
+        <details className="ops-signals-section">
+          <summary className="ops-signals-summary">
+            <span>📡 信号监控</span>
+            <span className={`ops-signals-health ops-signals-health--${signalsSummary.health_status}`}>
+              {signalsSummary.health_status === 'good' ? '✅ 正常' : signalsSummary.health_status === 'warning' ? '⚠️ 注意' : '🚨 告警'}
+            </span>
+            <span className="ops-muted">展开看采集统计</span>
+          </summary>
+          <div className="ops-signals-grid">
+            {([
+              ['用户反馈', signalsSummary.signal_counts.feedback],
+              ['失败信号', signalsSummary.signal_counts.failures],
+              ['重复问题', signalsSummary.signal_counts.repeats],
+              ['合约违规', signalsSummary.signal_counts.violations],
+              ['拓扑异常', signalsSummary.signal_counts.topo],
+            ] as [string, number][]).map(([label, count]) => (
+              <div key={label} className="ops-signal-chip">
+                <span className="ops-signal-count">{count}</span>
+                <span className="ops-signal-label">{label}</span>
+              </div>
+            ))}
+          </div>
+          {signals && (
+            <div className="ops-severity-row">
+              <span className="ops-muted">严重度指数</span>
+              <div className="ops-severity-bar">
+                <div className="ops-severity-fill" style={{ width: `${Math.min(signals.severity_score, 100)}%` }} />
+              </div>
+              <span className="ops-severity-value">{signals.severity_score.toFixed(1)}/100</span>
+            </div>
+          )}
+        </details>
+      )}
+
+      {/* 反馈统计（来自学习模块） */}
+      {feedbackStats && (feedbackStats.positive_count > 0 || feedbackStats.negative_count > 0) && (
+        <details className="ops-signals-section">
+          <summary className="ops-signals-summary">
+            <span>💬 用户反馈统计</span>
+            <span className="ops-muted">展开查看分布</span>
+          </summary>
+          <div className="ops-signals-grid">
+            <div className="ops-signal-chip">
+              <span className="ops-signal-count">{feedbackStats.positive_count ?? 0}</span>
+              <span className="ops-signal-label">点赞</span>
+            </div>
+            <div className="ops-signal-chip">
+              <span className="ops-signal-count">{feedbackStats.negative_count ?? 0}</span>
+              <span className="ops-signal-label">差评</span>
+            </div>
+            <div className="ops-signal-chip">
+              <span className="ops-signal-count">{feedbackStats.total_count ?? 0}</span>
+              <span className="ops-signal-label">合计</span>
+            </div>
+          </div>
+        </details>
+      )}
     </div>
   );
 };

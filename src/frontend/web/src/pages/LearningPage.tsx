@@ -1,9 +1,11 @@
 /**
- * 自学习看板 — 真实数据
- * 数据源：
- *   GET /api/v1/learning/summary   — 总览统计
- *   GET /api/v1/learning/runs      — 最近 agent run 明细
- *   GET /api/v1/learning/gaps/workbench — DB 驱动知识缺口生命周期看板
+ * 自学习看板 (#138)
+ * 精简为无 Tab 的线性页面：KPI → 系统状态 → 问题列表 → 知识缺口 → 改进记录
+ *
+ * 搬出去的功能：
+ *   信号监控 / 交互统计  → OpsPage
+ *   系统自检抽屉         → SystemPage
+ *   高级数据抽屉         → AgentRuntimePage
  */
 
 import React, { useEffect, useState, useRef } from 'react';
@@ -11,43 +13,29 @@ import { PageHeader } from '../components/common/PageHeader';
 import {
   getLearningSummary,
   getLearningDashboard,
-  getLearningRuns,
   getLearningGapWorkbench,
-  getLearningBlindspots,
-  getConversations,
-  getFeedbackStats,
   getLearningEngine,
-  getLatestSignals,
-  getSignalsSummary,
   getDetectedProblems,
   getImprovementHistory,
   triageGaps,
   retestGap,
   transitionGap,
+  approveFix,
+  rejectFix,
   LearningSummary,
   LearningDashboard,
-  LearningRun,
   LearningGapWorkbench,
   LearningGapWorkbenchItem,
-  BlindspotCluster,
-  ConversationTurn,
-  FeedbackStats,
   LearningEngineStatus,
-  SignalAggregation,
-  SignalSummary,
-  ProblemReport,
   ImprovementEvent,
 } from '../services/metricsApi';
-import { SystemDiagnosticsDrawer } from '../components/learning/SystemDiagnosticsDrawer';
-import { AdvancedDataDrawer } from '../components/learning/AdvancedDataDrawer';
-import { StatusTab } from './learning/StatusTab';
-import { IssuesTab } from './learning/IssuesTab';
-import { ImprovementsTab } from './learning/ImprovementsTab';
+import { DashboardPanel } from '../components/learning/DashboardPanel';
+import { ProblemsPanel } from '../components/learning/ProblemsPanel';
+import { ReviewsPanel } from '../components/learning/ReviewsPanel';
+import { ImprovementHistoryPanel } from '../components/learning/ImprovementHistoryPanel';
 import './LearningPage.css';
 import { fmtDateTime } from '../utils/dateUtils';
 import {
-  QualityFilter,
-  MainTab,
   QUALITY_ZH,
   OUTCOME_FAMILY_ZH,
   GAP_SCOPE_ZH,
@@ -60,57 +48,32 @@ import {
 export const LearningPage: React.FC = () => {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [dashboard, setDashboard] = useState<LearningDashboard | null>(null);
-  const [interactionRuns, setInteractionRuns] = useState<LearningRun[]>([]);
-  const [learningLoopRuns, setLearningLoopRuns] = useState<LearningRun[]>([]);
   const [gapWorkbench, setGapWorkbench] = useState<LearningGapWorkbench | null>(null);
-  const [blindspots, setBlindspots] = useState<BlindspotCluster[]>([]);
-  const [conversations, setConversations] = useState<ConversationTurn[]>([]);
-  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const [engine, setEngine] = useState<LearningEngineStatus | null>(null);
-  const [signals, setSignals] = useState<SignalAggregation | null>(null);
-  const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
-  const [problems, setProblems] = useState<ProblemReport[]>([]);
+  const [problems, setProblems] = useState<any[]>([]);
   const [historyEvents, setHistoryEvents] = useState<ImprovementEvent[]>([]);
   const [historySummary, setHistorySummary] = useState<any>(null);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [triagePending, setTriagePending] = useState(false);
   const [triageNote, setTriageNote] = useState<string | null>(null);
   const [retestingGaps, setRetestingGaps] = useState<Set<string>>(new Set());
   const [transitioning, setTransitioning] = useState<Set<string>>(new Set());
   const [liveRetestOn, setLiveRetestOn] = useState(false);
-  const [filter, setFilter] = useState<QualityFilter>('all');
-  const [mainTab, setMainTab] = useState<MainTab>('status');
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
-    const [s, dash, interactionData, learningLoopData, gapWorkbenchData, b, convs, fb, eng, sig, sigSum, probData, histData] = await Promise.all([
+    const [s, dash, gapWb, eng, probData, histData] = await Promise.all([
       getLearningSummary(),
       getLearningDashboard(),
-      getLearningRuns(50, filter === 'all' ? undefined : filter, 'interaction'),
-      getLearningRuns(30, undefined, 'learning_loop'),
       getLearningGapWorkbench(200, false),
-      getLearningBlindspots(2),
-      getConversations(50),
-      getFeedbackStats(100),
       getLearningEngine(),
-      getLatestSignals(100),
-      getSignalsSummary(),
       getDetectedProblems(),
       getImprovementHistory(30),
     ]);
     setSummary(s);
     setDashboard(dash);
-    setInteractionRuns(interactionData);
-    setLearningLoopRuns(learningLoopData);
-    setGapWorkbench(gapWorkbenchData);
-    setBlindspots(b?.clusters || []);
-    setConversations(convs);
-    setFeedbackStats(fb);
+    setGapWorkbench(gapWb);
     setEngine(eng);
-    setSignals(sig);
-    setSignalsSummary(sigSum);
     setProblems(probData.problems);
     setHistoryEvents(histData.events);
     setHistorySummary(histData.summary);
@@ -167,23 +130,23 @@ export const LearningPage: React.FC = () => {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
-  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
+  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   useEffect(() => {
     const t = setInterval(() => refreshRef.current(), 30000);
     return () => clearInterval(t);
   }, []);
 
+  // ── 派生数据 ──────────────────────────────────────────
   const qual = summary?.by_quality || { good: 0, weak: 0, failure: 0 };
   const total = summary?.total_runs || 0;
   const errorCount = (qual.weak || 0) + (qual.failure || 0);
   const errorRate = total > 0 ? Math.round((errorCount / total) * 100) : 0;
 
-  const unresolvedGapCount =
-    (gapWorkbench?.counts.active ?? 0) + (gapWorkbench?.counts.observing ?? 0);
-  const observingCount = gapWorkbench?.counts.observing ?? 0;
+  const gapCounts = gapWorkbench?.counts ?? { total: 0, active: 0, observing: 0, blocked: 0, resolved: 0, by_status: {} };
+  const unresolvedGapCount = (gapCounts.active ?? 0) + (gapCounts.observing ?? 0);
+  const observingCount = gapCounts.observing ?? 0;
   const pendingReviewCount = historyEvents.filter((e) => e.status === 'pending_review').length;
 
-  // F1+F2 闭环健康检查（#135）：自动复测器最后跑过多久？超过 15 分钟视为可能停跑
   const listenerLastRunTs = engine?.last_run?.ts;
   const listenerStaleMinutes = (() => {
     if (!listenerLastRunTs) return null;
@@ -201,30 +164,15 @@ export const LearningPage: React.FC = () => {
   const feedbackNegative = summary?.feedback.negative ?? 0;
   const feedbackTotal = summary?.feedback.total ?? 0;
 
-  const topTools = Object.entries(summary?.tool_frequency || {}).slice(0, 8);
-  const topTypes = Object.entries(summary?.type_frequency || {})
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 6);
-  const gapCounts = gapWorkbench?.counts ?? {
-    total: 0,
-    active: 0,
-    observing: 0,
-    blocked: 0,
-    resolved: 0,
-    by_status: {},
-  };
-
+  // ── Gap 单项渲染 ──────────────────────────────────────
   const renderGapItem = (item: LearningGapWorkbenchItem, index: number) => {
     const g = item.gap;
     const latestEvidence = item.latest_evidence;
     const repairTask = item.repair_task;
     const presentation = item.presentation ?? {
-      quality: g.quality,
-      refused: g.refused,
-      chunks_count: g.chunks_count,
-      confidence: g.confidence,
-      badge: g.quality,
-      reason: 'Current gap state',
+      quality: g.quality, refused: g.refused,
+      chunks_count: g.chunks_count, confidence: g.confidence,
+      badge: g.quality, reason: 'Current gap state',
     };
     const qualityClass = presentation.quality || g.quality;
     const badgeLabel = QUALITY_ZH[presentation.badge] ?? QUALITY_ZH[presentation.quality] ?? presentation.quality;
@@ -239,11 +187,9 @@ export const LearningPage: React.FC = () => {
           {causeText && <span className="muted small">{causeText}</span>}
           <span className="muted small gap-time">{fmtDateTime(g.ts)}</span>
         </div>
-
         {g.resolution_plan && (
           <p className="gap-preview"><strong>处理方案：</strong>{g.resolution_plan}</p>
         )}
-
         {item.allowed_actions.length > 0 && (
           <div className="gap-actions">
             {item.allowed_actions.includes('live_retest') && (
@@ -260,29 +206,25 @@ export const LearningPage: React.FC = () => {
               .filter((a) => a !== 'live_retest')
               .map((action) => {
                 const tKey = `${g.gap_key}:${action}`;
-                const label = GAP_ACTION_ZH[action] ?? action;
                 return (
                   <button
                     key={action}
                     className="learn-refresh gap-action-btn"
                     disabled={transitioning.has(tKey)}
                     onClick={() => g.gap_key && handleTransitionGap(g.gap_key, action)}
-                    title={`后端动作：${action}`}
                   >
-                    {transitioning.has(tKey) ? '…' : label}
+                    {transitioning.has(tKey) ? '…' : GAP_ACTION_ZH[action] ?? action}
                   </button>
                 );
               })}
           </div>
         )}
-
         {(latestEvidence?.answer_preview || g.answer_preview) && (
           <details className="gap-detail">
             <summary>看看系统答的什么</summary>
             <p className="gap-preview">{latestEvidence?.answer_preview || g.answer_preview}</p>
           </details>
         )}
-
         {g.sample_queries && g.sample_queries.length > 1 && (
           <details className="gap-detail">
             <summary>类似问题（共 {g.sample_queries.length} 个）</summary>
@@ -293,7 +235,6 @@ export const LearningPage: React.FC = () => {
             </ul>
           </details>
         )}
-
         <details className="gap-detail gap-detail-tech">
           <summary>技术细节（开发用）</summary>
           <ul className="gap-tech-list">
@@ -334,239 +275,123 @@ export const LearningPage: React.FC = () => {
     );
   };
 
-  const driftCount = engine?.projection_drift?.total_drift_count ?? 0;
-
+  // ── 渲染 ──────────────────────────────────────────────
   return (
     <div className="learning-page">
       <PageHeader
         title="自学习看板"
-        subtitle="agent 运行记录 · 知识缺口 · 反馈分布"
+        subtitle="系统自我改进的进度与状态"
         actions={
-          <>
-            <button
-              className="learn-diagnostics-btn"
-              onClick={() => setAdvancedOpen(true)}
-              title="盲点聚类、工具频率、问题类型分布、学习引擎"
-            >
-              📊 高级数据
-            </button>
-            <button
-              className={`learn-diagnostics-btn${driftCount > 0 ? ' has-drift' : ''}`}
-              onClick={() => setDiagnosticsOpen(true)}
-              title="系统自检（投影一致性、reconcile 工具）"
-            >
-              🔧 系统自检
-              {driftCount > 0 && <span className="learn-diagnostics-dot" aria-hidden />}
-            </button>
-            <button className="learn-refresh" onClick={refresh} disabled={loading}>
-              {loading ? '刷新中…' : '刷新'}
-            </button>
-          </>
+          <button className="learn-refresh" onClick={refresh} disabled={loading}>
+            {loading ? '刷新中…' : '刷新'}
+          </button>
         }
       />
 
-      <SystemDiagnosticsDrawer
-        open={diagnosticsOpen}
-        onClose={() => setDiagnosticsOpen(false)}
-        globalDrift={engine?.projection_drift}
-        lastReconcile={engine?.last_projection_reconcile}
-        onAfterReconcile={refresh}
-      />
-
-      <AdvancedDataDrawer
-        open={advancedOpen}
-        onClose={() => setAdvancedOpen(false)}
-        blindspots={blindspots}
-        topTools={topTools}
-        topTypes={topTypes}
-        engine={engine}
-      />
-
-      {/* KPI 卡片 — 大白话视角 */}
+      {/* ① KPI 卡片 */}
       <div className="learn-kpi-grid">
         <KpiCard
           label="今天表现"
           value={
-            healthStatus === 'good'
-              ? '😊 状态不错'
-              : healthStatus === 'warning'
-              ? '🤔 有点问题'
-              : healthStatus === 'critical'
-              ? '😣 需要照顾'
-              : '⏳ 加载中…'
+            healthStatus === 'good' ? '😊 状态不错'
+            : healthStatus === 'warning' ? '🤔 有点问题'
+            : healthStatus === 'critical' ? '😣 需要照顾'
+            : '⏳ 加载中…'
           }
           hint={
-            healthStatus === 'good'
-              ? '系统在正常工作'
-              : healthStatus === 'warning'
-              ? '建议看一下下面的「问题」标签'
-              : healthStatus === 'critical'
-              ? '请马上去看「问题」标签'
-              : ''
+            healthStatus === 'good' ? '系统在正常工作'
+            : healthStatus === 'warning' ? '请看下方「当前问题」'
+            : healthStatus === 'critical' ? '请马上处理下方问题'
+            : ''
           }
           tone={healthTone}
         />
         <KpiCard
           label="最近答题"
           value={total > 0 ? `回答了 ${total} 个问题` : '还没人来问'}
-          hint={
-            total > 0
-              ? errorCount > 0
-                ? `其中 ${errorCount} 个回答得不太好`
-                : '全部回答都不错 👍'
-              : ''
-          }
+          hint={total > 0 ? (errorCount > 0 ? `其中 ${errorCount} 个回答得不太好` : '全部回答都不错 👍') : ''}
           tone={total === 0 ? undefined : errorRate <= 30 ? 'good' : errorRate <= 60 ? 'warn' : 'bad'}
         />
         <KpiCard
           label="待解决问题"
-          value={
-            unresolvedGapCount === 0
-              ? '✅ 全清了'
-              : `还有 ${unresolvedGapCount} 个问题`
-          }
+          value={unresolvedGapCount === 0 ? '✅ 全清了' : `还有 ${unresolvedGapCount} 个问题`}
           hint={
-            listenerStale
-              ? `⚠️ 自动复测器已 ${listenerStaleMinutes} 分钟没跑了，列表可能过时`
-              : unresolvedGapCount === 0
-              ? '没有未解决的问题'
-              : observingCount > 0
-              ? `其中 ${observingCount} 个观察期满会自动结案`
-              : '系统正在想办法'
+            listenerStale ? `⚠️ 自动复测器已 ${listenerStaleMinutes} 分钟没跑了`
+            : unresolvedGapCount === 0 ? '没有未解决的问题'
+            : observingCount > 0 ? `其中 ${observingCount} 个观察期满会自动结案`
+            : '系统正在想办法'
           }
           tone={listenerStale ? 'bad' : unresolvedGapCount === 0 ? 'good' : unresolvedGapCount <= 5 ? 'warn' : 'bad'}
         />
         <KpiCard
           label="等你拍板"
-          value={
-            pendingReviewCount === 0
-              ? '✅ 没有积压'
-              : `${pendingReviewCount} 个建议`
-          }
-          hint={
-            pendingReviewCount === 0
-              ? '系统暂时不需要你做决定'
-              : '去「改进队列」标签批准或拒绝'
-          }
+          value={pendingReviewCount === 0 ? '✅ 没有积压' : `${pendingReviewCount} 个建议`}
+          hint={pendingReviewCount === 0 ? '系统暂时不需要你做决定' : '在下方「待审批」里批准或拒绝'}
           tone={pendingReviewCount === 0 ? 'good' : 'warn'}
         />
         <KpiCard
           label="用户评价"
-          value={
-            feedbackTotal === 0
-              ? '还没人评价'
-              : `${feedbackPositive} 人点赞 · ${feedbackNegative} 人吐槽`
-          }
+          value={feedbackTotal === 0 ? '还没人评价' : `${feedbackPositive} 人点赞 · ${feedbackNegative} 人吐槽`}
           hint={feedbackTotal === 0 ? '可以让朋友试用一下' : `共收到 ${feedbackTotal} 条反馈`}
         />
       </div>
 
-      <div className="learn-grid">
-        {/* DB 驱动知识缺口生命周期 */}
-        <section className="learn-card learn-gaps">
-          <div className="learn-card-head">
-            <h3>知识缺口生命周期 <span className="muted">({gapCounts.total})</span></h3>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <label className="learn-checkbox" title="勾选后对 poor/refused 缺口发起真实查询复测（最多 5 个）">
-                <input
-                  type="checkbox"
-                  checked={liveRetestOn}
-                  onChange={(e) => setLiveRetestOn(e.target.checked)}
-                />
-                <span>同时实时复测可疑缺口</span>
-              </label>
-              <button
-                className="learn-refresh"
-                onClick={() => handleTriageAll(liveRetestOn)}
-                disabled={triagePending}
-                title="对所有活跃缺口执行策略复检"
-              >
-                {triagePending ? '复检中…' : '🔄 复检全部缺口'}
-              </button>
-            </div>
+      {/* ② 系统健康看板 */}
+      <DashboardPanel dashboard={dashboard} />
+
+      {/* ③ 当前问题 */}
+      <ProblemsPanel problems={problems} />
+
+      {/* ④ 知识缺口生命周期 */}
+      <section className="learn-card learn-gaps">
+        <div className="learn-card-head">
+          <h3>知识缺口 <span className="muted">({gapCounts.total})</span></h3>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label className="learn-checkbox" title="勾选后对 poor/refused 缺口发起真实查询复测（最多 5 个）">
+              <input type="checkbox" checked={liveRetestOn} onChange={(e) => setLiveRetestOn(e.target.checked)} />
+              <span>同时实时复测可疑缺口</span>
+            </label>
+            <button
+              className="learn-refresh"
+              onClick={() => handleTriageAll(liveRetestOn)}
+              disabled={triagePending}
+            >
+              {triagePending ? '复检中…' : '🔄 复检全部'}
+            </button>
           </div>
-          {triageNote && <p className="muted small" style={{ marginBottom: 8 }}>{triageNote}</p>}
-          {!gapWorkbench || gapCounts.total === 0 ? (
-            <p className="empty">没有未解决的问题 — 系统目前表现良好。</p>
-          ) : (
-            <div className="gap-workbench">
-              {GAP_BUCKETS.map((bucket) => {
-                const items = gapWorkbench.buckets[bucket.key] || [];
-                if (items.length === 0) return null;
-                // 「已搞定」默认折叠（通常很多，但不需要每次都看）
-                const startOpen = bucket.key !== 'resolved';
-                return (
-                  <details key={bucket.key} className="gap-bucket" open={startOpen}>
-                    <summary className="gap-bucket-summary">
-                      <span className="gap-bucket-title">{bucket.title}</span>
-                      <span className="gap-bucket-count">{items.length}</span>
-                    </summary>
-                    <ul className="gap-list">{items.map(renderGapItem)}</ul>
-                  </details>
-                );
-              })}
-            </div>
-          )}
-        </section>
+        </div>
+        {triageNote && <p className="muted small" style={{ marginBottom: 8 }}>{triageNote}</p>}
+        {!gapWorkbench || gapCounts.total === 0 ? (
+          <p className="empty">没有未解决的问题 — 系统目前表现良好。</p>
+        ) : (
+          <div className="gap-workbench">
+            {GAP_BUCKETS.map((bucket) => {
+              const items = gapWorkbench.buckets[bucket.key] || [];
+              if (items.length === 0) return null;
+              return (
+                <details key={bucket.key} className="gap-bucket" open={bucket.key !== 'resolved'}>
+                  <summary className="gap-bucket-summary">
+                    <span className="gap-bucket-title">{bucket.title}</span>
+                    <span className="gap-bucket-count">{items.length}</span>
+                  </summary>
+                  <ul className="gap-list">{items.map(renderGapItem)}</ul>
+                </details>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
-      </div>
-
-      {/* 主 Tab 导航 */}
-      <div className="learn-main-tabs">
-        {(
-          [
-            ['status', '📊 现状'],
-            ['qa-issues', '🔍 问答与问题'],
-            [
-              'improvements',
-              `🛠 改进队列${pendingReviewCount > 0 ? ` (${pendingReviewCount})` : ''}`,
-            ],
-          ] as [MainTab, string][]
-        ).map(([t, label]) => (
-          <button key={t} className={mainTab === t ? 'active' : ''} onClick={() => setMainTab(t)}>
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab 简介 */}
-      <p className="muted small" style={{ marginTop: -4, marginBottom: 12 }}>
-        {mainTab === 'status' && '系统在干什么 — 健康度、改进趋势、实时信号、最近事件。'}
-        {mainTab === 'qa-issues' && '它做错了什么 — 自动检测的问题、最近问答、对话记录、用户反馈。'}
-        {mainTab === 'improvements' && '它在怎么改进 — 待审核的修复建议、历史成功率趋势。'}
-      </p>
-
-      {mainTab === 'status' && (
-        <StatusTab signals={signals} signalsSummary={signalsSummary} dashboard={dashboard} />
-      )}
-
-      {mainTab === 'qa-issues' && (
-        <IssuesTab
-          problems={problems}
-          interactionRuns={interactionRuns}
-          learningLoopRuns={learningLoopRuns}
-          conversations={conversations}
-          feedbackStats={feedbackStats}
-          filter={filter}
-          onFilterChange={setFilter}
-        />
-      )}
-
-      {mainTab === 'improvements' && (
-        <ImprovementsTab
-          historyEvents={historyEvents}
-          historySummary={historySummary}
-          onApprove={(eventId) => {
-            console.log('Approved:', eventId);
-            refresh();
-          }}
-          onReject={(eventId, reason) => {
-            console.log('Rejected:', eventId, reason);
-            refresh();
-          }}
-        />
-      )}
-
+      {/* ⑤ 待审批 + 改进历史 */}
+      <ReviewsPanel
+        reviews={historyEvents.filter((e) => e.status === 'pending_review')}
+        onApprove={async (eventId) => { await approveFix(eventId); refresh(); }}
+        onReject={async (eventId, reason) => { await rejectFix(eventId, reason); refresh(); }}
+      />
+      <ImprovementHistoryPanel
+        events={historyEvents}
+        stats={{ summary: historySummary, effectiveness: historySummary }}
+      />
     </div>
   );
 };

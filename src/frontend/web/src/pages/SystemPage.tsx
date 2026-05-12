@@ -16,13 +16,16 @@ import {
   getSystemKb,
   getSystemVersion,
   getArchitectureLive,
+  getLearningEngine,
   SystemConfig,
   SystemKb,
   SystemVersion,
   ArchitectureLive,
   ArchitectureStore,
+  LearningEngineStatus,
 } from '../services/metricsApi';
 import { PageHeader } from '../components/common/PageHeader';
+import { SystemDiagnosticsDrawer } from '../components/learning/SystemDiagnosticsDrawer';
 import './SystemPage.css';
 import { fmtUnixDateTime } from '../utils/dateUtils';
 
@@ -118,13 +121,18 @@ export const SystemPage: React.FC = () => {
   const [arch, setArch] = useState<ArchitectureLive | null>(null);
   const [archLoading, setArchLoading] = useState(false);
   const [lastArchAt, setLastArchAt] = useState<number | null>(null);
+  const [engine, setEngine] = useState<LearningEngineStatus | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [c, k, v] = await Promise.all([getSystemConfig(), getSystemKb(), getSystemVersion()]);
+      const [c, k, v, eng] = await Promise.all([
+        getSystemConfig(), getSystemKb(), getSystemVersion(), getLearningEngine(),
+      ]);
       setConfig(c);
       setKb(k);
       setVersion(v);
+      setEngine(eng);
     })();
   }, []);
 
@@ -162,9 +170,30 @@ export const SystemPage: React.FC = () => {
     return `${d}d ${h}h ${m}m`;
   }, [version]);
 
+  const driftCount = engine?.projection_drift?.total_drift_count ?? 0;
+
   return (
     <div className="system-page">
-      <PageHeader title="系统配置" subtitle="架构 · 配置 · KB · 版本（元数据，非健康监控）" />
+      <PageHeader
+        title="系统配置"
+        subtitle="架构 · 配置 · KB · 版本（元数据，非健康监控）"
+        actions={
+          <button
+            className={`sys-diag-btn${driftCount > 0 ? ' has-drift' : ''}`}
+            onClick={() => setDiagnosticsOpen(true)}
+            title="系统自检（投影一致性、reconcile 工具）"
+          >
+            🔧 系统自检{driftCount > 0 ? ` (${driftCount})` : ''}
+          </button>
+        }
+      />
+      <SystemDiagnosticsDrawer
+        open={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
+        globalDrift={engine?.projection_drift}
+        lastReconcile={engine?.last_projection_reconcile}
+        onAfterReconcile={async () => { const eng = await getLearningEngine(); setEngine(eng); }}
+      />
 
       {/* 1. 架构总览 ─────────────────────────────────────── */}
       <section className="sys-section">
