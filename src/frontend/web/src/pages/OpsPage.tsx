@@ -288,7 +288,7 @@ export const OpsPage: React.FC = () => {
       )}
 
       {/* 反馈统计（来自学习模块） */}
-      {feedbackStats && (feedbackStats.positive_count > 0 || feedbackStats.negative_count > 0) && (
+      {feedbackStats && (feedbackStats.summary.total > 0) && (
         <details className="ops-signals-section">
           <summary className="ops-signals-summary">
             <span>💬 用户反馈统计</span>
@@ -296,15 +296,15 @@ export const OpsPage: React.FC = () => {
           </summary>
           <div className="ops-signals-grid">
             <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.positive_count ?? 0}</span>
+              <span className="ops-signal-count">{feedbackStats.summary.positive}</span>
               <span className="ops-signal-label">点赞</span>
             </div>
             <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.negative_count ?? 0}</span>
+              <span className="ops-signal-count">{feedbackStats.summary.negative}</span>
               <span className="ops-signal-label">差评</span>
             </div>
             <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.total_count ?? 0}</span>
+              <span className="ops-signal-count">{feedbackStats.summary.total}</span>
               <span className="ops-signal-label">合计</span>
             </div>
           </div>
