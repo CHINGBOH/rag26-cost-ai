@@ -14,9 +14,15 @@ import {
   AreaChart, Area,
 } from 'recharts';
 import { PageHeader } from '../components/common/PageHeader';
-import { StatusDot } from '../components/common/StatusDot';
 import './OpsPage.css';
 import { fmtTime } from '../utils/dateUtils';
+
+const SVC_ICONS: Record<string, string> = {
+  go_gateway: '🔀', retrieval: '🔍', python_legacy: '🐍',
+  nodejs: '⚙️', ocr: '📄', llama_server: '🤖',
+  postgresql: '🐘', postgres: '🐘', qdrant: '🧭',
+  elasticsearch: '🔎', neo4j: '🕸️', redis: '⚡', milvus: '📡',
+};
 
 const SERVICE_LABELS: Record<string, { label: string; port: number }> = {
   go_gateway:    { label: 'Go 网关',    port: 8080 },
@@ -36,7 +42,7 @@ export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
   const [llmStatus, setLlmStatus] = useState<string>('—');
   const [ops, setOps] = useState<OpsMetricsResponse | null>(null);
-  const [signals, setSignals] = useState<SignalAggregation | null>(null);
+  const [, setSignals] = useState<SignalAggregation | null>(null);
   const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const { isConnected } = useWebSocket('dashboard');
@@ -110,20 +116,24 @@ export const OpsPage: React.FC = () => {
         }
       />
 
-      <div className="service-grid">
+      <div className="svc-strip">
         {serviceEntries.map(({ key }) => {
           const svc = getStatus(key);
           const meta = SERVICE_LABELS[key] || { label: key, port: 0 };
+          const klass = svc.status === 'healthy' ? 'healthy'
+            : svc.status === 'degraded' ? 'degraded'
+            : svc.status === 'not_running' ? 'not-running'
+            : svc.status === 'unknown' ? 'unknown' : 'unhealthy';
+          const statusTip = svc.status === 'healthy' ? '正常'
+            : svc.status === 'degraded' ? '降级'
+            : svc.status === 'not_running' ? '未启用' : '异常';
           return (
-            <ServiceCard
-              key={key}
-              label={meta.label}
-              port={meta.port}
-              status={svc.status}
-              latency={svc.latency_ms}
-              critical={(svc as any).critical}
-              role={(svc as any).role}
-            />
+            <div key={key} className={`svc-chip ${klass}`}
+              title={`${meta.label}${svc.latency_ms > 0 ? ' · ' + svc.latency_ms + '毫秒' : ''} · ${statusTip}`}>
+              <span className="svc-chip-icon">{SVC_ICONS[key] || '⬡'}</span>
+              <span className="svc-chip-name">{meta.label}</span>
+              <span className="svc-chip-dot" />
+            </div>
           );
         })}
       </div>
@@ -182,6 +192,8 @@ export const OpsPage: React.FC = () => {
         </div>
       )}
 
+      <details className="ops-accordion">
+        <summary className="ops-accordion-sum">📊 图表 <span className="ops-acc-hint">请求量 · 服务延迟 · 热门接口</span></summary>
       <div className="ops-charts">
         <div className="ops-chart-card">
           <h3>请求量 · 最近 60 秒</h3>
@@ -225,91 +237,46 @@ export const OpsPage: React.FC = () => {
       </div>
 
       {ops && ops.top_paths.length > 0 && (
-        <div className="ops-paths-card">
-          <h3>最热接口（近 60 秒）</h3>
-          <ul className="paths-list">
-            {ops.top_paths.map((p) => (
-              <li key={p.path}>
-                <code className="path-name">{p.path}</code>
-                <span className="path-count">{p.count}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+          <div className="ops-paths-card">
+            <ul className="paths-list">
+              {ops.top_paths.slice(0, 5).map((p) => (
+                <li key={p.path}>
+                  <code className="path-name">{p.path}</code>
+                  <span className="path-count">{p.count}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </details>
 
-      <div className="ops-info-row">
-        <div className="ops-info-card">
-          <span className="ops-info-label">LLM 服务</span>
-          <span className="ops-info-value">{llmStatus}</span>
-        </div>
-        <div className="ops-info-card">
-          <span className="ops-info-label">最后刷新</span>
-          <span className="ops-info-value">
-            {healthDetail?.timestamp ? fmtTime(healthDetail.timestamp) : '—'}
+      {/* 底部状态栏 */}
+      <div className="ops-footer-bar">
+        <span className="ops-footer-ws">
+          <span className={`ws-pulse ${isConnected ? 'on' : 'off'}`} />
+          {isConnected ? '实时' : '断线'}
+        </span>
+        <span className="ops-footer-sep">·</span>
+        <span>🤖 {llmStatus}</span>
+        {signalsSummary && <>
+          <span className="ops-footer-sep">·</span>
+          <span title="系统健康">
+            {signalsSummary.health_status === 'good' ? '✅' : signalsSummary.health_status === 'warning' ? '⚠️' : '🚨'}
           </span>
-        </div>
-      </div>
-
-      {/* 信号监控（来自学习模块） */}
-      {signalsSummary && (
-        <details className="ops-signals-section">
-          <summary className="ops-signals-summary">
-            <span>📡 信号监控</span>
-            <span className={`ops-signals-health ops-signals-health--${signalsSummary.health_status}`}>
-              {signalsSummary.health_status === 'good' ? '✅ 正常' : signalsSummary.health_status === 'warning' ? '⚠️ 注意' : '🚨 告警'}
-            </span>
-            <span className="ops-muted">展开看采集统计</span>
-          </summary>
-          <div className="ops-signals-grid">
-            {([
-              ['用户反馈', signalsSummary.signal_counts.feedback],
-              ['失败信号', signalsSummary.signal_counts.failures],
-              ['重复问题', signalsSummary.signal_counts.repeats],
-              ['合约违规', signalsSummary.signal_counts.violations],
-              ['拓扑异常', signalsSummary.signal_counts.topo],
-            ] as [string, number][]).map(([label, count]) => (
-              <div key={label} className="ops-signal-chip">
-                <span className="ops-signal-count">{count}</span>
-                <span className="ops-signal-label">{label}</span>
-              </div>
-            ))}
-          </div>
-          {signals && (
-            <div className="ops-severity-row">
-              <span className="ops-muted">严重度指数</span>
-              <div className="ops-severity-bar">
-                <div className="ops-severity-fill" style={{ width: `${Math.min(signals.severity_score, 100)}%` }} />
-              </div>
-              <span className="ops-severity-value">{signals.severity_score.toFixed(1)}/100</span>
-            </div>
+          <span title="用户反馈数">💬 {signalsSummary.signal_counts.feedback}</span>
+          {signalsSummary.signal_counts.failures > 0 && (
+            <span title="失败信号">🔴 {signalsSummary.signal_counts.failures}</span>
           )}
-        </details>
-      )}
-
-      {/* 反馈统计（来自学习模块） */}
-      {feedbackStats && (feedbackStats.summary.total > 0) && (
-        <details className="ops-signals-section">
-          <summary className="ops-signals-summary">
-            <span>💬 用户反馈统计</span>
-            <span className="ops-muted">展开查看分布</span>
-          </summary>
-          <div className="ops-signals-grid">
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.positive}</span>
-              <span className="ops-signal-label">点赞</span>
-            </div>
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.negative}</span>
-              <span className="ops-signal-label">差评</span>
-            </div>
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.total}</span>
-              <span className="ops-signal-label">合计</span>
-            </div>
-          </div>
-        </details>
-      )}
+        </>}
+        {feedbackStats && feedbackStats.summary.total > 0 && <>
+          <span className="ops-footer-sep">·</span>
+          <span title="点赞/差评">👍 {feedbackStats.summary.positive} · 👎 {feedbackStats.summary.negative}</span>
+        </>}
+        <span className="ops-footer-sep">·</span>
+        <span className="ops-footer-time">
+          {healthDetail?.timestamp ? `更新 ${fmtTime(healthDetail.timestamp)}` : '—'}
+        </span>
+      </div>
     </div>
   );
 };
@@ -323,40 +290,4 @@ const MetricCard: React.FC<MetricCardProps> = ({ label, value, hint, tone }) => 
   </div>
 );
 
-interface ServiceCardProps {
-  label: string;
-  port: number;
-  status: string;
-  latency: number;
-  critical?: boolean;
-  role?: string;
-}
-
-const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency, critical, role }) => {
-  const klass =
-    status === 'healthy' ? 'healthy' :
-    status === 'degraded' ? 'degraded' :
-    status === 'not_running' ? 'not-running' :
-    status === 'unknown' ? 'unknown' : 'unhealthy';
-  const statusLabel =
-    status === 'healthy' ? '正常' :
-    status === 'degraded' ? '降级' :
-    status === 'not_running' ? '未启用' :
-    status === 'unknown' ? '未知' : '异常';
-  return (
-    <div className={`svc-card ${klass}`} title={role || ''}>
-      <div className="svc-card-top">
-        <StatusDot status={status} />
-        <span className="svc-port">:{port}</span>
-        {critical === false && <span className="svc-optional-tag">可选</span>}
-      </div>
-      <div className="svc-name">{label}</div>
-      {role && <div className="svc-role">{role}</div>}
-      <div className="svc-meta">
-        <span className={`svc-status-label ${klass}`}>{statusLabel}</span>
-        {latency > 0 && <span className="svc-latency">{latency}毫秒</span>}
-      </div>
-    </div>
-  );
-};
 

@@ -16,10 +16,11 @@ import { PipelinePage }  from './pages/PipelinePage';
 // Hub wrapper
 import { DashHub } from './hubs/DashHub';
 
-// Archive pages (hidden from nav)
-import AgentRuntimeDeepDive from './components/common/AgentRuntimeDeepDive';
-import AgentRuntimeFolk     from './components/common/AgentRuntimeFolk';
-import DocsReader           from './components/common/DocsReader';
+// Archive pages — lazy loaded to avoid broken-import cascade
+import { lazy, Suspense } from 'react';
+const AgentRuntimeDeepDive = lazy(() => import('./components/common/AgentRuntimeDeepDive'));
+const AgentRuntimeFolk     = lazy(() => import('./components/common/AgentRuntimeFolk'));
+const DocsReader           = lazy(() => import('./components/common/DocsReader'));
 
 import './App.css';
 import './styles/theme.css';
@@ -103,10 +104,10 @@ export default function App() {
             <Route path="/learning" element={<Navigate to="/hub/learning" replace />} />
             <Route path="/agents"   element={<Navigate to="/hub/agents"   replace />} />
 
-            {/* ── 归档页 ── */}
-            <Route path="/archive/deep-dive"      element={<AgentRuntimeDeepDive />} />
-            <Route path="/archive/deep-dive-folk" element={<AgentRuntimeFolk />} />
-            <Route path="/archive/docs"           element={<DocsReader />} />
+            {/* ── 归档页（lazy，避免 DocsReader 的 ?raw 路径导致全局崩溃） ── */}
+            <Route path="/archive/deep-dive"      element={<Suspense fallback={null}><AgentRuntimeDeepDive /></Suspense>} />
+            <Route path="/archive/deep-dive-folk" element={<Suspense fallback={null}><AgentRuntimeFolk /></Suspense>} />
+            <Route path="/archive/docs"           element={<Suspense fallback={null}><DocsReader /></Suspense>} />
           </Routes>
         </main>
       </div>
