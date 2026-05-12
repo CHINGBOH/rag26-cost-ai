@@ -21,7 +21,7 @@ const TABS = [
   { key: 'ops',      label: '运维',   icon: '🛡' },
   { key: 'system',   label: '系统',   icon: '⚙️' },
   { key: 'learning', label: '学习',   icon: '🧠' },
-  { key: 'agents',   label: 'Agent',  icon: '🤖' },
+  { key: 'agents',   label: 'AI 助手', icon: '🤖' },
 ] as const;
 
 type TabKey = (typeof TABS)[number]['key'];

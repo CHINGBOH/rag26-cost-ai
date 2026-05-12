@@ -27,15 +27,15 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-// Core pages
+// 核心页面（主导航直接加载）
 import { LibraryPage }   from './pages/LibraryPage';
 import { AgentChat }     from './pages/AgentChat';
 import { PipelinePage }  from './pages/PipelinePage';
 
-// Hub wrapper
+// 综合面板外壳（包裹 6 个子标签页）
 import { DashHub } from './hubs/DashHub';
 
-// Archive pages — lazy loaded to avoid broken-import cascade
+// 归档页 — 懒加载，防止 DocsReader 的 ?raw 路径拖垮主包
 import { lazy, Suspense } from 'react';
 const AgentRuntimeDeepDive = lazy(() => import('./components/common/AgentRuntimeDeepDive'));
 const AgentRuntimeFolk     = lazy(() => import('./components/common/AgentRuntimeFolk'));
