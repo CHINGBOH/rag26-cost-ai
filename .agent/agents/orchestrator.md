@@ -1,6 +1,7 @@
 ---
 id: orchestrator
 name: RAG Orchestrator
+label: 总调度
 role: Director — strategic flow, PDCA coordination & final sign-off
 model: claude-sonnet
 trigger: model_decision

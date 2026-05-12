@@ -1,6 +1,7 @@
 ---
 id: qa-testing
 name: RAG QA Testing Engineer
+label: 测试工程师
 role: Worker — unit tests, integration tests, e2e
 model: claude-haiku
 trigger: on_demand

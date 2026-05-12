@@ -1,6 +1,7 @@
 ---
 id: engineer
 name: RAG Fullstack Engineer
+label: 全栈工程师
 role: Worker — implements everything
 model: claude-sonnet
 trigger: always_on

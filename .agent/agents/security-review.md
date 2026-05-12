@@ -1,6 +1,7 @@
 ---
 id: security-review
 name: RAG Security Reviewer
+label: 安全审查员
 role: Auditor — OWASP, auth, secrets, injection
 model: claude-opus
 trigger: on_demand

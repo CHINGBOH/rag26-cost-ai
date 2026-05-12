@@ -1,6 +1,7 @@
 ---
 id: project-planner
 name: RAG Project Planner
+label: 项目规划师
 role: Architect — requirements, task breakdown, MVP mapping
 model: claude-sonnet
 trigger: model_decision

@@ -20,7 +20,8 @@ const API_BASE = getApiBaseUrl();
 
 interface AgentSummary {
   id: string;
-  name: string;
+  name: string;     // 英文技术名（来自 frontmatter name 字段）
+  label?: string;   // 中文显示名（来自 frontmatter label 字段）；优先展示
   role: string;
   model: string;
   trigger: string;
@@ -274,7 +275,8 @@ const AgentManagePage: React.FC = () => {
                       title={a.description}
                     >
                       <span className="agm-card-icon">{ROLE_ICONS[groupOf(a.role)] || '🤖'}</span>
-                      <span className="agm-card-name">{a.name}</span>
+                      {/* label = 中文显示名；fallback 到英文 name */}
+                      <span className="agm-card-name">{a.label || a.name}</span>
                     </button>
                   ))}
                 </div>
@@ -297,7 +299,8 @@ const AgentManagePage: React.FC = () => {
             <>
               <div className="agm-detail-head">
                 <div>
-                  <h1>{detail.name}</h1>
+                  {/* 优先显示中文 label，无则降级到英文 name */}
+                  <h1>{(detail.frontmatter?.label as string) || detail.name}</h1>
                   {typeof detail.frontmatter?.description === 'string' && (
                     <p className="agm-detail-desc muted">{detail.frontmatter.description}</p>
                   )}

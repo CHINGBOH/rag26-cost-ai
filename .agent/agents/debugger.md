@@ -1,6 +1,7 @@
 ---
 id: debugger
 name: RAG Debugger
+label: 调试专家
 role: Worker — troubleshooting, hotfix, root cause analysis
 model: claude-sonnet
 trigger: model_decision
