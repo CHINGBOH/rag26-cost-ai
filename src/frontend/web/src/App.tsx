@@ -5,8 +5,27 @@
  * 🧩 综合  /hub/:tab  (运行时·检索·运维·系统·学习·Agent)
  */
 
-import { useEffect } from 'react';
+import { useEffect, Component } from 'react';
+import type { ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null };
+  static getDerivedStateFromError(e: Error) { return { error: e }; }
+  render() {
+    if (this.state.error) {
+      const e = this.state.error as Error;
+      return (
+        <div style={{ padding: 32, fontFamily: 'monospace', color: '#dc2626', background: '#fef2f2', minHeight: '100vh' }}>
+          <h2>⚠ React 渲染错误（请截图发给 Copilot）</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{e.message}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 11, color: '#6b7280' }}>{e.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Core pages
 import { LibraryPage }   from './pages/LibraryPage';
@@ -84,6 +103,7 @@ function Navigation() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <BrowserRouter>
       <div className="app-shell">
         <Navigation />
@@ -112,5 +132,6 @@ export default function App() {
         </main>
       </div>
     </BrowserRouter>
+    </ErrorBoundary>
   );
 }
