@@ -244,3 +244,22 @@
 
 /* UX#143 — cleaner detail head */
 .agm-detail-desc { font-size: 13px; margin-top: 4px; }
+
+/* UX#143b — doc content collapsible */
+.agm-doc-details { margin-top: 12px; }
+.agm-doc-summary {
+  cursor: pointer; list-style: none;
+  padding: 8px 12px; border-radius: 6px;
+  background: var(--bg-secondary, #f8fafc);
+  font-size: 13px; color: var(--text-secondary, #64748b);
+  user-select: none; border: 1px solid var(--border, #e2e8f0);
+}
+.agm-doc-summary::-webkit-details-marker { display: none; }
+.agm-doc-details[open] .agm-doc-summary {
+  border-radius: 6px 6px 0 0; border-bottom: none;
+}
+.agm-doc-details[open] .agm-md {
+  border: 1px solid var(--border, #e2e8f0);
+  border-top: none; border-radius: 0 0 6px 6px;
+  padding: 12px 16px; overflow: auto; max-height: 60vh;
+}

@@ -324,12 +324,15 @@ const AgentManagePage: React.FC = () => {
                 </details>
               )}
 
-              {/* Always render HTML view; raw markdown accessible via frontmatter details */}
-              <div
-                className="agm-md"
-                // eslint-disable-next-line react/no-danger
-                dangerouslySetInnerHTML={{ __html: detailHtml }}
-              />
+              {/* Full markdown — collapsed, for power users only */}
+              <details className="agm-doc-details">
+                <summary className="agm-doc-summary">📄 查看完整定义文档</summary>
+                <div
+                  className="agm-md"
+                  // eslint-disable-next-line react/no-danger
+                  dangerouslySetInnerHTML={{ __html: detailHtml }}
+                />
+              </details>
             </>
           )}
           {!detail && !detailLoading && !detailErr && (

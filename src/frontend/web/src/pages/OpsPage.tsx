@@ -40,11 +40,11 @@ const SERVICE_LABELS: Record<string, { label: string; port: number }> = {
 
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
-  const [llmStatus, setLlmStatus] = useState<string>('—');
+  const [, setLlmStatus] = useState<string>('—');
   const [ops, setOps] = useState<OpsMetricsResponse | null>(null);
   const [, setSignals] = useState<SignalAggregation | null>(null);
-  const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
-  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
+  const [, setSignalsSummary] = useState<SignalSummary | null>(null);
+  const [, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const { isConnected } = useWebSocket('dashboard');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -177,19 +177,30 @@ export const OpsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 实时请求指标 */}
+      {/* 实时请求指标 — 技术细节折叠 */}
       {ops && (
-        <div className="ops-metrics-row">
-          <MetricCard label="每秒请求" value={ops.qps.toFixed(2)} hint={`${ops.requests} 次请求`} />
-          <MetricCard label="中位延迟" value={`${ops.p50_ms} 毫秒`} />
-          <MetricCard label="95%延迟" value={`${ops.p95_ms} 毫秒`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
-          <MetricCard label="99%延迟" value={`${ops.p99_ms} 毫秒`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
-          <MetricCard
-            label="错误率"
-            value={`${(ops.error_rate * 100).toFixed(2)}%`}
-            tone={ops.error_rate > 0.05 ? 'bad' : ops.error_rate > 0.01 ? 'warn' : 'good'}
-          />
-        </div>
+        <details className="ops-metrics-details">
+          <summary className="ops-metrics-summary">
+            📊 性能指标
+            <span className="ops-metrics-peek">
+              {ops.error_rate > 0.01
+                ? <span className="tone-bad">错误率 {(ops.error_rate * 100).toFixed(1)}%</span>
+                : <span className="tone-good">错误率正常</span>}
+              · {ops.qps.toFixed(1)} QPS
+            </span>
+          </summary>
+          <div className="ops-metrics-row">
+            <MetricCard label="每秒请求" value={ops.qps.toFixed(2)} hint={`${ops.requests} 次请求`} />
+            <MetricCard label="中位延迟" value={`${ops.p50_ms} 毫秒`} />
+            <MetricCard label="95%延迟" value={`${ops.p95_ms} 毫秒`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
+            <MetricCard label="99%延迟" value={`${ops.p99_ms} 毫秒`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
+            <MetricCard
+              label="错误率"
+              value={`${(ops.error_rate * 100).toFixed(2)}%`}
+              tone={ops.error_rate > 0.05 ? 'bad' : ops.error_rate > 0.01 ? 'warn' : 'good'}
+            />
+          </div>
+        </details>
       )}
 
       <details className="ops-accordion">
@@ -250,28 +261,12 @@ export const OpsPage: React.FC = () => {
         )}
       </details>
 
-      {/* 底部状态栏 */}
+      {/* 底部状态栏 — 只保留连接状态和更新时间 */}
       <div className="ops-footer-bar">
         <span className="ops-footer-ws">
           <span className={`ws-pulse ${isConnected ? 'on' : 'off'}`} />
           {isConnected ? '实时' : '断线'}
         </span>
-        <span className="ops-footer-sep">·</span>
-        <span>🤖 {llmStatus}</span>
-        {signalsSummary && <>
-          <span className="ops-footer-sep">·</span>
-          <span title="系统健康">
-            {signalsSummary.health_status === 'good' ? '✅' : signalsSummary.health_status === 'warning' ? '⚠️' : '🚨'}
-          </span>
-          <span title="用户反馈数">💬 {signalsSummary.signal_counts.feedback}</span>
-          {signalsSummary.signal_counts.failures > 0 && (
-            <span title="失败信号">🔴 {signalsSummary.signal_counts.failures}</span>
-          )}
-        </>}
-        {feedbackStats && feedbackStats.summary.total > 0 && <>
-          <span className="ops-footer-sep">·</span>
-          <span title="点赞/差评">👍 {feedbackStats.summary.positive} · 👎 {feedbackStats.summary.negative}</span>
-        </>}
         <span className="ops-footer-sep">·</span>
         <span className="ops-footer-time">
           {healthDetail?.timestamp ? `更新 ${fmtTime(healthDetail.timestamp)}` : '—'}

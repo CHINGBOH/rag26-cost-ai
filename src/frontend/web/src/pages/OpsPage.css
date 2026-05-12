@@ -270,3 +270,20 @@ details[open] .ops-accordion-sum::before { transform: rotate(90deg); }
   margin: 2px 0 6px 0;
   line-height: 1.3;
 }
+
+/* UX#143b — metrics collapsible */
+.ops-metrics-details { margin: 8px 0; }
+.ops-metrics-summary {
+  cursor: pointer; list-style: none;
+  padding: 8px 12px; border-radius: 6px;
+  background: var(--bg-secondary, #f8fafc);
+  font-size: 13px; font-weight: 500;
+  color: var(--text-secondary, #64748b);
+  user-select: none; display: flex; gap: 10px; align-items: center;
+}
+.ops-metrics-summary::-webkit-details-marker { display: none; }
+.ops-metrics-peek { font-size: 12px; font-weight: 400; }
+.ops-metrics-details[open] .ops-metrics-summary { border-radius: 6px 6px 0 0; margin-bottom: 4px; }
+.ops-metrics-details[open] .ops-metrics-row { padding: 8px 0; }
+.tone-bad { color: #dc2626; }
+.tone-good { color: #16a34a; }
