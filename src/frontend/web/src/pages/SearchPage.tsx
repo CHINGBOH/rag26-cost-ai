@@ -53,6 +53,17 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: '其它',
 };
 
+const CATEGORY_ICONS: Record<string, string> = {
+  retrieval: '🔍',
+  data: '📊',
+  graph: '🕸️',
+  proactive: '🔭',
+  datasci: '📈',
+  pricing: '💰',
+  compute: '🧮',
+  other: '⚙️',
+};
+
 function defaultValueForArg(spec: ArgSpec, exampleValue: any): any {
   if (exampleValue !== undefined) return exampleValue;
   if (spec.default !== undefined) return spec.default;
@@ -259,6 +270,7 @@ export const SearchPage: React.FC = () => {
           {Object.entries(groupedTools).map(([cat, list]) => (
             <div key={cat} className="tool-group">
               <div className="tool-group-title">
+                <span className="tool-cat-icon">{CATEGORY_ICONS[cat] || '⚙️'}</span>
                 {CATEGORY_LABELS[cat] || cat}
                 <span className="tool-group-count">{list.length}</span>
               </div>

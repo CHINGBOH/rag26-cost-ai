@@ -41,53 +41,30 @@ const STORE_DISPLAY: Record<string, { label: string; emoji: string }> = {
 
 function StoreCard({ name, store }: { name: string; store: ArchitectureStore }) {
   const meta = STORE_DISPLAY[name] ?? { label: name, emoji: '📦' };
-  const detailRows: Array<[string, string]> = [];
-  if (store.version) detailRows.push(['版本', String(store.version)]);
-  if (store.role) detailRows.push(['角色', store.role]);
-  if (typeof store.chunk_count === 'number') detailRows.push(['chunks', store.chunk_count.toLocaleString()]);
-  if (typeof store.collection_count === 'number') detailRows.push(['collections', String(store.collection_count)]);
-  if (Array.isArray(store.collections) && store.collections.length > 0) {
-    detailRows.push(['集合列表', store.collections.slice(0, 4).join(', ')]);
-  }
-  if (store.cluster_status) detailRows.push(['集群', String(store.cluster_status)]);
-  if (typeof store.nodes === 'number') detailRows.push(['节点', String(store.nodes)]);
-  if (store.index) detailRows.push(['索引', String(store.index)]);
-  if (typeof store.index_exists === 'boolean') detailRows.push(['索引存在', store.index_exists ? '✅' : '❌']);
-  if (store.extensions) {
-    const exts = Object.entries(store.extensions)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    if (exts.length > 0) detailRows.push(['扩展', exts.join(', ')]);
-  }
-  if (store.error) detailRows.push(['错误', String(store.error)]);
+  const detailParts: string[] = [];
+  if (store.version) detailParts.push(`v${store.version}`);
+  if (store.role) detailParts.push(store.role);
+  if (typeof store.chunk_count === 'number') detailParts.push(`${store.chunk_count.toLocaleString()} 片段`);
+  if (typeof store.collection_count === 'number') detailParts.push(`${store.collection_count} 集合`);
+  if (store.cluster_status) detailParts.push(store.cluster_status);
+  if (store.error) detailParts.push(`⚠ ${store.error}`);
 
   return (
-    <div className={`store-card ${store.available ? 'is-up' : 'is-down'}`}>
-      <div className="store-card-head">
+    <div
+      className={`store-icon-card ${store.available ? 'is-up' : 'is-down'}`}
+      title={[meta.label, store.available ? '在线' : '离线', ...detailParts].join(' · ')}
+    >
+      <span className="store-ring">
         <span className="store-emoji" aria-hidden>{meta.emoji}</span>
-        <span className="store-name">{meta.label}</span>
-        <span className={`store-status ${store.available ? 'up' : 'down'}`}>
-          {store.available ? '在线' : '离线'}
-        </span>
-      </div>
-      <dl className="store-dl">
-        {detailRows.length === 0 ? (
-          <div className="store-empty">无元数据</div>
-        ) : (
-          detailRows.map(([k, v]) => (
-            <div key={k} className="store-row">
-              <dt>{k}</dt>
-              <dd>{v}</dd>
-            </div>
-          ))
-        )}
-      </dl>
+      </span>
+      <span className="store-icon-name">{meta.label}</span>
+      <span className={`store-icon-dot ${store.available ? 'up' : 'down'}`} />
     </div>
   );
 }
 
 function ConfigGroup({ title, data }: { title: string; data: Record<string, unknown> | undefined }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   if (!data || Object.keys(data).length === 0) return null;
   return (
     <div className="cfg-group">
@@ -255,24 +232,29 @@ export const SystemPage: React.FC = () => {
         {kb ? (
           <div className="kb-stats">
             <div className="kb-stat">
+              <div className="kb-icon">🧩</div>
               <div className="kb-num">{(kb.chunks_total ?? 0).toLocaleString()}</div>
-              <div className="kb-lbl">chunks</div>
+              <div className="kb-lbl">片段</div>
             </div>
             <div className="kb-stat">
+              <div className="kb-icon">📄</div>
               <div className="kb-num">{(kb.documents_total ?? 0).toLocaleString()}</div>
-              <div className="kb-lbl">documents</div>
+              <div className="kb-lbl">文档</div>
             </div>
             <div className="kb-stat">
+              <div className="kb-icon">💡</div>
               <div className="kb-num">{(kb.concepts_total ?? 0).toLocaleString()}</div>
-              <div className="kb-lbl">concepts</div>
+              <div className="kb-lbl">概念</div>
             </div>
             <div className="kb-stat">
+              <div className="kb-icon">🔗</div>
               <div className="kb-num">{(kb.relations_total ?? 0).toLocaleString()}</div>
-              <div className="kb-lbl">relations</div>
+              <div className="kb-lbl">关联</div>
             </div>
             <div className="kb-stat">
+              <div className="kb-icon">💰</div>
               <div className="kb-num">{(kb.price_records_total ?? 0).toLocaleString()}</div>
-              <div className="kb-lbl">price records</div>
+              <div className="kb-lbl">价格记录</div>
             </div>
           </div>
         ) : (
@@ -307,34 +289,23 @@ export const SystemPage: React.FC = () => {
           </div>
         </div>
         {version ? (
-          <table className="ver-table">
-            <tbody>
-              <tr>
-                <td>git commit</td>
-                <td><code>{version.git_sha}</code></td>
-              </tr>
-              <tr>
-                <td>分支</td>
-                <td>{version.git_branch}</td>
-              </tr>
-              <tr>
-                <td>Python</td>
-                <td>{version.python_version}</td>
-              </tr>
-              <tr>
-                <td>平台</td>
-                <td>{version.platform}</td>
-              </tr>
-              <tr>
-                <td>启动时间</td>
-                <td>{version.service_start_ts ? fmtUnixDateTime(version.service_start_ts) : '—'}</td>
-              </tr>
-              <tr>
-                <td>运行时长</td>
-                <td>{uptimeStr}</td>
-              </tr>
-            </tbody>
-          </table>
+          <div className="ver-oneline">
+            <details className="ver-detail">
+              <summary className="ver-summary">
+                <span className="ver-uptime">⏱ {uptimeStr}</span>
+                <span className="ver-sep">·</span>
+                <span title={version.git_sha ?? ''}>🌿 {version.git_branch ?? '—'}</span>
+                <span className="ver-sep">·</span>
+                <span>🐍 Python {version.python_version ?? '—'}</span>
+                <span className="ver-sep">·</span>
+                <span>{version.platform ?? '—'}</span>
+              </summary>
+              <div className="ver-expanded">
+                <span><strong>启动：</strong>{version.service_start_ts ? fmtUnixDateTime(version.service_start_ts) : '—'}</span>
+                <span><strong>提交：</strong><code>{version.git_sha?.slice(0, 8) ?? '—'}</code></span>
+              </div>
+            </details>
+          </div>
         ) : (
           <div className="sys-empty">加载版本中…</div>
         )}

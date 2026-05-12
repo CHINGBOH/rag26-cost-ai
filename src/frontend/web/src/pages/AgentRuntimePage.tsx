@@ -105,7 +105,7 @@ export function AgentRuntimePage() {
   // R9: server-side traces (persisted node trajectory)
   const [serverTraces, setServerTraces] = useState<AgentTraceSummary[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<AgentTrace | null>(null);
-  const [traceLoading, setTraceLoading] = useState(false);
+  const [, setTraceLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -282,19 +282,21 @@ export function AgentRuntimePage() {
         </div>
       </section>
 
-      <div className="runtime-grid">
-        {/* LEFT: history */}
-        <aside className="runtime-history">
-          <div className="panel-head">
-            <h3>历史运行 <span className="muted">({history.length})</span></h3>
-            {history.length > 0 && (
-              <button className="link-danger" onClick={handleClearHistory}>清空</button>
-            )}
-          </div>
+      <details className="runtime-history-drawer">
+        <summary className="runtime-history-summary">
+          📋 历史 <span className="runtime-hist-count">({history.length})</span>
+          {history.length > 0 && (
+            <button
+              className="link-danger hist-clear-btn"
+              onClick={(e) => { e.preventDefault(); handleClearHistory(); }}
+            >清空</button>
+          )}
+        </summary>
+        <div className="runtime-history-body">
           {history.length === 0 ? (
-            <p className="muted small">暂无历史。完成一次运行后会自动归档。</p>
+            <p className="muted small">完成一次运行后会自动归档。</p>
           ) : (
-            <ul className="history-list">
+            <ul className="history-list-inline">
               {history.map((h) => (
                 <li
                   key={h.id}
@@ -312,153 +314,13 @@ export function AgentRuntimePage() {
               ))}
             </ul>
           )}
-        </aside>
-
-        {/* CENTER: channel + tool timeline */}
-        <main className="runtime-center">
-          <section className="panel">
-            <div className="panel-head">
-              <h3>运行状态</h3>
-              {live && display.isStreaming && <span className="dot live" />}
-            </div>
-            <pre className="channel-box">{JSON.stringify(channel, null, 2)}</pre>
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h3>执行计划</h3>
-            </div>
-            {display.planSteps.length === 0 ? (
-              <p className="muted small">无 plan（直答 / 简单意图 / 未到 planner 节点）。</p>
-            ) : (
-              <ol className="plan-list">
-                {display.planSteps.map((s, i) => (
-                  <li key={i}>{s}</li>
-                ))}
-              </ol>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h3>工具调用 · {display.toolCalls.length} 次</h3>
-            </div>
-            {display.toolCalls.length === 0 ? (
-              <p className="muted small">本次运行未调用 ReAct 工具（agent 直接走了线性管道）。</p>
-            ) : (
-              <ul className="tool-list">
-                {display.toolCalls.map((tc, i) => (
-                  <li key={i} className={`tool-card status-${tc.status}`}>
-                    <div className="tool-head">
-                      <span className="tool-idx">#{i + 1}</span>
-                      <code className="tool-name">{tc.tool}</code>
-                      <span className={`tool-status status-${tc.status}`}>{tc.status}</span>
-                      {tc.duration_ms != null && (
-                        <span className="muted small">{tc.duration_ms}毫秒</span>
-                      )}
-                    </div>
-                    <div className="tool-args">
-                      <span className="muted">参数：</span>
-                      <code>{fmtArgs(tc.args)}</code>
-                    </div>
-                    {tc.result != null && (
-                      <ToolResultPreview tool={tc.tool} result={tc.result} />
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <h3>最终答案</h3>
-            </div>
-            {display.answer ? (
-              <pre className="answer-box">{display.answer}</pre>
-            ) : (
-              <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
-            )}
-          </section>
-
-          {/* R9: Node Trajectory — server-persisted per-node version/latency/delta */}
-          <section className="panel">
-            <div className="panel-head">
-              <h3>
-                执行路径
-                {selectedTrace && (
-                  <span className="muted small" style={{ marginLeft: 8 }}>
-                    {selectedTrace.nodes.length} 步 · {selectedTrace.duration_ms ?? 0}毫秒
-                  </span>
-                )}
-              </h3>
-              {selectedTrace && (
-                <button className="link-danger" onClick={() => setSelectedTrace(null)}>关闭</button>
-              )}
-            </div>
-            {traceLoading ? (
-              <p className="muted small">加载中…</p>
-            ) : !selectedTrace ? (
-              <p className="muted small">从下方"历史记录"选择一次运行，查看每个节点的版本号·耗时·状态变化·工具调用。</p>
-            ) : (
-              <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
-                {selectedTrace.nodes.map((n) => (
-                  <li key={n.version} style={{
-                    border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, marginBottom: 6,
-                    background: n.error ? '#fef2f2' : '#fff',
-                  }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ background: '#0ea5e9', color: '#fff', padding: '1px 7px', borderRadius: 8, fontSize: 11 }}>
-                        v{n.version}
-                      </span>
-                      <code style={{ color: '#0f172a', fontWeight: 600 }}>{n.node}</code>
-                      <span className="muted small">{n.latency_ms}毫秒</span>
-                      {n.iteration_at_entry != null && (
-                        <span className="muted small">第{n.iteration_at_entry}轮</span>
-                      )}
-                      {n.tool_calls.length > 0 && (
-                        <span style={{ background: '#ede9fe', color: '#5b21b6', padding: '1px 6px', borderRadius: 6, fontSize: 11 }}>
-                          {n.tool_calls.length} 工具
-                        </span>
-                      )}
-                      {n.error && <span style={{ color: '#dc2626', fontSize: 12 }}>⚠ {n.error}</span>}
-                    </div>
-                    {n.delta_keys.length > 0 && (
-                      <div className="muted small" style={{ marginTop: 4 }}>
-                        Δ {n.delta_keys.map((k) => {
-                          const summary = (n.delta_summary || {})[k];
-                          return (
-                            <code key={k} style={{ marginRight: 6, background: '#f1f5f9', padding: '0 4px', borderRadius: 3 }}>
-                              {k}{summary != null ? `=${typeof summary === 'object' ? JSON.stringify(summary) : String(summary)}` : ''}
-                            </code>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {n.tool_calls.length > 0 && (
-                      <div className="muted small" style={{ marginTop: 4 }}>
-                        {n.tool_calls.map((tc, i) => (
-                          <span key={i} style={{ marginRight: 8 }}>
-                            🔧 <code>{tc.tool}</code>{tc.duration_ms != null ? ` (${tc.duration_ms}毫秒)` : ''}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-
-          {/* R9: Server Trace History */}
-          <section className="panel">
-            <div className="panel-head">
-              <h3>历史记录 <span className="muted">({serverTraces.length})</span></h3>
-            </div>
-            {serverTraces.length === 0 ? (
-              <p className="muted small">暂无服务端持久化轨迹。运行一次 agent 即可生成。</p>
-            ) : (
-              <ul className="history-list" style={{ maxHeight: 320, overflowY: 'auto' }}>
+          {/* Server traces */}
+          {serverTraces.length > 0 && (
+            <div className="runtime-traces">
+              <div className="panel-head" style={{ marginTop: 12 }}>
+                <h3 style={{ fontSize: 13 }}>服务端轨迹 <span className="muted">({serverTraces.length})</span></h3>
+              </div>
+              <ul className="history-list-inline">
                 {serverTraces.map((t) => (
                   <li
                     key={t.trace_id}
@@ -469,15 +331,107 @@ export function AgentRuntimePage() {
                     <div className="hist-meta">
                       <span>{fmtUnixTime(t.started_ts)}</span>
                       <span>{t.node_count} 节点</span>
-                      {t.iterations != null && <span>{t.iterations} 迭代</span>}
                       {t.duration_ms != null && <span>{t.duration_ms}毫秒</span>}
                     </div>
                   </li>
                 ))}
               </ul>
-            )}
-          </section>
-        </main>
+            </div>
+          )}
+        </div>
+      </details>
+
+      <div className="runtime-3col">
+        {/* LEFT: plan */}
+        <section className="runtime-col runtime-col-plan panel">
+          <div className="panel-head">
+            <h3>执行计划</h3>
+            {live && display.isStreaming && <span className="dot live" />}
+          </div>
+          {display.planSteps.length === 0 ? (
+            <p className="muted small">等待规划…</p>
+          ) : (
+            <ol className="plan-list">
+              {display.planSteps.map((s, i) => (
+                <li key={i}>{s}</li>
+              ))}
+            </ol>
+          )}
+          {/* channel state compact */}
+          <details className="channel-details">
+            <summary>运行状态</summary>
+            <pre className="channel-box-sm">{JSON.stringify(channel, null, 2)}</pre>
+          </details>
+        </section>
+
+        {/* CENTER: tool calls */}
+        <section className="runtime-col runtime-col-tools panel">
+          <div className="panel-head">
+            <h3>工具调用 · {display.toolCalls.length} 次</h3>
+          </div>
+          {display.toolCalls.length === 0 ? (
+            <p className="muted small">本次运行未调用工具。</p>
+          ) : (
+            <ul className="tool-list">
+              {display.toolCalls.map((tc, i) => (
+                <li key={i} className={`tool-card status-${tc.status}`}>
+                  <div className="tool-head">
+                    <span className="tool-idx">#{i + 1}</span>
+                    <details className="tool-name-details">
+                      <summary title={tc.tool} className="tool-name-summary">
+                        {tc.tool.replace(/_/g, ' ')}
+                        <span className={`tool-status status-${tc.status}`}>{tc.status === 'done' ? '✓' : tc.status === 'error' ? '✗' : '⏳'}</span>
+                        {tc.duration_ms != null && (
+                          <span className="muted small">{tc.duration_ms}毫秒</span>
+                        )}
+                      </summary>
+                      <div className="tool-args-expanded">
+                        <code>{fmtArgs(tc.args)}</code>
+                      </div>
+                    </details>
+                  </div>
+                  {tc.result != null && (
+                    <ToolResultPreview tool={tc.tool} result={tc.result} />
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* Node trajectory */}
+          {selectedTrace && (
+            <details className="trace-details" open>
+              <summary>📍 节点路径 ({selectedTrace.nodes.length} 步 · {selectedTrace.duration_ms ?? 0}毫秒)</summary>
+              <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
+                {selectedTrace.nodes.map((n) => (
+                  <li key={n.version} style={{
+                    border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, marginBottom: 4,
+                    background: n.error ? '#fef2f2' : 'var(--bg-primary)',
+                  }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ background: '#0ea5e9', color: '#fff', padding: '1px 5px', borderRadius: 6, fontSize: 10 }}>v{n.version}</span>
+                      <code style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 11 }}>{n.node}</code>
+                      <span className="muted small">{n.latency_ms}毫秒</span>
+                      {n.error && <span style={{ color: '#dc2626', fontSize: 11 }}>⚠ {n.error}</span>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </section>
+
+        {/* RIGHT: answer */}
+        <section className="runtime-col runtime-col-answer panel">
+          <div className="panel-head">
+            <h3>最终答案</h3>
+            {display.isStreaming && <span className="dot live" />}
+          </div>
+          {display.answer ? (
+            <pre className="answer-box">{display.answer}</pre>
+          ) : (
+            <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
+          )}
+        </section>
       </div>
     </div>
   );

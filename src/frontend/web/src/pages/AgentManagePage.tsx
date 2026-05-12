@@ -106,18 +106,27 @@ function groupOf(role: string): string {
   return 'worker';
 }
 
+const ROLE_ICONS: Record<string, string> = {
+  orchestrator: '🎭',
+  reviewer: '🔍',
+  specialist: '🛠️',
+  worker: '⚙️',
+};
+
 const MODEL_BADGE: Record<string, string> = {
   SONNET: 'badge-sonnet',
   HAIKU:  'badge-haiku',
   OPUS:   'badge-opus',
 };
 
+// TRIGGER_LABEL kept for future detail panel use
 const TRIGGER_LABEL: Record<string, string> = {
   always_on:      '常驻',
   model_decision: '模型决定',
   on_demand:      '按需',
   manual:         '手动',
 };
+void TRIGGER_LABEL;
 
 const AgentManagePage: React.FC = () => {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
@@ -241,7 +250,7 @@ const AgentManagePage: React.FC = () => {
       </div>
 
       <div className="agm-layout">
-        {/* Left list */}
+        {/* Left: icon card grid */}
         <aside className="agm-list">
           {ROLE_GROUPS.map((g) => {
             const items = byGroup[g.key];
@@ -249,28 +258,23 @@ const AgentManagePage: React.FC = () => {
             return (
               <div key={g.key} className="agm-group">
                 <div className="agm-group-head">{g.label} <span>{items.length}</span></div>
-                <ul>
+                <div className="agm-card-grid">
                   {items.map((a) => (
-                    <li
+                    <button
                       key={a.id}
-                      className={`agm-row ${selectedId === a.id ? 'active' : ''}`}
+                      type="button"
+                      className={`agm-card ${selectedId === a.id ? 'active' : ''}`}
                       onClick={() => setSelectedId(a.id)}
+                      title={`@${a.id} · ${a.description}`}
                     >
-                      <div className="agm-row-top">
-                        <span className="agm-row-name">{a.name}</span>
-                        <span className={`agm-badge ${MODEL_BADGE[a.model] || 'badge-default'}`}>
-                          {a.model || 'SONNET'}
-                        </span>
-                      </div>
-                      <div className="agm-row-id">@{a.id}</div>
-                      {a.trigger && (
-                        <div className="agm-row-meta">
-                          {TRIGGER_LABEL[a.trigger] || a.trigger}
-                        </div>
-                      )}
-                    </li>
+                      <span className="agm-card-icon">{ROLE_ICONS[groupOf(a.role)] || '🤖'}</span>
+                      <span className="agm-card-name">{a.name}</span>
+                      <span className={`agm-badge ${MODEL_BADGE[a.model] || 'badge-default'}`}>
+                        {a.model || 'SONNET'}
+                      </span>
+                    </button>
                   ))}
-                </ul>
+                </div>
               </div>
             );
           })}
@@ -300,10 +304,10 @@ const AgentManagePage: React.FC = () => {
                   </span>
                   <button
                     type="button"
-                    className="agm-btn"
+                    className="agm-btn-link"
                     onClick={() => setShowRaw((p) => !p)}
                   >
-                    {showRaw ? '渲染视图' : '查看原文'}
+                    {showRaw ? '渲染' : '原文'}
                   </button>
                 </div>
               </div>

@@ -1125,6 +1125,7 @@ export const AgentChat: React.FC = () => {
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">
     <div className="welcome-content">
+      <div className="welcome-icon">📚</div>
       <h1 className="welcome-title">智能知识问答</h1>
       <p className="welcome-desc">基于企业知识库，智能检索 · 精准解答</p>
       <div className="quick-questions">
