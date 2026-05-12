@@ -113,11 +113,13 @@ const ROLE_ICONS: Record<string, string> = {
   worker: '⚙️',
 };
 
+// MODEL_BADGE kept for future power-user feature
 const MODEL_BADGE: Record<string, string> = {
   SONNET: 'badge-sonnet',
   HAIKU:  'badge-haiku',
   OPUS:   'badge-opus',
 };
+void MODEL_BADGE;
 
 // TRIGGER_LABEL kept for future detail panel use
 const TRIGGER_LABEL: Record<string, string> = {
@@ -137,7 +139,6 @@ const AgentManagePage: React.FC = () => {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -265,13 +266,10 @@ const AgentManagePage: React.FC = () => {
                       type="button"
                       className={`agm-card ${selectedId === a.id ? 'active' : ''}`}
                       onClick={() => setSelectedId(a.id)}
-                      title={`@${a.id} · ${a.description}`}
+                      title={a.description}
                     >
                       <span className="agm-card-icon">{ROLE_ICONS[groupOf(a.role)] || '🤖'}</span>
                       <span className="agm-card-name">{a.name}</span>
-                      <span className={`agm-badge ${MODEL_BADGE[a.model] || 'badge-default'}`}>
-                        {a.model || 'SONNET'}
-                      </span>
                     </button>
                   ))}
                 </div>
@@ -295,20 +293,9 @@ const AgentManagePage: React.FC = () => {
               <div className="agm-detail-head">
                 <div>
                   <h1>{detail.name}</h1>
-                  <div className="agm-detail-id">@{detail.id}</div>
-                </div>
-                <div className="agm-detail-actions">
-                  <span className="agm-detail-meta">
-                    {(detail.size_bytes / 1024).toFixed(1)} KB · 改于{' '}
-                    {new Date(detail.modified_ts * 1000).toLocaleString()}
-                  </span>
-                  <button
-                    type="button"
-                    className="agm-btn-link"
-                    onClick={() => setShowRaw((p) => !p)}
-                  >
-                    {showRaw ? '渲染' : '原文'}
-                  </button>
+                  {typeof detail.frontmatter?.description === 'string' && (
+                    <p className="agm-detail-desc muted">{detail.frontmatter.description}</p>
+                  )}
                 </div>
               </div>
 
@@ -337,15 +324,12 @@ const AgentManagePage: React.FC = () => {
                 </details>
               )}
 
-              {showRaw ? (
-                <pre className="agm-raw">{detail.raw_markdown}</pre>
-              ) : (
-                <div
-                  className="agm-md"
-                  // eslint-disable-next-line react/no-danger
-                  dangerouslySetInnerHTML={{ __html: detailHtml }}
-                />
-              )}
+              {/* Always render HTML view; raw markdown accessible via frontmatter details */}
+              <div
+                className="agm-md"
+                // eslint-disable-next-line react/no-danger
+                dangerouslySetInnerHTML={{ __html: detailHtml }}
+              />
             </>
           )}
           {!detail && !detailLoading && !detailErr && (

@@ -420,3 +420,17 @@
 .runtime-topo-details > summary::-webkit-details-marker { display: none; }
 .runtime-topo-details > summary::before { content: '▶ '; font-size: 10px; }
 .runtime-topo-details[open] > summary::before { content: '▼ '; }
+
+/* UX#143 — clean answer area */
+.runtime-answer-main {
+  padding: 12px 0;
+}
+.runtime-streaming-dot {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-secondary, #64748b);
+  margin-bottom: 8px;
+}
+.runtime-idle-hint {
+  padding: 24px 0;
+  text-align: center;
+}

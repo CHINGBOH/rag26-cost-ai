@@ -243,18 +243,17 @@ export function AgentRuntimePage() {
         <div>
           <h1>Agent 运行时</h1>
           <p className="muted">
-            实时观察智能体的共享状态·规划步骤·工具调用流程，内部运转一览无余。
+            提问，让 Agent 为你检索与分析。
           </p>
         </div>
-        <div className="runtime-stats">
-          <span>工具调用 {display.toolCalls.length}</span>
-          <span>检索片段 {display.chunkCount}</span>
-          <span>迭代 {display.iterations}</span>
-          {display.durationMs > 0 && <span>{display.durationMs}毫秒</span>}
-          <button className="runtime-advanced-btn" onClick={() => setAdvancedOpen(true)}>
-            📊 高级数据
-          </button>
-        </div>
+        {/* Stats: only show when there's actual data */}
+        {(display.toolCalls.length > 0 || display.durationMs > 0) && (
+          <div className="runtime-stats">
+            {display.durationMs > 0 && <span>⏱ {(display.durationMs / 1000).toFixed(1)} 秒</span>}
+            {display.toolCalls.length > 0 && <span>🔧 {display.toolCalls.length} 次工具</span>}
+            {display.chunkCount > 0 && <span>📄 {display.chunkCount} 条资料</span>}
+          </div>
+        )}
       </header>
 
       <section className="runtime-input">
@@ -309,20 +308,16 @@ export function AgentRuntimePage() {
                   <div className="hist-q">{h.query}</div>
                   <div className="hist-meta">
                     <span>{fmtTime(h.ts)}</span>
-                    <span>{h.toolCalls.length} 工具</span>
-                    <span>{h.iterations} 迭代</span>
-                    <span>{h.durationMs}毫秒</span>
+                    {h.durationMs > 0 && <span>{(h.durationMs / 1000).toFixed(1)} 秒</span>}
                   </div>
                 </li>
               ))}
             </ul>
           )}
-          {/* Server traces */}
+          {/* Server traces — tucked into a sub-details for power users */}
           {serverTraces.length > 0 && (
-            <div className="runtime-traces">
-              <div className="panel-head" style={{ marginTop: 12 }}>
-                <h3 style={{ fontSize: 13 }}>服务端轨迹 <span className="muted">({serverTraces.length})</span></h3>
-              </div>
+            <details className="runtime-traces-details">
+              <summary className="muted small">🛠 服务端轨迹 ({serverTraces.length})</summary>
               <ul className="history-list-inline">
                 {serverTraces.map((t) => (
                   <li
@@ -339,27 +334,25 @@ export function AgentRuntimePage() {
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
           )}
         </div>
       </details>
 
-      {/* Answer — always visible */}
-      <section className="runtime-col runtime-col-answer panel runtime-answer-main">
-        <div className="panel-head">
-          <h3>最终答案</h3>
-          {display.isStreaming && <span className="dot live" />}
-        </div>
+      {/* Answer — always visible, no noisy header */}
+      <section className="runtime-answer-main">
+        {display.isStreaming && <span className="runtime-streaming-dot"><span className="dot live" /> 生成中…</span>}
         {display.answer ? (
           <pre className="answer-box">{display.answer}</pre>
         ) : (
-          <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
+          !display.isStreaming && <p className="muted small runtime-idle-hint">输入问题后点击「运行」</p>
         )}
       </section>
 
-      {/* Developer details — collapsible, auto-opens while streaming */}
-      <details className="runtime-dev-details" open={display.isStreaming}>
-        <summary>⚙️ 执行详情（计划 · {display.toolCalls.length} 次工具调用）</summary>
+      {/* Developer details — only render when there's actual data */}
+      {(display.toolCalls.length > 0 || display.planSteps.length > 0) && (
+        <details className="runtime-dev-details" open={display.isStreaming}>
+          <summary>⚙️ 执行详情（{display.toolCalls.length} 次工具调用）</summary>
         <div className="runtime-3col runtime-3col--two">
           {/* LEFT: plan */}
           <section className="runtime-col runtime-col-plan panel">
@@ -439,7 +432,8 @@ export function AgentRuntimePage() {
             )}
           </section>
         </div>
-      </details>
+        </details>
+      )}
     </div>
   );
 }

@@ -241,3 +241,6 @@
 }
 .agm-fm-summary::-webkit-details-marker { display: none; }
 .agm-fm-details[open] .agm-fm-summary { border-radius: 6px 6px 0 0; }
+
+/* UX#143 — cleaner detail head */
+.agm-detail-desc { font-size: 13px; margin-top: 4px; }
