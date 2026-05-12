@@ -8,6 +8,8 @@
 import { useEffect, useState, Component } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import { ModuleIcon } from './components/icons/ModuleIcon';
+import type { ModuleName } from './components/icons/ModuleIcon';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null };
@@ -44,10 +46,10 @@ const DocsReader           = lazy(() => import('./components/common/DocsReader')
 import './App.css';
 import './styles/theme.css';
 
-const NAV_ITEMS = [
-  { path: '/',         label: '咨询馆员', icon: '📚' },
-  { path: '/pipeline', label: '管道',    icon: '⛓'  },
-  { path: '/hub',      label: '综合面板', icon: '🧩' },
+const NAV_ITEMS: { path: string; label: string; icon: ModuleName }[] = [
+  { path: '/',         label: '咨询馆员', icon: 'library'  },
+  { path: '/pipeline', label: '管道',    icon: 'pipeline' },
+  { path: '/hub',      label: '综合面板', icon: 'hub'      },
 ];
 
 const ROUTE_MODULE: [string, string][] = [
@@ -102,7 +104,9 @@ function Navigation() {
             to={path === '/hub' ? '/hub/runtime' : path}
             className={`nav-link ${isActive(path) ? 'active' : ''}`}
           >
-            <span aria-hidden="true" className="nav-icon">{icon}</span>
+            <span aria-hidden="true" className="nav-icon">
+              <ModuleIcon name={icon} size={14} />
+            </span>
             {label}
           </Link>
         ))}

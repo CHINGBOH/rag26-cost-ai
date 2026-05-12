@@ -12,17 +12,19 @@ import { OpsPage }           from '../pages/OpsPage';
 import { SystemPage }        from '../pages/SystemPage';
 import { LearningPage }      from '../pages/LearningPage';
 import { AgentManagePage }   from '../pages/AgentManagePage';
+import { ModuleIcon }        from '../components/icons/ModuleIcon';
+import type { ModuleName }   from '../components/icons/ModuleIcon';
 
 import './DashHub.css';
 
-const TABS = [
-  { key: 'runtime',  label: '运行时', icon: '⚡' },
-  { key: 'search',   label: '检索',   icon: '🔍' },
-  { key: 'ops',      label: '运维',   icon: '🛡' },
-  { key: 'system',   label: '系统',   icon: '⚙️' },
-  { key: 'learning', label: '学习',   icon: '🧠' },
-  { key: 'agents',   label: 'AI 助手', icon: '🤖' },
-] as const;
+const TABS: { key: string; label: string; icon: ModuleName }[] = [
+  { key: 'runtime',  label: '运行时', icon: 'runtime'  },
+  { key: 'search',   label: '检索',   icon: 'search'   },
+  { key: 'ops',      label: '运维',   icon: 'ops'      },
+  { key: 'system',   label: '系统',   icon: 'system'   },
+  { key: 'learning', label: '学习',   icon: 'learning' },
+  { key: 'agents',   label: 'AI 助手', icon: 'agents'  },
+];
 
 type TabKey = (typeof TABS)[number]['key'];
 
@@ -61,7 +63,9 @@ export function DashHub() {
             onClick={() => navigate(`/hub/${key}`)}
             aria-current={activeTab === key ? 'page' : undefined}
           >
-            <span className="dashhub-tab-icon" aria-hidden="true">{icon}</span>
+            <span className="dashhub-tab-icon" aria-hidden="true">
+              <ModuleIcon name={icon} size={15} />
+            </span>
             <span className="dashhub-tab-label">{label}</span>
           </button>
         ))}
