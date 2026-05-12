@@ -1,16 +1,17 @@
 import React from 'react';
 import { DashboardPanel } from '../../components/learning/DashboardPanel';
-import { SignalAggregation, SignalSummary } from '../../services/metricsApi';
+import { SignalAggregation, SignalSummary, LearningDashboard } from '../../services/metricsApi';
 import { fmtDateTime } from '../../utils/dateUtils';
 
 interface StatusTabProps {
   signals: SignalAggregation | null;
   signalsSummary: SignalSummary | null;
+  dashboard: LearningDashboard | null;
 }
 
-export const StatusTab: React.FC<StatusTabProps> = ({ signals, signalsSummary }) => (
+export const StatusTab: React.FC<StatusTabProps> = ({ signals, signalsSummary, dashboard }) => (
   <>
-    <DashboardPanel />
+    <DashboardPanel dashboard={dashboard} />
 
     {signals && signalsSummary ? (
       <details className="learn-card learn-signals-card learn-signals-collapsed">

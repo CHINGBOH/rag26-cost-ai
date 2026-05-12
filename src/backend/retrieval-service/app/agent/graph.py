@@ -3901,10 +3901,10 @@ def _score_followup_coverage(question: str) -> tuple[float, int]:
 
 
 def _coverage_tier(score: float) -> str:
-    """Phase 1 #116: Externalized thresholds via param()"""
+    """Phase 1 #116: Externalized thresholds via param() — tightened for #138"""
     from config.param_registry import param
-    high_thresh = param("followup_coverage_high", default=0.65)
-    med_thresh = param("followup_coverage_med", default=0.45)
+    high_thresh = param("followup_coverage_high", default=0.70)
+    med_thresh = param("followup_coverage_med", default=0.55)
     if score >= high_thresh:
         return "high"
     if score >= med_thresh:
@@ -3916,7 +3916,22 @@ def build_followup_suggestions(query: str, chunks: list, answer: str, max_n: int
     """生成"链式穿透"用的追问 chips，并通过 KB 覆盖检测过滤幻想式提问。
     Returns: list of {question, source, reason, coverage_score, coverage_tier}.
     Sources: llm_followup, graph_neighbor, graph_upstream, graph_downstream, gap.
+
+    拒绝回答守卫：若答案本身包含拒答/无数据信号，不生成任何追问（避免基于空回答衍生幻想类问题）。
     """
+    if not answer or not answer.strip():
+        return []
+
+    _REFUSAL_SIGNALS = (
+        "无法直接回答", "无法回答", "无法提供", "无法分析", "无法对比", "无法计算",
+        "不足以回答", "未提供", "均显示为N/A", "无相关数据", "未包含",
+        "没有任何文件", "没有相关内容", "无法给出",
+    )
+    answer_first_300 = (answer or "")[:300]
+    if any(sig in answer_first_300 for sig in _REFUSAL_SIGNALS):
+        logger.debug("[followup] refusal signal detected in answer, skipping followups")
+        return []
+
     out: list[dict] = []
     seen: set[str] = set()
 

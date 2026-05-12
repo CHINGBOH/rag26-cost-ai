@@ -6,7 +6,7 @@
  *   GET /api/v1/learning/gaps/workbench — DB 驱动知识缺口生命周期看板
  */
 
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { PageHeader } from '../components/common/PageHeader';
 import {
   getLearningSummary,
@@ -164,11 +164,13 @@ export const LearningPage: React.FC = () => {
     });
   };
 
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
   useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
   useEffect(() => {
-    const t = setInterval(refresh, 30000);
+    const t = setInterval(() => refreshRef.current(), 30000);
     return () => clearInterval(t);
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, []);
 
   const qual = summary?.by_quality || { good: 0, weak: 0, failure: 0 };
@@ -535,7 +537,7 @@ export const LearningPage: React.FC = () => {
       </p>
 
       {mainTab === 'status' && (
-        <StatusTab signals={signals} signalsSummary={signalsSummary} />
+        <StatusTab signals={signals} signalsSummary={signalsSummary} dashboard={dashboard} />
       )}
 
       {mainTab === 'qa-issues' && (

@@ -1,46 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { getLearningDashboard, LearningDashboard } from '../../services/metricsApi';
+import { LearningDashboard } from '../../services/metricsApi';
 import './DashboardPanel.css';
 
-export const DashboardPanel: React.FC = () => {
-  const [dashboard, setDashboard] = useState<LearningDashboard | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface DashboardPanelProps {
+  dashboard: LearningDashboard | null;
+}
 
-  const fetchDashboard = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await getLearningDashboard();
-      if (!data) throw new Error('Failed to fetch dashboard');
-      setDashboard(data);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      setError(message);
-      console.error('Dashboard fetch error:', message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDashboard();
-    // 每 30 秒刷新一次
-    const interval = setInterval(fetchDashboard, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (error) {
-    return (
-      <div className="dashboard-error">
-        <p>❌ 加载看板失败: {error}</p>
-        <button onClick={fetchDashboard}>重试</button>
-      </div>
-    );
-  }
-
-  if (loading || !dashboard) return <div className="loading">⏳ 加载看板中...</div>;
+export const DashboardPanel: React.FC<DashboardPanelProps> = ({ dashboard }) => {
+  if (!dashboard) return <div className="loading">⏳ 加载看板中...</div>;
 
   const { improvement_trend, alerts, recent_events } = dashboard;
 

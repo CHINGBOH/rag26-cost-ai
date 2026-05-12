@@ -89,6 +89,31 @@ learning_improvements_detected = Counter(
     ['improvement_type']  # parameter_tuning, retrieval_strategy, etc.
 )
 
+# F4 (#135): 缺口闭环健康度指标
+gap_retest_listener_last_run_ts = Gauge(
+    'gap_retest_listener_last_run_ts',
+    'Unix timestamp of the last successful learning_gap_listener cycle. '
+    'Alert if (time() - this_value) > 600 — listener has stalled.'
+)
+
+gap_retest_listener_runs_total = Counter(
+    'gap_retest_listener_runs_total',
+    'Total cycles of learning_gap_listener executed',
+    ['status']  # success | failed
+)
+
+gap_retest_listener_retests_total = Counter(
+    'gap_retest_listener_retests_total',
+    'Total live retests issued by listener',
+    ['action']  # observe_fixed | keep_open | block_policy | reopen | resolve_after_observation
+)
+
+gap_realtime_resolutions_total = Counter(
+    'gap_realtime_resolutions_total',
+    'Total agent-realtime gap state transitions (F3)',
+    ['action']  # observe_fixed | reopen | etc.
+)
+
 # =====================================================
 # Decision Logger Metrics
 # =====================================================

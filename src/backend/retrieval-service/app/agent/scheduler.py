@@ -277,6 +277,7 @@ class LearningScheduler:
     async def run_gap_retest_listener(self):
         """Run one configured live consultation retest cycle for active knowledge gaps."""
         run_id = f"run_gap_retest_{self._utc_timestamp()}"
+        import time as _time
         try:
             logger.info("learning_gap_listener.started run_id=%s", run_id)
             await self._record_run(
@@ -300,8 +301,33 @@ class LearningScheduler:
                 result.get("live_retests_used"),
                 result.get("counts"),
             )
+            # F4 (#135): 打点心跳 + 行为指标
+            try:
+                from app.observability.prometheus_metrics import (
+                    gap_retest_listener_last_run_ts,
+                    gap_retest_listener_runs_total,
+                    gap_retest_listener_retests_total,
+                )
+                gap_retest_listener_last_run_ts.set(_time.time())
+                gap_retest_listener_runs_total.labels(status="success").inc()
+                counts = result.get("counts") or {}
+                for action, n in counts.items():
+                    if n:
+                        gap_retest_listener_retests_total.labels(action=action).inc(int(n))
+                # observation_resolutions 也算一个 action 维度
+                obs_actions = [r.get("action") for r in (result.get("observation_resolutions") or [])]
+                for action in obs_actions:
+                    if action:
+                        gap_retest_listener_retests_total.labels(action=action).inc()
+            except Exception as _metric_exc:
+                logger.debug("prometheus_metric_skip: %s", _metric_exc)
         except Exception as exc:
             logger.error("learning_gap_listener.failed run_id=%s error=%s", run_id, exc, exc_info=True)
+            try:
+                from app.observability.prometheus_metrics import gap_retest_listener_runs_total
+                gap_retest_listener_runs_total.labels(status="failed").inc()
+            except Exception:
+                pass
             await self._record_run(
                 run_id,
                 {"status": "failed", "error": str(exc), "started_by": "gap_retest_listener"},

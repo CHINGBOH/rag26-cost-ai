@@ -46,6 +46,12 @@ export const IssuesTab: React.FC<IssuesTabProps> = ({
   filter,
   onFilterChange,
 }) => {
+  const FILTER_LABEL: Record<QualityFilter, string> = {
+    all: '全部',
+    good: QUALITY_ZH.good,
+    weak: QUALITY_ZH.weak,
+    failure: QUALITY_ZH.failure,
+  };
   return (
     <>
       <ProblemsPanel problems={problems} />
@@ -60,7 +66,7 @@ export const IssuesTab: React.FC<IssuesTabProps> = ({
                 className={filter === f ? 'active' : ''}
                 onClick={() => onFilterChange(f)}
               >
-                {f === 'all' ? '全部' : f === 'good' ? '优质' : f === 'weak' ? '弱' : '失败'}
+                {FILTER_LABEL[f]}
               </button>
             ))}
           </div>

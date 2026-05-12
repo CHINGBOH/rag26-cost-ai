@@ -307,49 +307,7 @@ def _derive_section_label(kind: str, query_type: str, body: str) -> str:
     return qt_map.get(kind, "核心说明" if kind == "analysis" else "补充说明")
 
 
-def _build_answer_sections_presentation(
-    query: str,
-    query_type: str,
-    final_answer: str,
-    chunks: list[dict],
-    citations_text: str,
-) -> dict | None:
-    answer_without_refs = re.split(r"\n\s*(?:【参考索引】|参考索引[:：])", final_answer, maxsplit=1)[0].strip()
-    if not answer_without_refs:
-        return None
-
-    direct_answer, analysis_text = _split_answer_components(answer_without_refs, chunks)
-    highlights = _build_highlights(query_type, direct_answer, analysis_text)
-    analysis_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", analysis_text) if p.strip()]
-    seen_labels: set[str] = set()
-    qt_labels = _SECTION_LABEL_BY_QUERY_TYPE.get(query_type, {})
-    sections: list[dict] = []
-    for idx, paragraph in enumerate(analysis_paragraphs[:2]):
-        kind = "analysis" if idx == 0 else "detail"
-        label = _derive_section_label(kind, query_type, paragraph)
-        if label in seen_labels:
-            label = qt_labels.get(kind) or ("核心说明" if kind == "analysis" else "补充说明")
-        seen_labels.add(label)
-        sections.append({"kind": kind, "body": paragraph, "label": label})
-    sources = _parse_citation_items(citations_text)[:4]
-
-    note = None
-    if len(query) <= 28:
-        note = query
-
-    support_label = _derive_section_label("detail", query_type, analysis_text)
-
-    return {
-        "type": "answer_sections",
-        "query_type": query_type,
-        "title": _build_answer_title(query_type),
-        "note": note,
-        "summary": _build_summary_text(query_type, direct_answer),
-        "highlights": highlights,
-        "sections": sections,
-        "sources": sources,
-        "support_label": support_label,
-    }
+# ================= adjust coverage =================
 
 
 def _normalize_math_text(text: str) -> str:
