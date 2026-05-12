@@ -3,18 +3,19 @@
 
 /* ─── Library (咨询馆员) — 壮锦双菱 Zhuang nested diamond brocade ─── */
 html[data-module="library"] {
-  --page-accent:         #8B5E2B;
-  --page-accent-rgb:     139, 94, 43;
-  --color-primary:       #8B5E2B;
-  --color-primary-hover: #7A5020;
-  --color-primary-light: rgba(139, 94, 43, 0.12);
-  --border-highlight:    #8B5E2B;
-  --bg-primary:          #F6F1E3;
-  --bg-surface:          #FDFCF5;
-  --bg-elevated:         #EDE5D0;
+  --page-accent:         #0066CC;
+  --page-accent-rgb:     0, 102, 204;
+  --color-primary:       #0066CC;
+  --color-primary-hover: #0055B3;
+  --color-primary-light: rgba(0, 102, 204, 0.10);
+  --border-highlight:    #0066CC;
+  /* 中性冷白底：与全站 Apple 风统一，图案改为蓝色调 */
+  --bg-primary:          #F5F5F7;
+  --bg-surface:          #FFFFFF;
+  --bg-elevated:         #EBEBF0;
 }
 html[data-module="library"] body {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cpath d='M70,14 L126,70 L70,126 L14,70 Z' fill='none' stroke='rgba(139,94,43,0.06)' stroke-width='1.5'/%3E%3Cpath d='M70,30 L110,70 L70,110 L30,70 Z' fill='none' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='70' y1='30' x2='62' y2='30' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='62' y1='30' x2='62' y2='38' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='110' y1='70' x2='110' y2='62' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='110' y1='62' x2='102' y2='62' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='70' y1='110' x2='78' y2='110' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='78' y1='110' x2='78' y2='102' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='30' y1='70' x2='30' y2='78' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Cline x1='30' y1='78' x2='38' y2='78' stroke='rgba(139,94,43,0.05)' stroke-width='1'/%3E%3Ccircle cx='70' cy='70' r='4' fill='rgba(139,94,43,0.05)'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cpath d='M70,14 L126,70 L70,126 L14,70 Z' fill='none' stroke='rgba(0,102,204,0.05)' stroke-width='1.5'/%3E%3Cpath d='M70,30 L110,70 L70,110 L30,70 Z' fill='none' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='70' y1='30' x2='62' y2='30' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='62' y1='30' x2='62' y2='38' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='110' y1='70' x2='110' y2='62' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='110' y1='62' x2='102' y2='62' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='70' y1='110' x2='78' y2='110' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='78' y1='110' x2='78' y2='102' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='30' y1='70' x2='30' y2='78' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Cline x1='30' y1='78' x2='38' y2='78' stroke='rgba(0,102,204,0.04)' stroke-width='1'/%3E%3Ccircle cx='70' cy='70' r='4' fill='rgba(0,102,204,0.04)'/%3E%3C/svg%3E");
   background-size: 140px 140px;
 }
 

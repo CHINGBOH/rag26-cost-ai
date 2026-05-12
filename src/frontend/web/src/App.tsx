@@ -5,7 +5,7 @@
  * 🧩 综合  /hub/:tab  (运行时·检索·运维·系统·学习·Agent)
  */
 
-import { useEffect, Component } from 'react';
+import { useEffect, useState, Component } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 
@@ -68,10 +68,20 @@ function getModule(pathname: string): string {
 
 function Navigation() {
   const location = useLocation();
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.module = getModule(location.pathname);
   }, [location.pathname]);
+
+  /* 监听内容区滚动，滚动后 nav 加阴影层次感 */
+  useEffect(() => {
+    const main = document.querySelector('.app-main');
+    if (!main) return;
+    const onScroll = () => setScrolled(main.scrollTop > 4);
+    main.addEventListener('scroll', onScroll, { passive: true });
+    return () => main.removeEventListener('scroll', onScroll);
+  }, []);
 
   const isActive = (path: string) =>
     path === '/'
@@ -79,7 +89,7 @@ function Navigation() {
       : location.pathname.startsWith(path);
 
   return (
-    <header className="app-nav">
+    <header className={`app-nav${scrolled ? ' scrolled' : ''}`}>
       <div className="nav-brand">
         <span className="nav-mark">R</span>
         <span className="nav-title">RAG 智库系统</span>
