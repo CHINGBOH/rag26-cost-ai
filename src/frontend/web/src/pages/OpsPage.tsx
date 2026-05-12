@@ -147,7 +147,7 @@ export const OpsPage: React.FC = () => {
           )}
           {healthDetail.system.load_1m !== undefined && (
             <MetricCard
-              label="Load (1m)"
+              label="系统负载"
               value={healthDetail.system.load_1m.toFixed(2)}
               hint={`CPU x${healthDetail.system.cpu_count ?? '?'}`}
               tone={
@@ -170,10 +170,10 @@ export const OpsPage: React.FC = () => {
       {/* 实时请求指标 */}
       {ops && (
         <div className="ops-metrics-row">
-          <MetricCard label="QPS (60s)" value={ops.qps.toFixed(2)} hint={`${ops.requests} 请求`} />
-          <MetricCard label="P50 延迟" value={`${ops.p50_ms} ms`} />
-          <MetricCard label="P95 延迟" value={`${ops.p95_ms} ms`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
-          <MetricCard label="P99 延迟" value={`${ops.p99_ms} ms`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
+          <MetricCard label="每秒请求" value={ops.qps.toFixed(2)} hint={`${ops.requests} 次请求`} />
+          <MetricCard label="中位延迟" value={`${ops.p50_ms} 毫秒`} />
+          <MetricCard label="95%延迟" value={`${ops.p95_ms} 毫秒`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
+          <MetricCard label="99%延迟" value={`${ops.p99_ms} 毫秒`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
           <MetricCard
             label="错误率"
             value={`${(ops.error_rate * 100).toFixed(2)}%`}
@@ -184,7 +184,7 @@ export const OpsPage: React.FC = () => {
 
       <div className="ops-charts">
         <div className="ops-chart-card">
-          <h3>QPS · 最近 60 秒</h3>
+          <h3>请求量 · 最近 60 秒</h3>
           {qpsData.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={qpsData} margin={{ top: 12, right: 12, bottom: 4, left: -12 }}>

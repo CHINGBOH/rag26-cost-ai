@@ -306,7 +306,7 @@ export function AgentRuntimePage() {
                     <span>{fmtTime(h.ts)}</span>
                     <span>{h.toolCalls.length} 工具</span>
                     <span>{h.iterations} 迭代</span>
-                    <span>{h.durationMs}ms</span>
+                    <span>{h.durationMs}毫秒</span>
                   </div>
                 </li>
               ))}
@@ -388,7 +388,7 @@ export function AgentRuntimePage() {
                 节点轨迹（Node Trajectory）
                 {selectedTrace && (
                   <span className="muted small" style={{ marginLeft: 8 }}>
-                    trace {selectedTrace.trace_id.slice(0, 8)} · {selectedTrace.nodes.length} 节点 · {selectedTrace.duration_ms ?? 0}ms
+                    追踪 {selectedTrace.trace_id.slice(0, 8)} · {selectedTrace.nodes.length} 节点 · {selectedTrace.duration_ms ?? 0}毫秒
                   </span>
                 )}
               </h3>

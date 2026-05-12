@@ -67,7 +67,7 @@ function StoreCard({ name, store }: { name: string; store: ArchitectureStore }) 
         <span className="store-emoji" aria-hidden>{meta.emoji}</span>
         <span className="store-name">{meta.label}</span>
         <span className={`store-status ${store.available ? 'up' : 'down'}`}>
-          {store.available ? 'ONLINE' : 'OFFLINE'}
+          {store.available ? '在线' : '离线'}
         </span>
       </div>
       <dl className="store-dl">
@@ -232,10 +232,10 @@ export const SystemPage: React.FC = () => {
         </div>
         {config ? (
           <div className="cfg-grid">
-            <ConfigGroup title="LLM" data={config.llm as Record<string, unknown>} />
-            <ConfigGroup title="Embedding" data={config.embedding as Record<string, unknown>} />
-            <ConfigGroup title="Retrieval" data={config.retrieval as Record<string, unknown>} />
-            <ConfigGroup title="Stores" data={config.stores as Record<string, unknown>} />
+            <ConfigGroup title="语言模型" data={config.llm as Record<string, unknown>} />
+            <ConfigGroup title="向量嵌入" data={config.embedding as Record<string, unknown>} />
+            <ConfigGroup title="检索配置" data={config.retrieval as Record<string, unknown>} />
+            <ConfigGroup title="数据存储" data={config.stores as Record<string, unknown>} />
           </div>
         ) : (
           <div className="sys-empty">加载配置中…</div>
