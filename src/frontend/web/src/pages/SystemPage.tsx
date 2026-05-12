@@ -200,24 +200,27 @@ export const SystemPage: React.FC = () => {
       </section>
 
       {/* 2. 配置树 ────────────────────────────────────────── */}
-      <section className="sys-section">
-        <div className="sys-section-head">
-          <h2>系统配置</h2>
-          <div className="sys-section-meta">
-            <span className="meta-mute">运行时配置参数</span>
+      <details className="sys-section-details">
+        <summary className="sys-section-summary">⚙️ 系统配置（运行时参数）</summary>
+        <section className="sys-section">
+          <div className="sys-section-head">
+            <h2>系统配置</h2>
+            <div className="sys-section-meta">
+              <span className="meta-mute">运行时配置参数</span>
+            </div>
           </div>
-        </div>
-        {config ? (
-          <div className="cfg-grid">
-            <ConfigGroup title="语言模型" data={config.llm as Record<string, unknown>} />
-            <ConfigGroup title="向量嵌入" data={config.embedding as Record<string, unknown>} />
-            <ConfigGroup title="检索配置" data={config.retrieval as Record<string, unknown>} />
-            <ConfigGroup title="数据存储" data={config.stores as Record<string, unknown>} />
-          </div>
-        ) : (
-          <div className="sys-empty">加载配置中…</div>
-        )}
-      </section>
+          {config ? (
+            <div className="cfg-grid">
+              <ConfigGroup title="语言模型" data={config.llm as Record<string, unknown>} />
+              <ConfigGroup title="向量嵌入" data={config.embedding as Record<string, unknown>} />
+              <ConfigGroup title="检索配置" data={config.retrieval as Record<string, unknown>} />
+              <ConfigGroup title="数据存储" data={config.stores as Record<string, unknown>} />
+            </div>
+          ) : (
+            <div className="sys-empty">加载配置中…</div>
+          )}
+        </section>
+      </details>
 
       {/* 3. KB 资产 ───────────────────────────────────────── */}
       <section className="sys-section">
@@ -261,22 +264,25 @@ export const SystemPage: React.FC = () => {
           <div className="sys-empty">加载 KB 中…</div>
         )}
         {kb && kb.chunks_by_source && kb.chunks_by_source.length > 0 && (
-          <table className="kb-source-table">
-            <thead>
-              <tr>
-                <th>chunk 来源</th>
-                <th style={{ textAlign: 'right' }}>数量</th>
-              </tr>
-            </thead>
-            <tbody>
-              {kb.chunks_by_source.map((row) => (
-                <tr key={row.source}>
-                  <td>{row.source || '(unknown)'}</td>
-                  <td style={{ textAlign: 'right' }}>{row.count.toLocaleString()}</td>
+          <details className="sys-section-details">
+            <summary className="sys-section-summary">📋 来源分布（{kb.chunks_by_source.length} 个来源）</summary>
+            <table className="kb-source-table">
+              <thead>
+                <tr>
+                  <th>chunk 来源</th>
+                  <th style={{ textAlign: 'right' }}>数量</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {kb.chunks_by_source.map((row) => (
+                  <tr key={row.source}>
+                    <td>{row.source || '(unknown)'}</td>
+                    <td style={{ textAlign: 'right' }}>{row.count.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
         )}
       </section>
 

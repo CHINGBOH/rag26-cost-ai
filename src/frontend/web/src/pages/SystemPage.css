@@ -352,3 +352,16 @@
   border-top: 1px solid var(--border-default);
 }
 .ver-expanded code { background: var(--bg-primary); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+
+/* UX#142 — collapsible sections */
+.sys-section-details { margin: 1rem 0; }
+.sys-section-summary {
+  cursor: pointer; list-style: none;
+  padding: 8px 12px; border-radius: 6px;
+  background: var(--bg-secondary, #f8fafc);
+  font-size: 13px; font-weight: 500;
+  color: var(--text-secondary, #64748b);
+  user-select: none;
+}
+.sys-section-summary::-webkit-details-marker { display: none; }
+.sys-section-details[open] .sys-section-summary { border-radius: 6px 6px 0 0; }

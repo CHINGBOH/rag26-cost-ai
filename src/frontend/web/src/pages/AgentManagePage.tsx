@@ -312,27 +312,29 @@ const AgentManagePage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Frontmatter table */}
+              {/* Frontmatter table — collapsible */}
               {Object.keys(detail.frontmatter || {}).length > 0 && (
-                <div className="agm-fm">
-                  <div className="agm-fm-title">配置信息</div>
-                  <table>
-                    <tbody>
-                      {Object.entries(detail.frontmatter).map(([k, v]) => (
-                        <tr key={k}>
-                          <td>{k}</td>
-                          <td>
-                            {typeof v === 'string'
-                              ? v
-                              : Array.isArray(v)
-                                ? v.join(', ')
-                                : JSON.stringify(v)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <details className="agm-fm-details">
+                  <summary className="agm-fm-summary">⚙️ 配置信息（{Object.keys(detail.frontmatter).length} 项）</summary>
+                  <div className="agm-fm">
+                    <table>
+                      <tbody>
+                        {Object.entries(detail.frontmatter).map(([k, v]) => (
+                          <tr key={k}>
+                            <td>{k}</td>
+                            <td>
+                              {typeof v === 'string'
+                                ? v
+                                : Array.isArray(v)
+                                  ? v.join(', ')
+                                  : JSON.stringify(v)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
               )}
 
               {showRaw ? (

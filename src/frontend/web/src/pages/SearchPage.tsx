@@ -100,6 +100,7 @@ export const SearchPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [showRaw, setShowRaw] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [history, setHistory] = useState<InvokeResponse[]>([]);
   const [showHelp, setShowHelp] = useState(false);
 
@@ -264,9 +265,14 @@ export const SearchPage: React.FC = () => {
 
       {showHelp && <ToolboxHelpDrawer onClose={() => setShowHelp(false)} />}
 
-      <div className="toolbox-layout">
-        {/* 左：工具列表 */}
-        <aside className="tool-sidebar">
+      <div className={`toolbox-layout${sidebarOpen ? '' : ' toolbox-layout--collapsed'}`}>
+        {/* 左：工具列表 (默认折叠) */}
+        <aside className={`tool-sidebar${sidebarOpen ? '' : ' tool-sidebar--hidden'}`}>
+          <button
+            className="tool-sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            title="收起工具列表"
+          >✕</button>
           {Object.entries(groupedTools).map(([cat, list]) => (
             <div key={cat} className="tool-group">
               <div className="tool-group-title">
@@ -290,11 +296,23 @@ export const SearchPage: React.FC = () => {
 
         {/* 右：执行面板 */}
         <section className="tool-panel">
-          {!activeTool && <div className="tool-empty">选择左侧工具开始</div>}
+          {!activeTool && (
+            <div className="tool-empty">
+              <button className="toolbox-show-sidebar-btn" onClick={() => setSidebarOpen(true)}>
+                🔧 展开工具列表（{tools.length} 个）
+              </button>
+            </div>
+          )}
           {activeTool && (
             <>
               <div className="tool-header">
-                <h2>{activeTool.name}</h2>
+                <button
+                  className="toolbox-show-sidebar-btn toolbox-show-sidebar-btn--inline"
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  title={sidebarOpen ? '收起工具列表' : '展开工具列表'}
+                >
+                  🔧 {activeTool.name}
+                </button>
                 <span className={`tool-cat-badge cat-${activeTool.category}`}>
                   {CATEGORY_LABELS[activeTool.category] || activeTool.category}
                 </span>

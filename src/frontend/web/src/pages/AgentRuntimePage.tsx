@@ -341,98 +341,102 @@ export function AgentRuntimePage() {
         </div>
       </details>
 
-      <div className="runtime-3col">
-        {/* LEFT: plan */}
-        <section className="runtime-col runtime-col-plan panel">
-          <div className="panel-head">
-            <h3>执行计划</h3>
-            {live && display.isStreaming && <span className="dot live" />}
-          </div>
-          {display.planSteps.length === 0 ? (
-            <p className="muted small">等待规划…</p>
-          ) : (
-            <ol className="plan-list">
-              {display.planSteps.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ol>
-          )}
-          {/* channel state compact */}
-          <details className="channel-details">
-            <summary>运行状态</summary>
-            <pre className="channel-box-sm">{JSON.stringify(channel, null, 2)}</pre>
-          </details>
-        </section>
+      {/* Answer — always visible */}
+      <section className="runtime-col runtime-col-answer panel runtime-answer-main">
+        <div className="panel-head">
+          <h3>最终答案</h3>
+          {display.isStreaming && <span className="dot live" />}
+        </div>
+        {display.answer ? (
+          <pre className="answer-box">{display.answer}</pre>
+        ) : (
+          <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
+        )}
+      </section>
 
-        {/* CENTER: tool calls */}
-        <section className="runtime-col runtime-col-tools panel">
-          <div className="panel-head">
-            <h3>工具调用 · {display.toolCalls.length} 次</h3>
-          </div>
-          {display.toolCalls.length === 0 ? (
-            <p className="muted small">本次运行未调用工具。</p>
-          ) : (
-            <ul className="tool-list">
-              {display.toolCalls.map((tc, i) => (
-                <li key={i} className={`tool-card status-${tc.status}`}>
-                  <div className="tool-head">
-                    <span className="tool-idx">#{i + 1}</span>
-                    <details className="tool-name-details">
-                      <summary title={tc.tool} className="tool-name-summary">
-                        {tc.tool.replace(/_/g, ' ')}
-                        <span className={`tool-status status-${tc.status}`}>{tc.status === 'done' ? '✓' : tc.status === 'error' ? '✗' : '⏳'}</span>
-                        {tc.duration_ms != null && (
-                          <span className="muted small">{tc.duration_ms}毫秒</span>
-                        )}
-                      </summary>
-                      <div className="tool-args-expanded">
-                        <code>{fmtArgs(tc.args)}</code>
-                      </div>
-                    </details>
-                  </div>
-                  {tc.result != null && (
-                    <ToolResultPreview tool={tc.tool} result={tc.result} />
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          {/* Node trajectory */}
-          {selectedTrace && (
-            <details className="trace-details" open>
-              <summary>📍 节点路径 ({selectedTrace.nodes.length} 步 · {selectedTrace.duration_ms ?? 0}毫秒)</summary>
-              <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
-                {selectedTrace.nodes.map((n) => (
-                  <li key={n.version} style={{
-                    border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, marginBottom: 4,
-                    background: n.error ? '#fef2f2' : 'var(--bg-primary)',
-                  }}>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ background: '#0ea5e9', color: '#fff', padding: '1px 5px', borderRadius: 6, fontSize: 10 }}>v{n.version}</span>
-                      <code style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 11 }}>{n.node}</code>
-                      <span className="muted small">{n.latency_ms}毫秒</span>
-                      {n.error && <span style={{ color: '#dc2626', fontSize: 11 }}>⚠ {n.error}</span>}
-                    </div>
-                  </li>
+      {/* Developer details — collapsible, auto-opens while streaming */}
+      <details className="runtime-dev-details" open={display.isStreaming}>
+        <summary>⚙️ 执行详情（计划 · {display.toolCalls.length} 次工具调用）</summary>
+        <div className="runtime-3col runtime-3col--two">
+          {/* LEFT: plan */}
+          <section className="runtime-col runtime-col-plan panel">
+            <div className="panel-head">
+              <h3>执行计划</h3>
+              {live && display.isStreaming && <span className="dot live" />}
+            </div>
+            {display.planSteps.length === 0 ? (
+              <p className="muted small">等待规划…</p>
+            ) : (
+              <ol className="plan-list">
+                {display.planSteps.map((s, i) => (
+                  <li key={i}>{s}</li>
                 ))}
               </ol>
+            )}
+            {/* channel state compact */}
+            <details className="channel-details">
+              <summary>运行状态</summary>
+              <pre className="channel-box-sm">{JSON.stringify(channel, null, 2)}</pre>
             </details>
-          )}
-        </section>
+          </section>
 
-        {/* RIGHT: answer */}
-        <section className="runtime-col runtime-col-answer panel">
-          <div className="panel-head">
-            <h3>最终答案</h3>
-            {display.isStreaming && <span className="dot live" />}
-          </div>
-          {display.answer ? (
-            <pre className="answer-box">{display.answer}</pre>
-          ) : (
-            <p className="muted small">{display.isStreaming ? '生成中…' : '尚无答案'}</p>
-          )}
-        </section>
-      </div>
+          {/* CENTER: tool calls */}
+          <section className="runtime-col runtime-col-tools panel">
+            <div className="panel-head">
+              <h3>工具调用 · {display.toolCalls.length} 次</h3>
+            </div>
+            {display.toolCalls.length === 0 ? (
+              <p className="muted small">本次运行未调用工具。</p>
+            ) : (
+              <ul className="tool-list">
+                {display.toolCalls.map((tc, i) => (
+                  <li key={i} className={`tool-card status-${tc.status}`}>
+                    <div className="tool-head">
+                      <span className="tool-idx">#{i + 1}</span>
+                      <details className="tool-name-details">
+                        <summary title={tc.tool} className="tool-name-summary">
+                          {tc.tool.replace(/_/g, ' ')}
+                          <span className={`tool-status status-${tc.status}`}>{tc.status === 'done' ? '✓' : tc.status === 'error' ? '✗' : '⏳'}</span>
+                          {tc.duration_ms != null && (
+                            <span className="muted small">{tc.duration_ms}毫秒</span>
+                          )}
+                        </summary>
+                        <div className="tool-args-expanded">
+                          <code>{fmtArgs(tc.args)}</code>
+                        </div>
+                      </details>
+                    </div>
+                    {tc.result != null && (
+                      <ToolResultPreview tool={tc.tool} result={tc.result} />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {/* Node trajectory */}
+            {selectedTrace && (
+              <details className="trace-details" open>
+                <summary>📍 节点路径 ({selectedTrace.nodes.length} 步 · {selectedTrace.duration_ms ?? 0}毫秒)</summary>
+                <ol className="plan-list" style={{ listStyle: 'none', paddingLeft: 0 }}>
+                  {selectedTrace.nodes.map((n) => (
+                    <li key={n.version} style={{
+                      border: '1px solid #e2e8f0', borderRadius: 6, padding: 6, marginBottom: 4,
+                      background: n.error ? '#fef2f2' : 'var(--bg-primary)',
+                    }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{ background: '#0ea5e9', color: '#fff', padding: '1px 5px', borderRadius: 6, fontSize: 10 }}>v{n.version}</span>
+                        <code style={{ color: 'var(--text-primary)', fontWeight: 600, fontSize: 11 }}>{n.node}</code>
+                        <span className="muted small">{n.latency_ms}毫秒</span>
+                        {n.error && <span style={{ color: '#dc2626', fontSize: 11 }}>⚠ {n.error}</span>}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
+          </section>
+        </div>
+      </details>
     </div>
   );
 }
