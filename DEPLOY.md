@@ -222,12 +222,22 @@ EMBEDDING_BACKEND=local
 
 ### 3. Build and start all services
 
+**Lightweight server (recommended for ≤ 8 GB RAM, no GPU, no OCR):**
+
 ```bash
-docker compose up -d --build
+# Starts: PostgreSQL · Redis · Qdrant · Python legacy · Retrieval ·
+#         Node orchestrator · Go Gateway · Go WebSocket · Frontend
+# Skips:  Elasticsearch, TEI embedding, Milvus, OCR service
+EMBEDDING_BACKEND=local docker compose up -d --build
 ```
 
-This starts: **PostgreSQL · Redis · Qdrant · Elasticsearch · Python legacy ·
-Retrieval service · Node orchestrator · Go Gateway · Go WebSocket · Frontend (nginx)**
+> Make sure `EMBEDDING_BACKEND=local` is also set in your `.env` file.
+
+**Full server (≥ 16 GB RAM + NVIDIA GPU):**
+
+```bash
+docker compose --profile full up -d --build
+```
 
 First build takes 5–15 minutes. Subsequent starts are fast (images cached).
 
@@ -280,7 +290,17 @@ curl -s http://localhost:8080/health | python3 -m json.tool
 
 ---
 
-## Useful commands
+## Deployment modes
+
+| Mode | Command | Included services | RAM needed |
+|---|---|---|---|
+| **Lightweight** (default) | `docker compose up -d` | Core stack only (no ES, no TEI, no Milvus, no OCR) | ~4 GB |
+| **Full** | `docker compose --profile full up -d` | All of the above + Elasticsearch + TEI (GPU) | ~12 GB + GPU |
+| **Milvus** | `docker compose --profile milvus up -d` | Core stack + Milvus vector DB | ~6 GB |
+
+> OCR service (`src/backend/ocr-service`) is intentionally excluded from all Docker Compose modes — it requires heavy PaddleOCR dependencies. Run it separately only if needed.
+
+---
 
 ```bash
 # View all logs at once

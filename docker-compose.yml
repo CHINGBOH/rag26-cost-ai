@@ -169,6 +169,10 @@ services:
       timeout: 10s
       retries: 8
       start_period: 60s
+    # Only started when the "full" profile is active.
+    # Lightweight servers: omit this service (uses ~2 GB RAM).
+    # Enable: docker compose --profile full up -d
+    profiles: ["full"]
     restart: unless-stopped
     networks:
       - rag-network
@@ -328,6 +332,10 @@ services:
   # ---------------------------------------------------------------------------
   # Embedding Services
   # ---------------------------------------------------------------------------
+  # tei requires an NVIDIA GPU and ~4 GB VRAM.
+  # Lightweight / no-GPU servers: set EMBEDDING_BACKEND=local in .env — the
+  # Python services will use sentence-transformers on CPU instead.
+  # Enable: docker compose --profile full up -d
   tei:
     image: ghcr.io/huggingface/text-embeddings-inference:1.5
     container_name: rag-tei
@@ -359,6 +367,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    profiles: ["full"]
     restart: unless-stopped
     networks:
       - rag-network
