@@ -42,8 +42,13 @@ start_if_not_running() {
 
     echo "🚀 Starting $name on port $port..."
     cd "$dir" || exit 1
-    eval "nohup $cmd > '$log' 2>&1 &"
-    sleep 2
+    # setsid fully detaches the process from the calling shell's process group,
+    # preventing SIGHUP from killing child processes (e.g. vite forked by npm)
+    # when the parent shell exits. nohup alone is insufficient because it only
+    # protects the direct child; npm/node fork grandchildren that still belong
+    # to the original process group and are killed on shell exit.
+    setsid bash -c "$cmd >> '$log' 2>&1" &
+    sleep 3
     cd "$PROJECT_ROOT"
 
     if lsof -i TCP:"$port" -t >/dev/null 2>&1; then
@@ -122,6 +127,16 @@ start_if_not_running \
     "/tmp/go-gateway.log"
 
 # ---------------------------------------------------------------------------
+# 7. Frontend (Vite dev server)
+# ---------------------------------------------------------------------------
+start_if_not_running \
+    "Frontend (Vite)" \
+    3000 \
+    "$PROJECT_ROOT/src/frontend/web" \
+    "npm run dev -- --port 3000 --host 0.0.0.0" \
+    "/tmp/vite.log"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
@@ -130,11 +145,20 @@ echo "✅ All local services started successfully!"
 echo "================================================"
 echo ""
 echo "Access points:"
+echo "  - Frontend:        http://localhost:3000"
 echo "  - API Gateway:     http://localhost:8080"
 echo "  - Node Server:     http://localhost:3001"
 echo "  - Python Legacy:   http://localhost:8000"
 echo "  - Retrieval:       http://localhost:8002"
 echo "  - WebSocket:       ws://localhost:8081/ws?room=<roomId>"
+echo ""
+echo "Logs:"
+echo "  - Frontend:        /tmp/vite.log"
+echo "  - Node Server:     /tmp/node-server.log"
+echo "  - Python Legacy:   /tmp/python-legacy.log"
+echo "  - Retrieval:       /tmp/retrieval-service.log"
+echo "  - Go Gateway:      /tmp/go-gateway.log"
+echo "  - Go WebSocket:    /tmp/go-websocket.log"
 echo ""
 echo "Stop all local services:"
 echo "  ./stop-all.sh"
