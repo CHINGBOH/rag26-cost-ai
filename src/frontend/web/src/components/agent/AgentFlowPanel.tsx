@@ -104,8 +104,11 @@ export const AgentFlowPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* 拓扑图区域：可纵向拖拽调整高度 */}
       <div style={{ marginTop: 16, padding: 12, background: '#0f172a',
-                    borderRadius: 8, overflow: 'auto', maxHeight: 520 }}>
+                    borderRadius: 8, overflow: 'auto',
+                    minHeight: 200, height: 520,
+                    resize: 'vertical' }}>
         {renderError ? (
           <p style={{ color: '#fca5a5' }}>渲染失败：{renderError}</p>
         ) : (

@@ -154,13 +154,12 @@ export const GuideHistoryPanel: React.FC = () => {
       )}
 
       {turns.length > 0 && (
+        <div style={{ minHeight: 120, height: 360, overflowY: 'auto', resize: 'vertical' }}>
         <ul
           style={{
             listStyle: 'none',
             margin: 0,
             padding: 0,
-            maxHeight: 360,
-            overflowY: 'auto',
           }}
         >
           {turns.slice(0, 20).map((t) => {
@@ -220,6 +219,7 @@ export const GuideHistoryPanel: React.FC = () => {
             );
           })}
         </ul>
+        </div>
       )}
     </section>
   );
