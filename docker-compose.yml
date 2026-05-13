@@ -305,6 +305,27 @@ services:
       - rag-network
 
   # ---------------------------------------------------------------------------
+  # Frontend (React + nginx)
+  # Serves the built SPA on port 80 and proxies API/WS calls to the backend
+  # services inside the Docker network (mirrors the vite dev proxy rules).
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: src/frontend/web/Dockerfile
+    container_name: rag-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - go-gateway
+      - go-websocket
+      - node-server
+      - retrieval-service
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # ---------------------------------------------------------------------------
   # Embedding Services
   # ---------------------------------------------------------------------------
   tei:

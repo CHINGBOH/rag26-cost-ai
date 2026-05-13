@@ -67,6 +67,8 @@ Frontend (src/frontend/web)
 
 ## Quick local entrypoints
 
+> **Deploying to a server?** See [**DEPLOY.md**](DEPLOY.md) for the one-command Docker deployment guide.
+
 ```bash
 # Start ALL services (including frontend on :3000)
 ./start-all.sh local
