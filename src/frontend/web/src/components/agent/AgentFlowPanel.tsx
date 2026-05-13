@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 import { getAgentRuntime, AgentRuntime, AgentTool } from '../../services/ragApi';
+import { useResizableHeight } from '../../hooks/useResizableHeight';
 import { fmtTime } from '../../utils/dateUtils';
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
@@ -40,6 +41,7 @@ export const AgentFlowPanel: React.FC = () => {
   const [renderedSvg, setRenderedSvg] = useState<string>('');
   const [renderError, setRenderError] = useState<string>('');
   const renderIdRef = useRef(0);
+  const { height: topoHeight, handleProps: topoHandleProps } = useResizableHeight({ initial: 520, min: 200 });
 
   useEffect(() => {
     initMermaid();
@@ -104,11 +106,10 @@ export const AgentFlowPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* 拓扑图区域：可纵向拖拽调整高度 */}
+      {/* 拓扑图区域：JS 拖拽调整高度，兼容 overflow:hidden 父容器 */}
       <div style={{ marginTop: 16, padding: 12, background: '#0f172a',
                     borderRadius: 8, overflow: 'auto',
-                    minHeight: 200, height: 520,
-                    resize: 'vertical' }}>
+                    height: topoHeight }}>
         {renderError ? (
           <p style={{ color: '#fca5a5' }}>渲染失败：{renderError}</p>
         ) : (
@@ -118,6 +119,13 @@ export const AgentFlowPanel: React.FC = () => {
             style={{ minHeight: 200 }}
           />
         )}
+      </div>
+      {/* 拖拽手柄：鼠标按住上下拖动 */}
+      <div {...topoHandleProps}>
+        <svg width="32" height="4" viewBox="0 0 32 4" fill="none">
+          <rect y="0" width="32" height="1.5" rx="1" fill="currentColor"/>
+          <rect y="2.5" width="32" height="1.5" rx="1" fill="currentColor"/>
+        </svg>
       </div>
 
       <div style={{ marginTop: 20 }}>

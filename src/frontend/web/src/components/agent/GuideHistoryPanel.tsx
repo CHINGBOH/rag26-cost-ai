@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { fmtTime } from '../../utils/dateUtils';
 import { getConversations, ConversationTurn } from '../../services/metricsApi';
+import { useResizableHeight } from '../../hooks/useResizableHeight';
 
 type GuideTurn = ConversationTurn;
 
@@ -48,6 +49,7 @@ export const GuideHistoryPanel: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const { height: listHeight, handleProps: listHandleProps } = useResizableHeight({ initial: 360, min: 120 });
 
   const load = async () => {
     try {
@@ -154,7 +156,7 @@ export const GuideHistoryPanel: React.FC = () => {
       )}
 
       {turns.length > 0 && (
-        <div style={{ minHeight: 120, height: 360, overflowY: 'auto', resize: 'vertical' }}>
+        <div style={{ height: listHeight, overflowY: 'auto' }}>
         <ul
           style={{
             listStyle: 'none',
@@ -219,6 +221,15 @@ export const GuideHistoryPanel: React.FC = () => {
             );
           })}
         </ul>
+        </div>
+      )}
+      {/* 拖拽手柄 */}
+      {turns.length > 0 && (
+        <div {...listHandleProps}>
+          <svg width="32" height="4" viewBox="0 0 32 4" fill="none">
+            <rect y="0" width="32" height="1.5" rx="1" fill="currentColor"/>
+            <rect y="2.5" width="32" height="1.5" rx="1" fill="currentColor"/>
+          </svg>
         </div>
       )}
     </section>
