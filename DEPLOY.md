@@ -1,23 +1,175 @@
 # Server Deployment Guide
 
-> One-command Docker deployment for RAG Dashboard.
-> Intended for use on a fresh Linux server with Docker ≥ 24 and Docker Compose v2.
+> Complete guide from a **bare Linux server** to a running RAG Dashboard.
+> Covers OS preparation, Docker installation, and application deployment.
 
 ---
 
-## Prerequisites
+## Hardware requirements
 
-| Requirement | Version | Check |
+| Resource | Minimum | Recommended |
 |---|---|---|
-| Docker Engine | ≥ 24 | `docker --version` |
-| Docker Compose plugin | ≥ v2.20 | `docker compose version` |
-| Git | any | `git --version` |
-| RAM | ≥ 8 GB | `free -h` |
-| Disk | ≥ 20 GB free | `df -h` |
+| CPU | 4 cores | 8+ cores |
+| RAM | 8 GB | 16 GB |
+| Disk | 40 GB SSD | 100 GB SSD |
+| OS | Ubuntu 22.04 LTS | Ubuntu 22.04 / 24.04 LTS |
+| GPU | — | NVIDIA (for TEI embedding) |
 
-> **GPU (optional):** The embedding service (`tei`) uses NVIDIA GPU by default.
-> If no GPU is available, set `EMBEDDING_BACKEND=local` in `.env` and remove
-> the `tei` service from `docker-compose.yml` (or use `--scale tei=0`).
+---
+
+## Part 1 — Prepare the bare server
+
+### 1.1 Update the system
+
+```bash
+apt update && apt upgrade -y
+apt install -y curl wget git unzip gnupg ca-certificates lsb-release
+```
+
+> **CentOS / RHEL / AlmaLinux:**
+> ```bash
+> dnf update -y
+> dnf install -y curl wget git unzip gnupg ca-certificates
+> ```
+
+### 1.2 Configure swap (if RAM < 16 GB)
+
+Elasticsearch and the build step are memory-hungry. Add 4 GB swap as a safety net:
+
+```bash
+fallocate -l 4G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+swapon --show
+```
+
+### 1.3 Tune kernel for Elasticsearch
+
+```bash
+sysctl -w vm.max_map_count=262144
+echo 'vm.max_map_count=262144' >> /etc/sysctl.conf
+```
+
+### 1.4 Open firewall ports
+
+```bash
+# Ubuntu (ufw)
+ufw allow 22/tcp      # SSH — keep this open!
+ufw allow 80/tcp      # Frontend
+ufw allow 8080/tcp    # Go API Gateway (optional direct access)
+ufw enable
+ufw status
+```
+
+> **CentOS / firewalld:**
+> ```bash
+> firewall-cmd --permanent --add-service=ssh
+> firewall-cmd --permanent --add-port=80/tcp
+> firewall-cmd --permanent --add-port=8080/tcp
+> firewall-cmd --reload
+> ```
+
+---
+
+## Part 2 — Install Docker Engine
+
+### 2.1 Install Docker (Ubuntu / Debian)
+
+```bash
+# Add Docker's official GPG key and repository
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" \
+  | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt update
+apt install -y docker-ce docker-ce-cli containerd.io \
+               docker-buildx-plugin docker-compose-plugin
+
+# Start and enable Docker
+systemctl start docker
+systemctl enable docker
+```
+
+> **CentOS / RHEL:**
+> ```bash
+> dnf install -y dnf-plugins-core
+> dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+> dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+> systemctl start docker && systemctl enable docker
+> ```
+
+### 2.2 (Optional) Run Docker without sudo
+
+```bash
+usermod -aG docker $USER
+newgrp docker       # apply without logout
+```
+
+### 2.3 Verify
+
+```bash
+docker --version           # Docker version 24.x.x or higher
+docker compose version     # Docker Compose version v2.x.x
+docker run --rm hello-world
+```
+
+---
+
+## Part 3 — (Optional) NVIDIA GPU support
+
+Skip this section if your server has no GPU. Set `EMBEDDING_BACKEND=local` in `.env` instead.
+
+### 3.1 Install NVIDIA driver
+
+```bash
+apt install -y ubuntu-drivers-common
+ubuntu-drivers autoinstall
+reboot
+# After reboot:
+nvidia-smi    # should show GPU info
+```
+
+### 3.2 Install NVIDIA Container Toolkit
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+apt update
+apt install -y nvidia-container-toolkit
+nvidia-ctk runtime configure --runtime=docker
+systemctl restart docker
+
+# Verify
+docker run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+```
+
+---
+
+## Part 4 — Deploy RAG Dashboard
+
+### Prerequisites checklist
+
+```bash
+docker --version        # ≥ 24
+docker compose version  # ≥ v2.20
+git --version           # any
+free -h                 # ≥ 8 GB total (RAM + swap)
+df -h /                 # ≥ 40 GB free
+```
 
 ---
 
@@ -36,27 +188,37 @@ cd rag-dashboard
 cp config/.env.example .env
 ```
 
+Generate secure random secrets first:
+
+```bash
+# Generate AUTH_SECRET
+openssl rand -hex 32
+
+# Generate POSTGRES_PASSWORD (or pick your own strong password)
+openssl rand -base64 20
+```
+
 Then edit `.env` — **at minimum set these values:**
 
 ```bash
 # --- Required secrets ---
-AUTH_SECRET=<random-32-char-string>        # Node auth JWT secret
+AUTH_SECRET=<output of openssl rand -hex 32>
 POSTGRES_PASSWORD=<strong-password>
 NEO4J_PASSWORD=<strong-password>
 
 # --- LLM provider (pick one) ---
 VITE_ACTIVE_LLM_PROVIDER=deepseek          # deepseek | kimi | openai
-VITE_DEEPSEEK_API_KEY=<your-key>
-# VITE_KIMI_API_KEY=<your-key>
-# VITE_OPENAI_API_KEY=<your-key>
+VITE_DEEPSEEK_API_KEY=sk-...
+# VITE_KIMI_API_KEY=...
+# VITE_OPENAI_API_KEY=...
 
 # --- Embedding backend ---
-# If no GPU: set EMBEDDING_BACKEND=local (uses sentence-transformers on CPU)
-# If GPU available: set EMBEDDING_BACKEND=tei (default, uses HuggingFace TEI)
+# No GPU → local (CPU, slower but works)
+# NVIDIA GPU available → tei (fast, uses HuggingFace TEI container)
 EMBEDDING_BACKEND=local
 ```
 
-> Full env reference: [`config/.env.example`](config/.env.example)
+> Full reference for every env var: [`config/.env.example`](config/.env.example)
 
 ### 3. Build and start all services
 
