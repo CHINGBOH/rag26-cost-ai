@@ -7,13 +7,93 @@
 
 ## Hardware requirements
 
-| Resource | Minimum | Recommended |
+| Tier | CPU | RAM | Disk | Notes |
+|---|---|---|---|---|
+| **2 GB lightweight** | 4 cores | 2 GB + **4 GB swap** | 30 GB | Small models only — see §2G below |
+| **Standard** | 4 cores | 8 GB | 40 GB SSD | Default config, local `bge-m3` |
+| **Recommended** | 8+ cores | 16 GB | 100 GB SSD | Full stack + Elasticsearch |
+| **GPU full** | 8+ cores | 32 GB | 200 GB SSD | TEI + Milvus + all features |
+
+> ⚠️ **2 GB servers require the 2G override** — the default `bge-m3` model alone
+> uses **1.5 GB RAM per Python service** (two services = 3 GB), which immediately
+> OOMs a 2 GB host. See [§ 2GB server](#2gb-server-2-gb-ram--4-core) below.
+
+---
+
+## 2GB server (2 GB RAM / 4-core)
+
+> Skip this section if your server has ≥ 8 GB RAM.
+
+### Why the default config doesn't fit
+
+| Component | Default model | RAM used | Small model | RAM used |
+|---|---|---|---|---|
+| Embedding (×2 services) | `BAAI/bge-m3` | ~1.5 GB each = **3 GB** | `bge-small-zh-v1.5` | ~200 MB each |
+| Reranker (×2 services) | `bge-reranker-v2-m3` | ~1.5 GB each | `bge-reranker-base` | ~300 MB each |
+| Everything else | — | ~900 MB | — | ~900 MB |
+| **Total** | | **≥ 6 GB** | | **~2 GB + swap** |
+
+### Step 0 — Add swap (mandatory)
+
+Without swap the kernel OOM-killer will start shooting containers.
+
+```bash
+fallocate -l 6G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+# Reduce swap aggressiveness (use RAM first)
+echo 'vm.swappiness=10' >> /etc/sysctl.conf
+sysctl -p
+```
+
+### Step 1 — Use the 2G Compose override
+
+The repo ships `docker-compose.2g.yml` which:
+- Switches both services to `bge-small-zh-v1.5` (90 MB disk, ~200 MB RAM)
+- Switches reranker to `bge-reranker-base` (~300 MB RAM)
+- Adds hard `mem_limit` on every container
+- Caps Postgres to 64 MB shared_buffers and 20 connections
+
+```bash
+# Clone and .env setup (same as normal deployment — see Step 2 below)
+# Then start with the 2G override:
+docker compose -f docker-compose.yml -f docker-compose.2g.yml up -d --build
+```
+
+### Step 2 — .env must override model names
+
+In your `.env` (copied from `config/.env.example`), change:
+
+```env
+# Lightweight models for 2 GB servers
+EMBEDDING_BACKEND=local
+EMBEDDING_MODEL_NAME=BAAI/bge-small-zh-v1.5
+RERANKER_MODEL_NAME=BAAI/bge-reranker-base
+```
+
+> **Trade-off:** `bge-small-zh-v1.5` is a 512-dim Chinese model optimised for short
+> queries. Search quality is noticeably lower than `bge-m3` for long passages, but
+> the service will actually run instead of crashing.
+
+### Realistic memory budget (2G config)
+
+| Service | Limit | Typical use |
 |---|---|---|
-| CPU | 4 cores | 8+ cores |
-| RAM | 8 GB | 16 GB |
-| Disk | 40 GB SSD | 100 GB SSD |
-| OS | Ubuntu 22.04 LTS | Ubuntu 22.04 / 24.04 LTS |
-| GPU | — | NVIDIA (for TEI embedding) |
+| OS + kernel | — | ~400 MB |
+| postgres | 256 MB | ~150 MB |
+| redis | 192 MB | ~60 MB |
+| qdrant | 384 MB | ~200 MB |
+| python-legacy | 640 MB | ~450 MB |
+| retrieval-service | 768 MB | ~550 MB |
+| node-server | 384 MB | ~250 MB |
+| go-gateway + websocket | 128 MB | ~40 MB |
+| frontend (nginx) | 64 MB | ~15 MB |
+| **Total** | **2816 MB** | **~2.1 GB** |
+
+Headroom comes from swap. Expect ~5-10 s cold-start latency for the first
+embedding call while models are paged back from swap.
 
 ---
 
@@ -32,9 +112,11 @@ apt install -y curl wget git unzip gnupg ca-certificates lsb-release
 > dnf install -y curl wget git unzip gnupg ca-certificates
 > ```
 
-### 1.2 Configure swap (if RAM < 16 GB)
+### 1.2 Configure swap
 
-Elasticsearch and the build step are memory-hungry. Add 4 GB swap as a safety net:
+**Mandatory for 2 GB servers. Strongly recommended for all servers with < 16 GB RAM.**
+Elasticsearch, the Docker build step, and ML model loading are all memory-hungry.
+Add at least 4 GB swap (6 GB for 2 GB RAM servers):
 
 ```bash
 fallocate -l 4G /swapfile
@@ -294,6 +376,7 @@ curl -s http://localhost:8080/health | python3 -m json.tool
 
 | Mode | Command | Included services | RAM needed |
 |---|---|---|---|
+| **2 GB** | `docker compose -f docker-compose.yml -f docker-compose.2g.yml up -d` | Core stack + small models + memory caps | **2 GB + 6 GB swap** |
 | **Lightweight** (default) | `docker compose up -d` | Core stack only (no ES, no TEI, no Milvus, no OCR) | ~4 GB |
 | **Full** | `docker compose --profile full up -d` | All of the above + Elasticsearch + TEI (GPU) | ~12 GB + GPU |
 | **Milvus** | `docker compose --profile milvus up -d` | Core stack + Milvus vector DB | ~6 GB |
