@@ -2,6 +2,9 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# 切换 npm 镜像加速（国内服务器）
+RUN npm config set registry https://registry.npmmirror.com
+
 # 安装构建依赖
 RUN apk add --no-cache python3 make g++
 
@@ -35,13 +38,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
 
 CMD ["node", "dist/index.js"]
-
-# 暴露端口
-EXPOSE 3001
-
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
-
-# 启动命令
-CMD ["npm", "start"]
