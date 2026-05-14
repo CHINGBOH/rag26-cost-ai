@@ -101,6 +101,21 @@ const useChatStore = create<ChatStore>()(
 
 const API_BASE = getApiBaseUrl();
 
+// Strip Chinese filler words / temporal noise that breaks embedding retrieval.
+// Used only for the /api/v1/rag fallback when the Agent loop yielded no_data.
+function simplifyQueryForFallback(raw: string): string {
+  let q = raw;
+  q = q.replace(/根据|请|帮我|帮忙|能否|可以|麻烦|告诉我|想知道|问下|问一下/g, '');
+  q = q.replace(/分析[一]?下?|说[一]?下|看[一]?下/g, '');
+  q = q.replace(/从[\s\S]{0,15}?(开始|起|至今|到现在|到目前)/g, '');
+  q = q.replace(/至今|到现在|到目前|目前|当前|最近/g, '');
+  q = q.replace(/\d{2,4}\s*年|\d{1,2}\s*月|去年|今年|往年/g, '');
+  q = q.replace(/走势|趋势|变化|情况|历史|过去/g, '');
+  q = q.replace(/[，。、,.]/g, ' ');
+  q = q.replace(/\s+/g, ' ').trim();
+  return q || raw;
+}
+
 function buildPresentationFallbackText(presentation: PresentationPayload | null | undefined): string {
   if (!presentation) return '';
 
@@ -336,7 +351,8 @@ export function useAgent() {
         if (!signal.aborted && presentationIsNoData && answerLooksEmpty && noChunks) {
           try {
             const subQueries = postState.queryAnalysis?.sub_queries ?? [];
-            const fallbackQuery = (subQueries.find((s) => s && s.trim()) || query).trim();
+            const cleanSub = subQueries.find((s) => s && s.trim() && s.trim().length < 25)?.trim();
+            const fallbackQuery = cleanSub || simplifyQueryForFallback(query);
             const ragResp = await fetch(`${API_BASE}/api/v1/rag`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
