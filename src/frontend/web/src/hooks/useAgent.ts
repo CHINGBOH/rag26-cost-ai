@@ -57,6 +57,7 @@ interface ChatStore {
   isLoading: boolean;
   sessionId: string | null;
   _addMessage: (msg: ChatMessage) => void;
+  _replaceLastAssistant: (patch: Partial<ChatMessage>) => void;
   _setLoading: (loading: boolean) => void;
   _setMessages: (msgs: ChatMessage[]) => void;
   _setSessionId: (id: string | null) => void;
@@ -74,6 +75,19 @@ const useChatStore = create<ChatStore>()(
         set((state) => ({
           messages: [...state.messages, msg].slice(-MAX_MESSAGES),
         })),
+      _replaceLastAssistant: (patch) =>
+        set((state) => {
+          const idx = (() => {
+            for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+              if (state.messages[i].role === 'assistant') return i;
+            }
+            return -1;
+          })();
+          if (idx < 0) return state;
+          const next = state.messages.slice();
+          next[idx] = { ...next[idx], ...patch };
+          return { messages: next };
+        }),
       _setLoading: (loading) => set({ isLoading: loading }),
       _setMessages: (msgs) => set({ messages: msgs }),
       _setSessionId: (id) => set({ sessionId: id }),
@@ -129,6 +143,7 @@ export function useAgent() {
   const sessionId = useChatStore((s) => s.sessionId);
   const isLoading = useChatStore((s) => s.isLoading);
   const _addMessage = useChatStore((s) => s._addMessage);
+  const _replaceLastAssistant = useChatStore((s) => s._replaceLastAssistant);
   const _setLoading = useChatStore((s) => s._setLoading);
   const _setMessages = useChatStore((s) => s._setMessages);
   const _setSessionId = useChatStore((s) => s._setSessionId);
@@ -310,6 +325,55 @@ export function useAgent() {
             followups: partialRunStore.followups,
           });
         }
+
+        // Issue #151 follow-up: if the Agent loop gave up with no_data while
+        // chunks actually exist in the vector store, fall back to /api/v1/rag
+        // so the user gets a real answer instead of "未检索到相关依据".
+        const postState = useRunStore.getState();
+        const presentationIsNoData = postState.presentation?.type === 'no_data';
+        const answerLooksEmpty = !postState.streamingAnswer?.trim();
+        const noChunks = postState.retrievalChunks.length === 0;
+        if (!signal.aborted && presentationIsNoData && answerLooksEmpty && noChunks) {
+          try {
+            const ragResp = await fetch(`${API_BASE}/api/v1/rag`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query: query.trim(),
+                top_k: config?.topK ?? 8,
+                session_id: currentSessionId,
+              }),
+              signal,
+            });
+            if (ragResp.ok) {
+              const ragData = (await ragResp.json()) as {
+                answer?: string;
+                chunks?: AgentChunk[];
+              };
+              const fallbackAnswer = (ragData.answer || '').trim();
+              if (fallbackAnswer) {
+                _replaceLastAssistant({
+                  content: fallbackAnswer,
+                  chunks: ragData.chunks ?? [],
+                  presentation: null,
+                });
+                const rs = useRunStore.getState();
+                rs.setPresentation(null);
+                rs.finishRun({
+                  answer: fallbackAnswer,
+                  iterations: rs.finalIterations,
+                  latency_ms: rs.finalLatencyMs,
+                  presentation: null,
+                  followups: rs.followups,
+                });
+              }
+            }
+          } catch (fbErr) {
+            if ((fbErr as Error).name !== 'AbortError') {
+              console.warn('RAG fallback failed:', fbErr);
+            }
+          }
+        }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
         const partialRunStore = useRunStore.getState();
@@ -352,7 +416,7 @@ export function useAgent() {
         _setLoading(false);
       }
     },
-    [isLoading, sessionId, _addMessage, _setLoading, _setSessionId]
+    [isLoading, sessionId, _addMessage, _replaceLastAssistant, _setLoading, _setSessionId]
   );
 
   const cancelStream = useCallback(() => {
