@@ -17,6 +17,9 @@ RUN cd packages/shared && npm run build
 # Copy frontend source
 COPY src/frontend/web/ ./src/frontend/web/
 
+# Copy docs referenced by DocsReader.tsx via ?raw imports
+COPY docs/ ./docs/
+
 # Build the React app
 WORKDIR /app/src/frontend/web
 RUN npm run build
