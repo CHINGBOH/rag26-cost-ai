@@ -242,8 +242,8 @@ services:
 
   node-server:
     build:
-      context: ./src/backend/server
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: src/backend/server/Dockerfile
     container_name: rag-node-server
     ports:
       - "3001:3001"
