@@ -335,11 +335,13 @@ export function useAgent() {
         const noChunks = postState.retrievalChunks.length === 0;
         if (!signal.aborted && presentationIsNoData && answerLooksEmpty && noChunks) {
           try {
+            const subQueries = postState.queryAnalysis?.sub_queries ?? [];
+            const fallbackQuery = (subQueries.find((s) => s && s.trim()) || query).trim();
             const ragResp = await fetch(`${API_BASE}/api/v1/rag`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                query: query.trim(),
+                query: fallbackQuery,
                 top_k: config?.topK ?? 8,
                 session_id: currentSessionId,
               }),
@@ -351,10 +353,16 @@ export function useAgent() {
                 chunks?: AgentChunk[];
               };
               const fallbackAnswer = (ragData.answer || '').trim();
-              if (fallbackAnswer) {
+              const fallbackChunks = ragData.chunks ?? [];
+              const refusalPatterns = [
+                '无法回答', '无法直接回答', '无法提供', '无法分析',
+                '抱歉', '未检索到', '未提供', '不足以回答',
+              ];
+              const isRefusal = refusalPatterns.some((p) => fallbackAnswer.startsWith(p) || fallbackAnswer.slice(0, 50).includes(p));
+              if (fallbackAnswer && fallbackChunks.length > 0 && !isRefusal) {
                 _replaceLastAssistant({
                   content: fallbackAnswer,
-                  chunks: ragData.chunks ?? [],
+                  chunks: fallbackChunks,
                   presentation: null,
                 });
                 const rs = useRunStore.getState();
