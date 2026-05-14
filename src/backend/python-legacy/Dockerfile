@@ -2,18 +2,22 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 阿里云 apt 镜像 (Debian trixie deb822 格式)
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制依赖并安装（优先使用已有的 requirements.llm.txt 作为基础）
-COPY requirements.llm.txt .
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install --no-cache-dir -r requirements.llm.txt
+# 清华 pip 镜像
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 额外安装四库相关依赖
+# 预装 CPU 版 torch (~200MB, 比默认 GPU 版小 10 倍)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+COPY requirements.llm.txt .
+RUN pip install --no-cache-dir -r requirements.llm.txt
+
 RUN pip install --no-cache-dir \
     qdrant-client \
     elasticsearch \
@@ -24,15 +28,11 @@ RUN pip install --no-cache-dir \
     pydantic-settings \
     pyyaml
 
-# 复制代码
 COPY . .
 
-# 暴露端口
 EXPOSE 8000
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# 启动命令
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
