@@ -16,7 +16,7 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "paths": {
-      "@rag/shared": ["../../../../packages/shared/dist"]
+      "@rag/shared": ["../../../packages/shared/dist"]
     }
   },
   "include": ["src/**/*"],

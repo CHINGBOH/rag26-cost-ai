@@ -25,7 +25,7 @@
     "@opentelemetry/sdk-node": "^0.216.0",
     "@opentelemetry/semantic-conventions": "^1.37.0",
     "@qdrant/qdrant-js": "^1.17.0",
-    "@rag/shared": "file:../../../../packages/shared",
+    "@rag/shared": "file:../../../packages/shared",
     "bullmq": "^4.15.0",
     "commander": "^14.0.3",
     "config": "^4.4.1",
