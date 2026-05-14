@@ -6,8 +6,8 @@
  */
 
 import { useEffect, useState, Component } from 'react';
-import type { ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
+import type { FormEvent, ReactNode } from 'react';
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ModuleIcon } from './components/icons/ModuleIcon';
 import type { ModuleName } from './components/icons/ModuleIcon';
 
@@ -52,6 +52,28 @@ const NAV_ITEMS: { path: string; label: string; icon: ModuleName }[] = [
   { path: '/hub',      label: '综合面板', icon: 'hub'      },
 ];
 
+type AuthUser = {
+  id: string;
+  username: string;
+  role: string;
+};
+
+type AuthState = {
+  token: string;
+  user: AuthUser;
+};
+
+const AUTH_STORAGE_KEY = 'rag.auth';
+
+function readAuthState(): AuthState | null {
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as AuthState) : null;
+  } catch {
+    return null;
+  }
+}
+
 const ROUTE_MODULE: [string, string][] = [
   ['/hub',      'hub'],
   ['/pipeline', 'pipeline'],
@@ -70,7 +92,9 @@ function getModule(pathname: string): string {
 
 function Navigation() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [scrolled, setScrolled] = useState(false);
+  const [auth, setAuth] = useState<AuthState | null>(() => readAuthState());
 
   useEffect(() => {
     document.documentElement.dataset.module = getModule(location.pathname);
@@ -83,6 +107,16 @@ function Navigation() {
     const onScroll = () => setScrolled(main.scrollTop > 4);
     main.addEventListener('scroll', onScroll, { passive: true });
     return () => main.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    const onStorage = () => setAuth(readAuthState());
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('rag-auth-changed', onStorage);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('rag-auth-changed', onStorage);
+    };
   }, []);
 
   const isActive = (path: string) =>
@@ -111,7 +145,110 @@ function Navigation() {
           </Link>
         ))}
       </nav>
+
+      <div className="nav-actions">
+        {auth ? (
+          <>
+            <span className="nav-user">已登录：{auth.user.username}</span>
+            <button
+              type="button"
+              className="nav-auth-button"
+              onClick={() => {
+                window.localStorage.removeItem(AUTH_STORAGE_KEY);
+                window.dispatchEvent(new Event('rag-auth-changed'));
+                navigate('/login');
+              }}
+            >
+              退出
+            </button>
+          </>
+        ) : (
+          <Link className="nav-auth-button primary" to="/login">
+            登录
+          </Link>
+        )}
+      </div>
     </header>
+  );
+}
+
+function LoginPage() {
+  const navigate = useNavigate();
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok || !payload.success || !payload.data?.token || !payload.data?.user) {
+        throw new Error(payload?.error?.message || '登录失败，请检查用户名和密码');
+      }
+
+      const authState: AuthState = {
+        token: payload.data.token,
+        user: payload.data.user,
+      };
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState));
+      window.dispatchEvent(new Event('rag-auth-changed'));
+      navigate('/hub/runtime', { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败，请稍后重试');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="login-page">
+      <form className="login-card" onSubmit={submit}>
+        <div>
+          <p className="login-eyebrow">RAG 智库系统</p>
+          <h1>管理员登录</h1>
+          <p className="login-subtitle">使用管理员账号进入受保护的后台功能。</p>
+        </div>
+
+        <label className="login-field">
+          <span>用户名</span>
+          <input
+            autoComplete="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="admin"
+            required
+          />
+        </label>
+
+        <label className="login-field">
+          <span>密码</span>
+          <input
+            autoComplete="current-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="请输入密码"
+            required
+          />
+        </label>
+
+        {error && <div className="login-error">{error}</div>}
+
+        <button className="login-submit" type="submit" disabled={loading}>
+          {loading ? '登录中…' : '登录'}
+        </button>
+      </form>
+    </section>
   );
 }
 
@@ -125,6 +262,7 @@ export default function App() {
           <Routes>
             {/* ── 三大板块 ── */}
             <Route path="/"         element={<LibraryPage />} />
+            <Route path="/login"    element={<LoginPage />} />
             <Route path="/pro"      element={<AgentChat />} />
             <Route path="/pipeline" element={<PipelinePage />} />
             <Route path="/hub/:tab" element={<DashHub />} />

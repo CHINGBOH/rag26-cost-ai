@@ -39,7 +39,7 @@ const baseConfig = {
   },
   retrieval: {
     sessionContextCollection: 'session_context',
-    documentsCollection: 'documents',
+    documentsCollection: 'document_chunks',
     documentsIndexName: 'documents',
     timeoutMs: 30000,
     defaultTopK: 10,
@@ -167,6 +167,7 @@ describe('createRuntimeConfig', () => {
     expect(resolved.databases.elasticsearchUrl).toBe('http://localhost:9200');
     expect(resolved.embeddings.model).toBe('text-embedding-ada-002');
     expect(resolved.retrieval.sessionContextCollection).toBe('session_context');
+    expect(resolved.retrieval.documentsCollection).toBe('document_chunks');
     expect(resolved.cascadeRetrieval.enableNeo4j).toBe(false);
     expect(resolved.cascadeRetrieval.keywordWeight).toBe(0.2);
     expect(resolved.ocr.language).toBe('ch');

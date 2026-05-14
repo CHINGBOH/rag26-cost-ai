@@ -1,8 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
-const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const currentDir = __dirname;
 const serverConfigDir = path.resolve(currentDir, '../../config');
 const repoRootEnvPath = path.resolve(currentDir, '../../../../../.env');
 

@@ -4,6 +4,7 @@
  */
 
 import { getApiBaseUrl, resolveWebSocketUrl } from '../config/runtime';
+import { createClientId } from '../utils/id';
 
 const API_BASE = getApiBaseUrl();
 
@@ -122,7 +123,7 @@ export async function searchDocuments(
     const results = result.data?.results || result.results || [];
 
     return results.map((item: any) => ({
-      chunk_id: item.chunk_id || item.id || `chunk-${crypto.randomUUID()}`,
+      chunk_id: item.chunk_id || item.id || createClientId('chunk'),
       doc_id: item.doc_id || item.source || 'unknown',
       content: item.content,
       score: item.score || 0,
@@ -172,7 +173,7 @@ export async function searchDocumentsV1(
     const results = result.data?.results || result.results || [];
 
     return results.map((item: any) => ({
-      chunk_id: item.chunk_id || item.id || `chunk-${crypto.randomUUID()}`,
+      chunk_id: item.chunk_id || item.id || createClientId('chunk'),
       doc_id: item.doc_id || item.source || 'unknown',
       content: item.content,
       score: item.score || 0,

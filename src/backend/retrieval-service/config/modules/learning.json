@@ -1,0 +1,37 @@
+{
+  "module": "learning",
+  "version": 1,
+  "failure_monitor": {
+    "failure_threshold": 0.2,
+    "window_size": 16,
+    "min_window_samples": 8
+  },
+  "problem_detector": {
+    "continuous_failure_threshold": 3,
+    "repeat_question_threshold": 2,
+    "negative_feedback_frequency_threshold": 0.2,
+    "latency_p95_threshold_ms": 5000
+  },
+  "gap_retest_listener": {
+    "enabled": true,
+    "interval_seconds": 300,
+    "startup_delay_seconds": 60,
+    "limit": 20,
+    "max_live_retests": 3,
+    "consultation_endpoint": "http://retrieval-service:8002/api/v1/agent",
+    "consultation_timeout_seconds": 90,
+    "max_iterations": 3,
+    "observation_window_days": 7,
+    "projection_reconcile_enabled": true,
+    "projection_reconcile_limit": 200,
+    "fixed_state_invalidation_enabled": true,
+    "fixed_state_invalidation_limit": 100,
+    "repair_promotion_enabled": true,
+    "repair_promotion_min_keep_open_evidence": 2,
+    "repair_promotion_issue_number": 110,
+    "repair_promotion_issue_url": "https://github.com/CHINGBOH/RAG26/issues/110",
+    "actor": "learning_gap_listener",
+    "dry_run": false,
+    "active_only": true
+  }
+}

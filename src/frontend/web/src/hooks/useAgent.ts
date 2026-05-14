@@ -23,6 +23,7 @@ import {
 } from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
 import { getApiBaseUrl } from '../config/runtime';
+import { createClientId } from '../utils/id';
 
 export interface ChatMessage {
   id: string;
@@ -144,7 +145,7 @@ export function useAgent() {
       const { signal } = abortControllerRef.current;
 
       const runId = `run-${Date.now()}`;
-      const currentSessionId = sessionId || crypto.randomUUID();
+      const currentSessionId = sessionId || createClientId();
       if (!sessionId) _setSessionId(currentSessionId);
 
       _addMessage({

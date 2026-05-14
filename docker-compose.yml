@@ -200,6 +200,15 @@ services:
       - POSTGRES_PASSWORD=rag_password
       - TEI_URL=http://tei:8000
       - EMBEDDING_BACKEND=tei
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,6 +231,9 @@ services:
       - PORT=8002
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
       - REDIS_URL=redis://redis:6379/0
+      - GATEWAY_URL=http://go-gateway:8080
+      - NODEJS_URL=http://node-server:3001
+      - PYTHON_LEGACY_URL=http://python-legacy:8000
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - POSTGRES_HOST=postgres
@@ -229,6 +241,15 @@ services:
       - POSTGRES_DB=rag_dashboard
       - POSTGRES_USER=rag_user
       - POSTGRES_PASSWORD=rag_password
+      - LLM_PROVIDER=${LLM_PROVIDER:-deepseek}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
     depends_on:
       postgres:
         condition: service_healthy
@@ -251,10 +272,15 @@ services:
       - PORT=3001
       - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
       - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - RETRIEVAL_DOCUMENTS_COLLECTION=document_chunks
       - PYTHON_API_URL=http://python-legacy:8000
       - RETRIEVAL_API_URL=http://retrieval-service:8002
       - WS_GATEWAY_URL=http://go-websocket:8081/broadcast
       - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-}
       - NODE_ENV=production
     depends_on:
       postgres:
@@ -320,6 +346,9 @@ services:
     container_name: rag-frontend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs/threefirestone.com_nginx:/etc/nginx/certs:ro
     depends_on:
       - go-gateway
       - go-websocket

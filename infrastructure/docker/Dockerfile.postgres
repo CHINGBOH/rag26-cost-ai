@@ -9,6 +9,7 @@ FROM pgvector/pgvector:pg16 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
     wget \
     postgresql-server-dev-16 \
     && rm -rf /var/lib/apt/lists/*
