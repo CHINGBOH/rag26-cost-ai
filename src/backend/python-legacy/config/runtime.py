@@ -10,7 +10,11 @@ import yaml
 from dotenv import load_dotenv
 
 PYTHON_LEGACY_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = Path(__file__).resolve().parents[4]
+try:
+    REPO_ROOT = Path(__file__).resolve().parents[4]
+except IndexError:
+    # Docker: service files live at /app/, only 2 parents deep
+    REPO_ROOT = Path(__file__).resolve().parents[1]
 SHARED_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 DEFAULT_CORS_ORIGINS = ("http://localhost:3000", "http://localhost:8080")
 
