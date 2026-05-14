@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 复制依赖并安装（优先使用已有的 requirements.llm.txt 作为基础）
 COPY requirements.llm.txt .
-RUN pip install --no-cache-dir -r requirements.llm.txt
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install --no-cache-dir -r requirements.llm.txt
 
 # 额外安装四库相关依赖
 RUN pip install --no-cache-dir \

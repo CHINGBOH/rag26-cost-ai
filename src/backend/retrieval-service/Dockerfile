@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 复制依赖并安装
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install --no-cache-dir -r requirements.txt
 
 # 复制代码
 COPY . .
