@@ -21,7 +21,10 @@ def _default_learning_config_path() -> Path:
         candidate = parent / "config" / "modules" / "learning.json"
         if candidate.exists():
             return candidate
-    return current.parents[5] / "config" / "modules" / "learning.json"
+    # Tolerant fallback: container layout has fewer parents than host (#154)
+    parents = current.parents
+    root = parents[5] if len(parents) > 5 else parents[-1]
+    return root / "config" / "modules" / "learning.json"
 
 
 class FailureMonitorConfig(BaseModel):

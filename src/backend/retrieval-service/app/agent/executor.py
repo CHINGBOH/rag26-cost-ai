@@ -74,7 +74,9 @@ class PatchExecutor:
             pool: psycopg2.pool.ThreadedConnectionPool，若为None则使用工具的默认池
         """
         self.pool = pool
-        self.repo_root = Path(__file__).resolve().parents[5]
+        # Tolerant path resolution: container layout has fewer parents than host (#154)
+        parents = Path(__file__).resolve().parents
+        self.repo_root = parents[5] if len(parents) > 5 else parents[-1]
         self.test_script = self.repo_root / "tests" / "test_agent_16.py"
         self.config_path = self.repo_root / "config" / "config.yaml"
 
