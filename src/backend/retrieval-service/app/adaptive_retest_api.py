@@ -10,8 +10,10 @@ Date: 2026-05-08
 import sys
 from pathlib import Path
 
-# Bootstrap: 确保能导入项目模块
-project_root = Path(__file__).resolve().parents[3]
+# Bootstrap: 确保能导入项目模块。Host 布局有 5 层 parents，容器 /app 布局只有 2 层，
+# 都需要可用：取最后一个存在的 parent（即文件系统根之前的最高目录）。
+_parents = Path(__file__).resolve().parents
+project_root = _parents[3] if len(_parents) > 3 else _parents[-1]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 

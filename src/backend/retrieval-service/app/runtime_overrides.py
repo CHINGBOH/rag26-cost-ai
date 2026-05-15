@@ -223,7 +223,8 @@ def _postgres_connection_kwargs() -> dict[str, str | int]:
             "connect_timeout": 5,
         }
 
-    repo_root = Path(__file__).resolve().parents[4]
+    _parents = Path(__file__).resolve().parents
+    repo_root = _parents[4] if len(_parents) > 4 else _parents[-1]
     config_path = repo_root / "config" / "config.yaml"
     file_config = {}
     if config_path.exists():
