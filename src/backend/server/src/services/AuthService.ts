@@ -202,6 +202,20 @@ export class AuthService {
   }
 
   /**
+   * 为外部模块（注册服务等）签发 token
+   * Issue #156 — 让 RegistrationService 创建的用户也能拿到与 admin 同型的 JWT
+   */
+  async issueTokenForUser(input: { id: string; username: string; role: 'user' | 'admin' }): Promise<string> {
+    const secretKey = this.getSecretKey();
+    return await new SignJWT({ username: input.username, role: input.role })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(input.id)
+      .setIssuedAt()
+      .setExpirationTime(`${this.config.tokenExpiry}s`)
+      .sign(secretKey);
+  }
+
+  /**
    * 密码哈希 - 使用PBKDF2增强安全性
    */
   private hashPassword(password: string): string {

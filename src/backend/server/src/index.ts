@@ -32,6 +32,21 @@ import { successResponse, errorResponse, ErrorCodes } from './types/response';
 import { validate, CreateSessionSchema, RecordActivitySchema, LoginSchema, PaginationSchema } from './types/validation';
 import { AgentFactory, createFourDatabaseTools, AgentOptions, StructuredOutput } from './modules/agent/src';
 import { resolveLlmApiKey, runtimeConfig } from './config/runtime';
+import fastifyCookie from '@fastify/cookie';
+import {
+  RegistrationService,
+  MemoryUserStore,
+  MemoryCaptchaStore,
+  MemoryCodeStore,
+} from './modules/registration';
+import {
+  MockCodeProvider,
+  TencentSmsProvider,
+  SmtpEmailProvider,
+  type CodeProvider,
+} from './modules/code-channel';
+import { generateSvgCaptcha } from './modules/captcha/svg';
+import { loadAuthExtConfig } from './modules/registration/config';
 
 // 全局服务实例（用于进程信号处理）
 let cacheService: CacheService | null = null;
@@ -129,6 +144,20 @@ async function main() {
     logger.warn('⚠️ 任务队列初始化失败，将使用同步处理: ' + (error instanceof Error ? error.message : String(error)));
   }
 
+  // 全局服务实例（用于进程信号处理）（已在文件顶部声明）
+  // 加载注册/验证码扩展配置（独立 schema，遵循 default<env 优先级）
+  const authExtConfig = loadAuthExtConfig();
+  logger.info('🔐 注册扩展配置已加载', {
+    smsEnabled: authExtConfig.sms.enabled,
+    emailEnabled: authExtConfig.email.enabled,
+    turnstileRequired: authExtConfig.captcha.requireTurnstile,
+  });
+
+  // 注册 cookie 插件（httpOnly token 下发）
+  await app.register(fastifyCookie, {
+    secret: runtimeConfig.auth.serviceSecret,
+  });
+
   // 初始化认证服务
   const authService = new AuthService({
     secretKey: runtimeConfig.auth.serviceSecret,
@@ -137,6 +166,45 @@ async function main() {
     defaultAdminPassword: runtimeConfig.auth.defaultAdminPassword,
   });
   logger.info('✅ 认证服务已初始化');
+
+  // 初始化注册服务（issue #156）
+  const smsProvider: CodeProvider = authExtConfig.sms.enabled
+    ? new TencentSmsProvider({
+        secretId: authExtConfig.sms.secretId,
+        secretKey: authExtConfig.sms.secretKey,
+        region: authExtConfig.sms.region,
+        smsSdkAppId: authExtConfig.sms.smsSdkAppId,
+        signName: authExtConfig.sms.signName,
+        templateId: authExtConfig.sms.templateId,
+      })
+    : new MockCodeProvider('sms');
+  const emailProvider: CodeProvider = authExtConfig.email.enabled
+    ? new SmtpEmailProvider({
+        host: authExtConfig.email.host,
+        port: authExtConfig.email.port,
+        secure: authExtConfig.email.secure,
+        user: authExtConfig.email.user,
+        pass: authExtConfig.email.pass,
+        fromAddress: authExtConfig.email.fromAddress,
+        fromName: authExtConfig.email.fromName,
+        appName: authExtConfig.email.appName,
+      })
+    : new MockCodeProvider('email');
+
+  const registrationService = new RegistrationService(
+    { sms: smsProvider, email: emailProvider },
+    new MemoryUserStore(),
+    new MemoryCaptchaStore(),
+    new MemoryCodeStore(),
+    {
+      turnstileSecret: authExtConfig.captcha.turnstileSecret || undefined,
+      requireTurnstile: authExtConfig.captcha.requireTurnstile,
+    },
+  );
+  logger.info('✅ 注册服务已初始化', {
+    smsProvider: smsProvider.name,
+    emailProvider: emailProvider.name,
+  });
 
   // 初始化监控服务
   const metricsService = new MetricsService(eventEmitter);
@@ -283,7 +351,7 @@ async function main() {
   // 认证钩子
   app.addHook('preHandler', async (request, reply) => {
     // 公开接口白名单
-    const publicPaths = ['/health', '/api/auth/login', '/api/v1/search', '/api/v1/rerank', '/api/v1/evaluate', '/api/v1/decompose', '/api/pipeline/health', '/api/pipeline/stats', '/api/pipeline/evaluation', '/api/agent/run'];
+    const publicPaths = ['/health', '/api/auth/login', '/api/auth/captcha', '/api/auth/send-code', '/api/auth/register', '/api/auth/login-code', '/api/v1/search', '/api/v1/rerank', '/api/v1/evaluate', '/api/v1/decompose', '/api/pipeline/health', '/api/pipeline/stats', '/api/pipeline/evaluation', '/api/agent/run'];
     if (publicPaths.some(path => request.url.startsWith(path))) {
       return;
     }
@@ -690,6 +758,128 @@ async function main() {
         role: result.user.role
       }
     });
+  });
+
+  // ---------- Issue #156: 普通用户注册 / 验证码登录 ----------
+
+  const getClientIp = (request: any): string | undefined => {
+    const xff = request.headers['x-forwarded-for'];
+    if (typeof xff === 'string') return xff.split(',')[0].trim();
+    return request.ip;
+  };
+
+  const setAuthCookie = (reply: any, token: string) => {
+    reply.setCookie(authExtConfig.registration.cookieName, token, {
+      httpOnly: true,
+      secure: authExtConfig.registration.cookieSecure,
+      sameSite: authExtConfig.registration.cookieSameSite,
+      path: '/',
+      maxAge: runtimeConfig.auth.tokenExpirySeconds,
+    });
+  };
+
+  // 1) 生成 SVG 图形验证码
+  app.get('/api/auth/captcha', async (_request, _reply) => {
+    const issued = await registrationService.issueCaptcha(() => generateSvgCaptcha());
+    return successResponse(issued);
+  });
+
+  // 2) 发送验证码（短信/邮箱）
+  app.post('/api/auth/send-code', async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      channel?: 'sms' | 'email';
+      recipient?: string;
+      purpose?: 'register' | 'login' | 'reset' | 'bind';
+      captchaId?: string;
+      captchaAnswer?: string;
+      turnstileToken?: string;
+    };
+    if (!body.channel || !body.recipient || !body.purpose || !body.captchaId || !body.captchaAnswer) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '参数缺失');
+    }
+    const result = await registrationService.sendCode({
+      channel: body.channel,
+      recipient: body.recipient,
+      purpose: body.purpose,
+      captchaId: body.captchaId,
+      captchaAnswer: body.captchaAnswer,
+      turnstileToken: body.turnstileToken,
+      clientIp: getClientIp(request),
+      clientUa: request.headers['user-agent'],
+    });
+    if (!result.ok) {
+      reply.status(429);
+      return errorResponse(ErrorCodes.RATE_LIMITED, `验证码发送失败: ${result.reason}`, result);
+    }
+    return successResponse({ ok: true });
+  });
+
+  // 3) 验证码注册
+  app.post('/api/auth/register', async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      channel?: 'sms' | 'email';
+      recipient?: string;
+      code?: string;
+      password?: string;
+      displayName?: string;
+    };
+    if (!body.channel || !body.recipient || !body.code) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '参数缺失');
+    }
+    const result = await registrationService.registerWithCode({
+      channel: body.channel,
+      recipient: body.recipient,
+      code: body.code,
+      password: body.password,
+      displayName: body.displayName,
+      clientIp: getClientIp(request),
+      clientUa: request.headers['user-agent'],
+    });
+    if (!result.ok) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, `注册失败: ${result.reason}`);
+    }
+    // 注册成功签发与 admin 同型的 token（复用 AuthService.signToken 暂未暴露，先在响应里返回 user，下个迭代统一签发）
+    const token = await authService.issueTokenForUser({
+      id: result.user.id,
+      username: result.user.email ?? result.user.phone ?? result.user.id,
+      role: result.user.role,
+    });
+    if (token) setAuthCookie(reply, token);
+    return successResponse({ user: result.user, token });
+  });
+
+  // 4) 验证码登录（无密码）
+  app.post('/api/auth/login-code', async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      channel?: 'sms' | 'email';
+      recipient?: string;
+      code?: string;
+    };
+    if (!body.channel || !body.recipient || !body.code) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '参数缺失');
+    }
+    const result = await registrationService.loginWithCode({
+      channel: body.channel,
+      recipient: body.recipient,
+      code: body.code,
+      purpose: 'login',
+      clientIp: getClientIp(request),
+    });
+    if (!result.ok) {
+      reply.status(401);
+      return errorResponse(ErrorCodes.AUTHENTICATION_ERROR, `登录失败: ${result.reason}`);
+    }
+    const token = await authService.issueTokenForUser({
+      id: result.user.id,
+      username: result.user.email ?? result.user.phone ?? result.user.id,
+      role: result.user.role,
+    });
+    if (token) setAuthCookie(reply, token);
+    return successResponse({ user: result.user, token });
   });
 
   // ==================== LLM 代理接口 ====================

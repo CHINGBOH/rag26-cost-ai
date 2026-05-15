@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.1",
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^8.4.0",
     "@fastify/rate-limit": "^9.0.0",
     "@langchain/community": "^0.2.0",
@@ -26,6 +27,7 @@
     "@opentelemetry/semantic-conventions": "^1.37.0",
     "@qdrant/qdrant-js": "^1.17.0",
     "@rag/shared": "file:../../../packages/shared",
+    "@types/nodemailer": "^8.0.0",
     "bullmq": "^4.15.0",
     "commander": "^14.0.3",
     "config": "^4.4.1",
@@ -35,6 +37,7 @@
     "ioredis": "^5.3.0",
     "jose": "^6.2.2",
     "neo4j-driver": "^6.0.1",
+    "nodemailer": "^8.0.7",
     "pg": "^8.20.0",
     "pino": "^10.3.1",
     "rxjs": "^7.8.2",
