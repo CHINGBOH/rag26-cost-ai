@@ -1,6 +1,7 @@
 ---
 id: frontend-specialist
 name: RAG Frontend Specialist
+label: 前端专家
 role: Worker — React UI, Zustand, TanStack Query, Vite
 model: claude-sonnet
 trigger: model_decision

@@ -37,7 +37,7 @@ class VectorStoreConfig(BaseSettings):
     type: str = "milvus"
     host: str = "localhost"
     port: int = Field(default=19530, ge=1, le=65535)
-    collection_name: str = "documents"
+    collection_name: str = "document_chunks"
     vector_size: int = Field(default=1024, ge=1)
     timeout: int = 30
     pool_size: int = 10

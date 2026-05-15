@@ -13,6 +13,9 @@ build/
 .env.local
 .env.*.local
 
+# TLS certificates and private keys are provisioned outside git
+certs/
+
 # IDE
 .vscode/
 .idea/

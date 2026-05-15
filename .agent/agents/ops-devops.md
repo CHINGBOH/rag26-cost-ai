@@ -1,6 +1,7 @@
 ---
 id: ops-devops
 name: RAG Ops/DevOps Engineer
+label: 运维工程师
 role: Worker — Docker, CI/CD, infra, monitoring
 model: claude-sonnet
 trigger: on_demand

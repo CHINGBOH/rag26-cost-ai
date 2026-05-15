@@ -1,13 +1,119 @@
 .pipeline-page {
   max-width: 960px;
   margin: 0 auto;
-  padding: 0 24px 40px;
+  padding: 0 24px 24px;
 }
+
+/* ── DB status bar ─────────────────── */
+.db-status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+
+.db-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 16px;
+  cursor: default;
+  position: relative;
+}
+
+.db-chip-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  position: absolute;
+  bottom: -2px; right: -4px;
+  border: 1px solid var(--bg-surface);
+}
+
+.db-chip.ok   .db-chip-dot { background: #22c55e; }
+.db-chip.err  .db-chip-dot { background: #ef4444; }
+.db-chip.warn .db-chip-dot { background: #f59e0b; }
+.db-chip.unk  .db-chip-dot { background: #94a3b8; }
+.db-chip.uncfg{ opacity: 0.45; }
+
+.db-overall { margin-left: auto; font-size: 12px; font-weight: 500; }
+.db-overall.ok   { color: #16a34a; }
+.db-overall.warn { color: #d97706; }
+.db-overall.err  { color: #dc2626; }
+.db-loading { font-size: 12px; color: var(--text-muted); }
+
+/* ── Job list ──────────────────────── */
+.pipeline-jobs {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-top: 14px;
+}
+
+.pipeline-jobs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.jobs-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.jobs-toggle:hover { color: var(--text-primary); }
+
+.job-list { display: flex; flex-direction: column; gap: 6px; }
+
+.job-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.job-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.job-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.job-badge {
+  color: #fff;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.job-meta { color: var(--text-muted); white-space: nowrap; }
+.job-time { color: var(--text-muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+.job-err  { color: #ef4444; }
 
 .pipeline-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
+  gap: 16px;
 }
 
 @media (max-width: 768px) {

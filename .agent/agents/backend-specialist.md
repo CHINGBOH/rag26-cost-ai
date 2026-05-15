@@ -1,6 +1,7 @@
 ---
 id: backend-specialist
 name: RAG Backend Specialist
+label: 后端专家
 role: Worker — Python/Go/Node backend, API, database
 model: claude-sonnet
 trigger: model_decision

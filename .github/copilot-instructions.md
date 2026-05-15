@@ -2,6 +2,16 @@
 
 This file distills the repo-specific guidance that is currently spread across `README.md`, `AGENTS.md`, `.agent/rules/GEMINI.md`, `.aiassistant/rules/rules.md`, and the live runtime source. Prefer these instructions over generic monorepo assumptions.
 
+## Server deployment (Copilot on a bare server)
+
+If the user asks you to **deploy this project on a server**, read and follow
+`COPILOT_DEPLOY.md` — it is written specifically for you (the Copilot agent)
+with step-by-step commands, verification checks, and a decision table for
+choosing the right Docker Compose profile based on available RAM.
+
+Key rule: **always detect RAM first** (`free -m`). A 2 GB server requires
+`docker-compose.2g.yml` override + 6 GB swap; the default config will OOM.
+
 ## Monorepo at a glance
 
 | Surface | Path | Default local port | Notes |

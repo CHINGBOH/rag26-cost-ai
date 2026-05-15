@@ -23,6 +23,7 @@ import {
 } from '../stores/useRunStore';
 import { AgentChunk, AgentEvaluation } from '../services/agentApi';
 import { getApiBaseUrl } from '../config/runtime';
+import { createClientId } from '../utils/id';
 
 export interface ChatMessage {
   id: string;
@@ -56,6 +57,7 @@ interface ChatStore {
   isLoading: boolean;
   sessionId: string | null;
   _addMessage: (msg: ChatMessage) => void;
+  _replaceLastAssistant: (patch: Partial<ChatMessage>) => void;
   _setLoading: (loading: boolean) => void;
   _setMessages: (msgs: ChatMessage[]) => void;
   _setSessionId: (id: string | null) => void;
@@ -73,6 +75,19 @@ const useChatStore = create<ChatStore>()(
         set((state) => ({
           messages: [...state.messages, msg].slice(-MAX_MESSAGES),
         })),
+      _replaceLastAssistant: (patch) =>
+        set((state) => {
+          const idx = (() => {
+            for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+              if (state.messages[i].role === 'assistant') return i;
+            }
+            return -1;
+          })();
+          if (idx < 0) return state;
+          const next = state.messages.slice();
+          next[idx] = { ...next[idx], ...patch };
+          return { messages: next };
+        }),
       _setLoading: (loading) => set({ isLoading: loading }),
       _setMessages: (msgs) => set({ messages: msgs }),
       _setSessionId: (id) => set({ sessionId: id }),
@@ -85,6 +100,21 @@ const useChatStore = create<ChatStore>()(
 );
 
 const API_BASE = getApiBaseUrl();
+
+// Strip Chinese filler words / temporal noise that breaks embedding retrieval.
+// Used only for the /api/v1/rag fallback when the Agent loop yielded no_data.
+function simplifyQueryForFallback(raw: string): string {
+  let q = raw;
+  q = q.replace(/根据|请|帮我|帮忙|能否|可以|麻烦|告诉我|想知道|问下|问一下/g, '');
+  q = q.replace(/分析[一]?下?|说[一]?下|看[一]?下/g, '');
+  q = q.replace(/从[\s\S]{0,15}?(开始|起|至今|到现在|到目前)/g, '');
+  q = q.replace(/至今|到现在|到目前|目前|当前|最近/g, '');
+  q = q.replace(/\d{2,4}\s*年|\d{1,2}\s*月|去年|今年|往年/g, '');
+  q = q.replace(/走势|趋势|变化|情况|历史|过去/g, '');
+  q = q.replace(/[，。、,.]/g, ' ');
+  q = q.replace(/\s+/g, ' ').trim();
+  return q || raw;
+}
 
 function buildPresentationFallbackText(presentation: PresentationPayload | null | undefined): string {
   if (!presentation) return '';
@@ -128,6 +158,7 @@ export function useAgent() {
   const sessionId = useChatStore((s) => s.sessionId);
   const isLoading = useChatStore((s) => s.isLoading);
   const _addMessage = useChatStore((s) => s._addMessage);
+  const _replaceLastAssistant = useChatStore((s) => s._replaceLastAssistant);
   const _setLoading = useChatStore((s) => s._setLoading);
   const _setMessages = useChatStore((s) => s._setMessages);
   const _setSessionId = useChatStore((s) => s._setSessionId);
@@ -144,7 +175,7 @@ export function useAgent() {
       const { signal } = abortControllerRef.current;
 
       const runId = `run-${Date.now()}`;
-      const currentSessionId = sessionId || crypto.randomUUID();
+      const currentSessionId = sessionId || createClientId();
       if (!sessionId) _setSessionId(currentSessionId);
 
       _addMessage({
@@ -309,6 +340,64 @@ export function useAgent() {
             followups: partialRunStore.followups,
           });
         }
+
+        // Issue #151 follow-up: if the Agent loop gave up with no_data while
+        // chunks actually exist in the vector store, fall back to /api/v1/rag
+        // so the user gets a real answer instead of "未检索到相关依据".
+        const postState = useRunStore.getState();
+        const presentationIsNoData = postState.presentation?.type === 'no_data';
+        const answerLooksEmpty = !postState.streamingAnswer?.trim();
+        const noChunks = postState.retrievalChunks.length === 0;
+        if (!signal.aborted && presentationIsNoData && answerLooksEmpty && noChunks) {
+          try {
+            const subQueries = postState.queryAnalysis?.sub_queries ?? [];
+            const cleanSub = subQueries.find((s) => s && s.trim() && s.trim().length < 25)?.trim();
+            const fallbackQuery = cleanSub || simplifyQueryForFallback(query);
+            const ragResp = await fetch(`${API_BASE}/api/v1/rag`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                query: fallbackQuery,
+                top_k: config?.topK ?? 8,
+                session_id: currentSessionId,
+              }),
+              signal,
+            });
+            if (ragResp.ok) {
+              const ragData = (await ragResp.json()) as {
+                answer?: string;
+                chunks?: AgentChunk[];
+              };
+              const fallbackAnswer = (ragData.answer || '').trim();
+              const fallbackChunks = ragData.chunks ?? [];
+              const refusalPatterns = [
+                '无法回答', '无法直接回答', '无法提供', '无法分析',
+                '抱歉', '未检索到', '未提供', '不足以回答',
+              ];
+              const isRefusal = refusalPatterns.some((p) => fallbackAnswer.startsWith(p) || fallbackAnswer.slice(0, 50).includes(p));
+              if (fallbackAnswer && fallbackChunks.length > 0 && !isRefusal) {
+                _replaceLastAssistant({
+                  content: fallbackAnswer,
+                  chunks: fallbackChunks,
+                  presentation: null,
+                });
+                const rs = useRunStore.getState();
+                rs.setPresentation(null);
+                rs.finishRun({
+                  answer: fallbackAnswer,
+                  iterations: rs.finalIterations,
+                  latency_ms: rs.finalLatencyMs,
+                  presentation: null,
+                  followups: rs.followups,
+                });
+              }
+            }
+          } catch (fbErr) {
+            if ((fbErr as Error).name !== 'AbortError') {
+              console.warn('RAG fallback failed:', fbErr);
+            }
+          }
+        }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
         const partialRunStore = useRunStore.getState();
@@ -351,7 +440,7 @@ export function useAgent() {
         _setLoading(false);
       }
     },
-    [isLoading, sessionId, _addMessage, _setLoading, _setSessionId]
+    [isLoading, sessionId, _addMessage, _replaceLastAssistant, _setLoading, _setSessionId]
   );
 
   const cancelStream = useCallback(() => {

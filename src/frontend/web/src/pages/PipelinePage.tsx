@@ -10,9 +10,14 @@ import {
   PipelineJob,
 } from '../services/metricsApi';
 import { PageHeader } from '../components/common/PageHeader';
-import { StatusDot } from '../components/common/StatusDot';
-import { fmtTime, fmtDateTime } from '../utils/dateUtils';
+import { fmtDateTime } from '../utils/dateUtils';
 import './PipelinePage.css';
+
+const DB_ICONS: Record<string, string> = {
+  postgres: '🐘', postgresql: '🐘', qdrant: '🧭',
+  elasticsearch: '🔎', neo4j: '🕸️', redis: '⚡',
+  milvus: '📡', vector: '🧮', keyword: '🔤', cache: '⚡',
+};
 
 const SERVICE_LABELS: Record<string, string> = {
   postgres: 'PostgreSQL',
@@ -49,8 +54,9 @@ const STATUS_COLOR: Record<string, string> = {
 
 export const PipelinePage: React.FC = () => {
   const [arch, setArch] = useState<LiveArchitecture | null>(null);
-  const [archLoaded, setArchLoaded] = useState(false);
+  const [, setArchLoaded] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [showAllJobs, setShowAllJobs] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [jobs, setJobs] = useState<PipelineJob[]>([]);
@@ -116,38 +122,25 @@ export const PipelinePage: React.FC = () => {
     <div className="pipeline-page">
       <PageHeader title="文档上传" subtitle="上传文件，系统自动识别、整理并写入知识库" />
 
-      <div className="pipeline-grid">
-        <section className="pipeline-card">
-          <h2>各数据库状态</h2>
-          {arch ? (
-            <div className="health-grid">
-              {services.map((s) => (
-                <div key={s.key} className="health-item">
-                  <StatusDot status={s.status} />
-                  <span className="health-label">{s.label}</span>
-                  <span className="health-status">
-                    {!s.configured ? '未配置' : s.status === 'healthy' ? '正常' : s.status === 'unhealthy' ? '异常' : '未知'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : archLoaded ? (
-            <p className="loading-text">无法连接到检索服务</p>
-          ) : (
-            <p className="loading-text">加载中…</p>
-          )}
-          {arch && (
-            <div className="health-footer">
-              整体 <strong>
-                {overall === 'ok' ? '全部正常' : overall === 'degraded' ? '部分异常' : overall === 'down' ? '不可用' : '检查中'}
-              </strong>
-              <span className="health-time">
-                更新于 {fmtTime(arch.generated_at)}
-              </span>
-            </div>
-          )}
-        </section>
+      {/* DB 状态图标条 */}
+      <div className="db-status-bar">
+        {arch ? services.map((s) => (
+          <div key={s.key}
+            className={`db-chip ${!s.configured ? 'uncfg' : s.status === 'healthy' ? 'ok' : s.status === 'unhealthy' ? 'err' : 'unk'}`}
+            title={`${s.label} · ${!s.configured ? '未配置' : s.status === 'healthy' ? '正常' : s.status === 'unhealthy' ? '异常' : '未知'}`}
+          >
+            <span>{DB_ICONS[s.key] || '🗄️'}</span>
+            <span className="db-chip-dot" />
+          </div>
+        )) : <span className="db-loading">连接中…</span>}
+        {arch && (
+          <span className={`db-overall ${overall === 'ok' ? 'ok' : overall === 'degraded' ? 'warn' : 'err'}`}>
+            {overall === 'ok' ? '✅ 全部正常' : overall === 'degraded' ? '⚠️ 部分异常' : '🔴 不可用'}
+          </span>
+        )}
+      </div>
 
+      <div className="pipeline-grid">
         <section className="pipeline-card">
           <h2>文档上传</h2>
           <div className="upload-zone" onClick={() => fileRef.current?.click()}>
@@ -188,53 +181,36 @@ export const PipelinePage: React.FC = () => {
         </section>
       </div>
 
-      <section className="pipeline-card" style={{ marginTop: 16 }}>
-        <h2>管道任务 <span style={{ color: '#94a3b8', fontSize: 13, fontWeight: 400 }}>({jobs.length})</span></h2>
+      <section className="pipeline-jobs">
+        <div className="pipeline-jobs-head">
+          <span>最近任务</span>
+          {jobs.length > 3 && (
+            <button className="jobs-toggle" onClick={() => setShowAllJobs(v => !v)}>
+              {showAllJobs ? '收起' : `全部 ${jobs.length} 条`}
+            </button>
+          )}
+        </div>
         {jobs.length === 0 ? (
           <p className="loading-text">暂无任务</p>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: '#64748b', borderBottom: '1px solid #e2e8f0' }}>
-                  <th style={{ padding: '8px 6px' }}>文件</th>
-                  <th style={{ padding: '8px 6px' }}>状态</th>
-                  <th style={{ padding: '8px 6px' }}>识别页数</th>
-                  <th style={{ padding: '8px 6px' }}>字符数</th>
-                  <th style={{ padding: '8px 6px' }}>片段数</th>
-                  <th style={{ padding: '8px 6px' }}>耗时</th>
-                  <th style={{ padding: '8px 6px' }}>提交</th>
-                </tr>
-              </thead>
-              <tbody>
-                {jobs.map((j) => (
-                  <tr key={j.job_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '6px', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={j.file_name}>{j.file_name}</td>
-                    <td style={{ padding: '6px' }}>
-                      <span style={{
-                        background: STATUS_COLOR[j.status] || '#64748b',
-                        color: '#fff', padding: '2px 8px', borderRadius: 10, fontSize: 11,
-                      }}>
-                        {STATUS_LABELS[j.status] || j.status}
-                      </span>
-                      {j.ocr_unavailable && (
-                        <span style={{ marginLeft: 6, fontSize: 11, color: '#ef4444' }}>OCR未启动</span>
-                      )}
-                      {j.error && (
-                        <span style={{ marginLeft: 6, fontSize: 11, color: '#ef4444' }} title={j.error}>
-                          ⚠ {j.error.slice(0, 40)}
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: '6px' }}>{j.ocr_pages ?? '-'}</td>
-                    <td style={{ padding: '6px' }}>{j.text_chars ?? '-'}</td>
-                    <td style={{ padding: '6px' }}>{j.chunks_inserted != null ? `${j.chunks_inserted}/${j.chunks_total ?? '?'}` : '-'}</td>
-                    <td style={{ padding: '6px' }}>{j.duration_ms != null ? `${j.duration_ms}毫秒` : '-'}</td>
-                    <td style={{ padding: '6px', color: '#64748b' }}>{fmtDateTime(j.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="job-list">
+            {(showAllJobs ? jobs : jobs.slice(0, 3)).map((j) => (
+              <div key={j.job_id} className="job-row">
+                <span className="job-status-dot" style={{ background: STATUS_COLOR[j.status] || '#64748b' }} />
+                <span className="job-name" title={j.file_name}>{j.file_name}</span>
+                <span className="job-badge" style={{ background: STATUS_COLOR[j.status] || '#64748b' }}>
+                  {STATUS_LABELS[j.status] || j.status}
+                </span>
+                {j.chunks_inserted != null && (
+                  <span className="job-meta">{j.chunks_inserted} 片段</span>
+                )}
+                {j.duration_ms != null && (
+                  <span className="job-meta">{j.duration_ms}毫秒</span>
+                )}
+                <span className="job-time">{fmtDateTime(j.created_at)}</span>
+                {j.error && <span className="job-err" title={j.error}>⚠</span>}
+              </div>
+            ))}
           </div>
         )}
       </section>

@@ -3451,6 +3451,8 @@ async def agents_registry():
             agents.append({
                 "id": fm.get("id") or f.stem,
                 "name": fm.get("name") or f.stem,
+                # label = 中文显示名（frontmatter 中的 label 字段）；前端优先展示 label
+                "label": fm.get("label") or "",
                 "role": fm.get("role") or "",
                 "model": (fm.get("model") or "").upper().replace("CLAUDE-", "") or "SONNET",
                 "trigger": fm.get("trigger") or "",

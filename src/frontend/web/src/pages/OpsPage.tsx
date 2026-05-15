@@ -14,31 +14,18 @@ import {
   AreaChart, Area,
 } from 'recharts';
 import { PageHeader } from '../components/common/PageHeader';
-import { StatusDot } from '../components/common/StatusDot';
 import './OpsPage.css';
 import { fmtTime } from '../utils/dateUtils';
-
-const SERVICE_LABELS: Record<string, { label: string; port: number }> = {
-  go_gateway:    { label: 'Go 网关',    port: 8080 },
-  retrieval:     { label: '检索服务',    port: 8002 },
-  python_legacy: { label: 'Python (旧)', port: 8000 },
-  nodejs:        { label: 'Node 编排',   port: 3001 },
-  ocr:           { label: 'OCR',         port: 8001 },
-  llama_server:  { label: 'LLM',         port: 11434 },
-  postgresql:    { label: 'PgSQL',       port: 5432 },
-  qdrant:        { label: 'Qdrant',      port: 6333 },
-  elasticsearch: { label: 'Elasticsearch', port: 9200 },
-  neo4j:         { label: 'Neo4j',       port: 7474 },
-  redis:         { label: 'Redis',       port: 6379 },
-};
+// 后端英文 key → 中文标签/图标的集中翻译层，组件不内联硬编码
+import { SVC_ICONS, SERVICE_LABELS, translateStatus, statusClass } from '../locales/services';
 
 export const OpsPage: React.FC = () => {
   const [healthDetail, setHealthDetail] = useState<HealthDetailResponse | null>(null);
-  const [llmStatus, setLlmStatus] = useState<string>('—');
+  const [, setLlmStatus] = useState<string>('—');
   const [ops, setOps] = useState<OpsMetricsResponse | null>(null);
-  const [signals, setSignals] = useState<SignalAggregation | null>(null);
-  const [signalsSummary, setSignalsSummary] = useState<SignalSummary | null>(null);
-  const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null);
+  const [, setSignals] = useState<SignalAggregation | null>(null);
+  const [, setSignalsSummary] = useState<SignalSummary | null>(null);
+  const [, setFeedbackStats] = useState<FeedbackStats | null>(null);
   const { isConnected } = useWebSocket('dashboard');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -110,20 +97,20 @@ export const OpsPage: React.FC = () => {
         }
       />
 
-      <div className="service-grid">
+      <div className="svc-strip">
         {serviceEntries.map(({ key }) => {
           const svc = getStatus(key);
           const meta = SERVICE_LABELS[key] || { label: key, port: 0 };
+          // 后端返回英文 status → locale 层统一翻译为中文和 CSS 类名
+          const klass   = statusClass(svc.status);
+          const statusTip = translateStatus(svc.status);
           return (
-            <ServiceCard
-              key={key}
-              label={meta.label}
-              port={meta.port}
-              status={svc.status}
-              latency={svc.latency_ms}
-              critical={(svc as any).critical}
-              role={(svc as any).role}
-            />
+            <div key={key} className={`svc-chip ${klass}`}
+              title={`${meta.label}${svc.latency_ms > 0 ? ' · ' + svc.latency_ms + '毫秒' : ''} · ${statusTip}`}>
+              <span className="svc-chip-icon">{SVC_ICONS[key] || '⬡'}</span>
+              <span className="svc-chip-name">{meta.label}</span>
+              <span className="svc-chip-dot" />
+            </div>
           );
         })}
       </div>
@@ -167,21 +154,34 @@ export const OpsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 实时请求指标 */}
+      {/* 实时请求指标 — 技术细节折叠 */}
       {ops && (
-        <div className="ops-metrics-row">
-          <MetricCard label="每秒请求" value={ops.qps.toFixed(2)} hint={`${ops.requests} 次请求`} />
-          <MetricCard label="中位延迟" value={`${ops.p50_ms} 毫秒`} />
-          <MetricCard label="95%延迟" value={`${ops.p95_ms} 毫秒`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
-          <MetricCard label="99%延迟" value={`${ops.p99_ms} 毫秒`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
-          <MetricCard
-            label="错误率"
-            value={`${(ops.error_rate * 100).toFixed(2)}%`}
-            tone={ops.error_rate > 0.05 ? 'bad' : ops.error_rate > 0.01 ? 'warn' : 'good'}
-          />
-        </div>
+        <details className="ops-metrics-details">
+          <summary className="ops-metrics-summary">
+            📊 性能指标
+            <span className="ops-metrics-peek">
+              {ops.error_rate > 0.01
+                ? <span className="tone-bad">错误率 {(ops.error_rate * 100).toFixed(1)}%</span>
+                : <span className="tone-good">错误率正常</span>}
+              · {ops.qps.toFixed(1)} QPS
+            </span>
+          </summary>
+          <div className="ops-metrics-row">
+            <MetricCard label="每秒请求" value={ops.qps.toFixed(2)} hint={`${ops.requests} 次请求`} />
+            <MetricCard label="中位延迟" value={`${ops.p50_ms} 毫秒`} />
+            <MetricCard label="95%延迟" value={`${ops.p95_ms} 毫秒`} tone={ops.p95_ms > 1000 ? 'warn' : undefined} />
+            <MetricCard label="99%延迟" value={`${ops.p99_ms} 毫秒`} tone={ops.p99_ms > 3000 ? 'warn' : undefined} />
+            <MetricCard
+              label="错误率"
+              value={`${(ops.error_rate * 100).toFixed(2)}%`}
+              tone={ops.error_rate > 0.05 ? 'bad' : ops.error_rate > 0.01 ? 'warn' : 'good'}
+            />
+          </div>
+        </details>
       )}
 
+      <details className="ops-accordion">
+        <summary className="ops-accordion-sum">📊 图表 <span className="ops-acc-hint">请求量 · 服务延迟 · 热门接口</span></summary>
       <div className="ops-charts">
         <div className="ops-chart-card">
           <h3>请求量 · 最近 60 秒</h3>
@@ -225,91 +225,30 @@ export const OpsPage: React.FC = () => {
       </div>
 
       {ops && ops.top_paths.length > 0 && (
-        <div className="ops-paths-card">
-          <h3>最热接口（近 60 秒）</h3>
-          <ul className="paths-list">
-            {ops.top_paths.map((p) => (
-              <li key={p.path}>
-                <code className="path-name">{p.path}</code>
-                <span className="path-count">{p.count}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+          <div className="ops-paths-card">
+            <ul className="paths-list">
+              {ops.top_paths.slice(0, 5).map((p) => (
+                <li key={p.path}>
+                  <code className="path-name">{p.path}</code>
+                  <span className="path-count">{p.count}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </details>
 
-      <div className="ops-info-row">
-        <div className="ops-info-card">
-          <span className="ops-info-label">LLM 服务</span>
-          <span className="ops-info-value">{llmStatus}</span>
-        </div>
-        <div className="ops-info-card">
-          <span className="ops-info-label">最后刷新</span>
-          <span className="ops-info-value">
-            {healthDetail?.timestamp ? fmtTime(healthDetail.timestamp) : '—'}
-          </span>
-        </div>
+      {/* 底部状态栏 — 只保留连接状态和更新时间 */}
+      <div className="ops-footer-bar">
+        <span className="ops-footer-ws">
+          <span className={`ws-pulse ${isConnected ? 'on' : 'off'}`} />
+          {isConnected ? '实时' : '断线'}
+        </span>
+        <span className="ops-footer-sep">·</span>
+        <span className="ops-footer-time">
+          {healthDetail?.timestamp ? `更新 ${fmtTime(healthDetail.timestamp)}` : '—'}
+        </span>
       </div>
-
-      {/* 信号监控（来自学习模块） */}
-      {signalsSummary && (
-        <details className="ops-signals-section">
-          <summary className="ops-signals-summary">
-            <span>📡 信号监控</span>
-            <span className={`ops-signals-health ops-signals-health--${signalsSummary.health_status}`}>
-              {signalsSummary.health_status === 'good' ? '✅ 正常' : signalsSummary.health_status === 'warning' ? '⚠️ 注意' : '🚨 告警'}
-            </span>
-            <span className="ops-muted">展开看采集统计</span>
-          </summary>
-          <div className="ops-signals-grid">
-            {([
-              ['用户反馈', signalsSummary.signal_counts.feedback],
-              ['失败信号', signalsSummary.signal_counts.failures],
-              ['重复问题', signalsSummary.signal_counts.repeats],
-              ['合约违规', signalsSummary.signal_counts.violations],
-              ['拓扑异常', signalsSummary.signal_counts.topo],
-            ] as [string, number][]).map(([label, count]) => (
-              <div key={label} className="ops-signal-chip">
-                <span className="ops-signal-count">{count}</span>
-                <span className="ops-signal-label">{label}</span>
-              </div>
-            ))}
-          </div>
-          {signals && (
-            <div className="ops-severity-row">
-              <span className="ops-muted">严重度指数</span>
-              <div className="ops-severity-bar">
-                <div className="ops-severity-fill" style={{ width: `${Math.min(signals.severity_score, 100)}%` }} />
-              </div>
-              <span className="ops-severity-value">{signals.severity_score.toFixed(1)}/100</span>
-            </div>
-          )}
-        </details>
-      )}
-
-      {/* 反馈统计（来自学习模块） */}
-      {feedbackStats && (feedbackStats.summary.total > 0) && (
-        <details className="ops-signals-section">
-          <summary className="ops-signals-summary">
-            <span>💬 用户反馈统计</span>
-            <span className="ops-muted">展开查看分布</span>
-          </summary>
-          <div className="ops-signals-grid">
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.positive}</span>
-              <span className="ops-signal-label">点赞</span>
-            </div>
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.negative}</span>
-              <span className="ops-signal-label">差评</span>
-            </div>
-            <div className="ops-signal-chip">
-              <span className="ops-signal-count">{feedbackStats.summary.total}</span>
-              <span className="ops-signal-label">合计</span>
-            </div>
-          </div>
-        </details>
-      )}
     </div>
   );
 };
@@ -323,40 +262,4 @@ const MetricCard: React.FC<MetricCardProps> = ({ label, value, hint, tone }) => 
   </div>
 );
 
-interface ServiceCardProps {
-  label: string;
-  port: number;
-  status: string;
-  latency: number;
-  critical?: boolean;
-  role?: string;
-}
-
-const ServiceCard: React.FC<ServiceCardProps> = ({ label, port, status, latency, critical, role }) => {
-  const klass =
-    status === 'healthy' ? 'healthy' :
-    status === 'degraded' ? 'degraded' :
-    status === 'not_running' ? 'not-running' :
-    status === 'unknown' ? 'unknown' : 'unhealthy';
-  const statusLabel =
-    status === 'healthy' ? '正常' :
-    status === 'degraded' ? '降级' :
-    status === 'not_running' ? '未启用' :
-    status === 'unknown' ? '未知' : '异常';
-  return (
-    <div className={`svc-card ${klass}`} title={role || ''}>
-      <div className="svc-card-top">
-        <StatusDot status={status} />
-        <span className="svc-port">:{port}</span>
-        {critical === false && <span className="svc-optional-tag">可选</span>}
-      </div>
-      <div className="svc-name">{label}</div>
-      {role && <div className="svc-role">{role}</div>}
-      <div className="svc-meta">
-        <span className={`svc-status-label ${klass}`}>{statusLabel}</span>
-        {latency > 0 && <span className="svc-latency">{latency}毫秒</span>}
-      </div>
-    </div>
-  );
-};
 

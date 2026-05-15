@@ -13,7 +13,7 @@ import { AgentChunk } from '../services/agentApi';
 import type { ChatMessage } from '../hooks/useAgent';
 import './LibraryPage.css';
 import { QUICK_QUESTIONS } from '../config/kb-config';
-import { SystemAssistant } from '../components/SystemAssistant';
+
 import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
 import { PresentationCard } from './AgentChat';
 
@@ -141,8 +141,6 @@ export const LibraryPage: React.FC = () => {
         </button>
       </div>
 
-      {/* ── System assistant (bottom-right floating) ── */}
-      <SystemAssistant />
     </div>
   );
 };

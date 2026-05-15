@@ -67,19 +67,38 @@ Frontend (src/frontend/web)
 
 ## Quick local entrypoints
 
+> **Deploying to a server?** See [**DEPLOY.md**](DEPLOY.md) for the one-command Docker deployment guide.
+
 ```bash
-# Start core services locally
+# Start ALL services (including frontend on :3000)
 ./start-all.sh local
 
 # Stop them
 ./stop-all.sh
 
-# Frontend only
-cd src/frontend/web && npm run dev
-
 # Retrieval service only
 cd src/backend/retrieval-service && python -m uvicorn main:app --host 0.0.0.0 --port 8002
 ```
+
+### Why `./start-all.sh local` and not `npm run dev`
+
+`./start-all.sh local` starts every service — Python legacy, retrieval, Node orchestrator,
+Go gateway, Go WebSocket, **and the Vite frontend** — in a single command.
+
+`npm run dev` only covers workspace dev scripts; it does **not** start the Python or Go services.
+
+### Why Vite stays alive after `start-all.sh` exits
+
+The script uses `setsid bash -c "..."` instead of `nohup ... &`. Here is why that matters:
+
+- `npm run dev` **forks** a child `vite` process. Both npm and vite are in the same process group.
+- When the parent shell exits it sends `SIGHUP` to the entire process group.
+- `nohup` only protects the **direct** child (npm); the grandchild (`vite`) is still in the
+  original process group and receives SIGHUP, causing it to die silently.
+- `setsid` creates a **new session and process group**, fully detaching npm + vite from the
+  calling shell. SIGHUP can no longer reach them.
+
+This same `setsid` pattern is used for every service in `start-all.sh`.
 
 ## Tests and validation entrypoints
 

@@ -17,6 +17,8 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import './LearningPage.css';
+// 后端英文消息翻译层（alert 警告 + action 改进建议）
+import { translateAlert, translateAction } from '../locales/learning';
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
@@ -109,7 +111,8 @@ export const LearningPage: React.FC = () => {
             {pending.map((e) => (
               <div key={e.event_id} className="lp-review-card">
                 <p className="lp-review-desc">
-                  {e.action || '系统检测到可以改进的地方，想做一次调整'}
+                  {/* translateAction 把后端英文 action 模板翻译成中文 */}
+                  {translateAction(e.action)}
                 </p>
                 {e.delta > 0 && (
                   <p className="lp-review-impact">
@@ -159,7 +162,7 @@ export const LearningPage: React.FC = () => {
                 <div className="lp-tl-body">
                   <span className="lp-tl-status">{STATUS_EMOJI[e.status] ?? '📝'}</span>
                   <span className="lp-tl-text">
-                    {e.action || '系统做了一次调整'}
+                    {translateAction(e.action)}
                     {e.delta > 0 && <span className="lp-tl-delta">&nbsp;· {deltaLabel(e.delta)}</span>}
                   </span>
                   <span className="lp-tl-time">{timeAgo(e.timestamp)}</span>
@@ -205,7 +208,8 @@ const StatusBanner: React.FC<StatusBannerProps> = ({ health, lastRun, alerts, lo
         )}
         {alerts.filter((a) => !a.acknowledged).map((a, i) => (
           <p key={i} className={`lp-banner-alert lp-banner-alert--${a.severity}`}>
-            {a.severity === 'critical' ? '🚨' : '⚠️'} {a.message}
+            {/* translateAlert 把后端英文模板翻译成中文 */}
+            {a.severity === 'critical' ? '🚨' : '⚠️'} {translateAlert(a.message)}
           </p>
         ))}
       </div>

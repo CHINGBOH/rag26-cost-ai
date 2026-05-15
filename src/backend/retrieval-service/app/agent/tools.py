@@ -1937,7 +1937,10 @@ def _get_month_ocr_json_path(year_month: str) -> str | None:
     if normalized in _ocr_month_file_cache:
         return _ocr_month_file_cache[normalized]
 
-    repo_root = Path(__file__).resolve().parents[5]
+    # Use module-level REPO_ROOT (tolerant `.parent` chain) — container layout
+    # has fewer parents than host, so strict `parents[5]` raised IndexError(5)
+    # which silently aborted the whole price_trend call (#154).
+    repo_root = REPO_ROOT
     search_roots = [
         repo_root / "data/knowledge_base/documents",
         repo_root / "archive/reference",
@@ -2138,7 +2141,7 @@ def _query_material_ocr_fallback(material_name: str, year_month: str) -> list[di
     primary_path = _get_month_ocr_json_path(normalized)
     candidate_paths = [primary_path] if primary_path else []
     if primary_path:
-        repo_root = Path(__file__).resolve().parents[5]
+        repo_root = REPO_ROOT  # tolerant path; see _get_month_ocr_json_path note
         extra_candidates = sorted(
             (repo_root / "data/knowledge_base/documents").glob(f"**/{normalized}_ocr.json"),
             key=lambda path: path.stat().st_size if path.exists() else -1,
@@ -4523,7 +4526,7 @@ def price_trend(material_name: str, start_month: str = "", end_month: str = "") 
         )
         return json.dumps(chunks, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"[price_trend] error: {e}")
+        logger.error(f"[price_trend] error: {e}", exc_info=True)
         return json.dumps([])
     finally:
         if conn is not None:

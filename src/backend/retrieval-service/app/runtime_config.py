@@ -10,7 +10,11 @@ from dotenv import load_dotenv
 import yaml
 
 RETRIEVAL_SERVICE_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = Path(__file__).resolve().parents[4]
+try:
+    REPO_ROOT = Path(__file__).resolve().parents[4]
+except IndexError:
+    # Docker: service files live at /app/, only 2 parents deep
+    REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _LOCAL_HOSTS = "localhost,127.0.0.1,0.0.0.0,::1,host.docker.internal"
 
@@ -195,8 +199,14 @@ def read_runtime_config(*, refresh: bool = False) -> RetrievalRuntimeConfig:
     llama_cpp_embed_model = os.environ.get("LLAMA_CPP_EMBED_MODEL") or "llama.cpp-embedding"
     embedding_vector_dim = _env_int("EMBEDDING_VECTOR_DIM", 0, minimum=0)
     llm_provider = os.environ.get("LLM_PROVIDER") or "deepseek"
+    provider_key = (
+        os.environ.get("OPENAI_API_KEY")
+        if llm_provider.strip().lower() == "openai"
+        else os.environ.get("DEEPSEEK_API_KEY")
+    )
     llm_api_key = (
-        os.environ.get("LLM_API_KEY")
+        provider_key
+        or os.environ.get("LLM_API_KEY")
         or os.environ.get("DEEPSEEK_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
         or _nested(file_config, "models", "llm", "api_key", default="")

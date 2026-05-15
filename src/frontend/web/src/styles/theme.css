@@ -3,176 +3,165 @@
  */
 
 :root {
-  /* 暖色亮底主题 — 皮纸/亚麻底色，耐看明亮 */
-  --bg-primary:  #F5F2EB;   /* 温暖皮纸色 */
-  --bg-surface:  #FDFBF7;   /* 奶白色 */
-  --bg-elevated: #EDE9DE;   /* 温暖沙色 */
-  --bg-hover:    #E3DDD2;   /* 稍深沙色 */
+  /* ── 极简冷白底色（apple.com 同款） ── */
+  --bg-primary:  #F5F5F7;   /* Apple 浅灰底（非纯白，有温度） */
+  --bg-surface:  #FFFFFF;   /* 卡片/面板纯白 */
+  --bg-elevated: #EBEBF0;   /* 浮起层，极细腻灰 */
+  --bg-hover:    #E0E0E5;   /* hover 态 */
 
-  --text-primary:   #1C1410;   /* 墨水色，~15:1 对比度 */
-  --text-secondary: #52453A;   /* 温暖棕灰，~7:1 */
-  --text-muted:     #6B5B4C;   /* 温暖中灰，~5:1 */
-  --text-inverse:   #FDFBF7;   /* 亮色文字（用于深色按钮上） */
+  /* ── 文字：近黑 → 灰阶，Apple 标准 ── */
+  --text-primary:   #1D1D1F;   /* Apple 官方近黑，~16:1 */
+  --text-secondary: #3D3D3F;   /* 次要文字，~10:1 */
+  --text-muted:     #6E6E73;   /* Apple 标准静音灰，~5.5:1 */
+  --text-inverse:   #FFFFFF;   /* 深色背景上的白字 */
 
-  --border-default:   #D4CEBF;
-  --border-highlight: #8B5E2B;
+  /* ── 边框：冷灰系 ── */
+  --border-default:   #D2D2D7;   /* Apple 分割线色 */
+  --border-highlight: #0066CC;   /* 主色蓝高亮边框 */
 
-  --color-primary:       #8B5E2B;   /* 琥珀棕，5.9:1 对比度 */
-  --color-primary-hover: #7A5020;   /* 深琥珀（hover 加深保证对比度） */
-  --color-primary-light: rgba(139, 94, 43, 0.12);
+  /* ── 主色：Apple 蓝 ── */
+  --color-primary:       #0066CC;   /* Apple 标准链接/按钮蓝 */
+  --color-primary-hover: #0055B3;   /* hover 加深 */
+  --color-primary-light: rgba(0, 102, 204, 0.10);
 
   /* Module accent (overridden per page by modules.css) */
-  --page-accent:     #8B5E2B;
-  --page-accent-rgb: 139, 94, 43;
+  --page-accent:     #0066CC;
+  --page-accent-rgb: 0, 102, 204;
 
-  --color-success: #15803D;
-  --color-warning: #B45309;
-  --color-error:   #B91C1C;
-  --color-info:    #0369A1;
-  
-  /* ============================================
-     UI 布局变量 - 可由配置动态控制
-     ============================================ */
-  
-  /* 侧边栏 */
+  --color-success: #1A7A3C;
+  --color-warning: #7D4E00;
+  --color-error:   #C0392B;
+  --color-info:    #0066CC;
+
+  /* ── 布局变量 ── */
   --sidebar-width: 220px;
   --sidebar-collapsed-width: 60px;
   --sidebar-transition: 0.3s ease;
-  
-  /* 主内容区 */
   --content-max-width: 900px;
   --content-padding-x: 24px;
-  
-  /* 输入区 */
   --input-min-height: 52px;
   --input-max-height: 200px;
   --input-padding-y: 16px;
-  
-  /* 动画时长 */
-  --anim-fast: 0.15s;
-  --anim-normal: 0.2s;
-  --anim-slow: 0.3s;
-  --anim-pulse: 1.5s;
-  
-  /* 消息 */
+  --anim-fast:   0.12s;
+  --anim-normal: 0.20s;
+  --anim-slow:   0.30s;
+  --anim-pulse:  1.5s;
   --msg-avatar-size: 40px;
-  --msg-border-radius: 14px;
+  --msg-border-radius: 12px;
   --msg-gap: 24px;
-  
-  /* 欢迎页 */
   --welcome-title-size: 48px;
   --welcome-subtitle-size: 18px;
-  
-  /* 控制面板 */
   --panel-width: 420px;
-  --panel-overlay-opacity: 0.6;
+  --panel-overlay-opacity: 0.5;
   --panel-z-index: 1001;
-  
-  /* 输入控件 */
-  --slider-height: 5px;
-  --slider-thumb-size: 17px;
+  --slider-height: 4px;
+  --slider-thumb-size: 16px;
   --toggle-width: 48px;
   --toggle-height: 26px;
   --toggle-thumb-size: 20px;
-  
-  /* 按钮尺寸 */
   --btn-icon-size: 32px;
   --btn-icon-size-sm: 20px;
   --new-chat-icon-size: 18px;
   --collapse-btn-size: 32px;
   --send-btn-size: 52px;
-  
-  /* 间距 */
-  --spacing-xs: 4px;
-  --spacing-sm: 8px;
-  --spacing-md: 12px;
-  --spacing-lg: 16px;
-  --spacing-xl: 20px;
-  --spacing-2xl: 24px;
-  --spacing-3xl: 40px;
-  --spacing-4xl: 48px;
-  
-  /* 圆角 */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+
+  /* ── 8px 间距网格（数学节奏） ── */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  /* 兼容旧变量名 */
+  --spacing-xs: 4px; --spacing-sm: 8px; --spacing-md: 12px;
+  --spacing-lg: 16px; --spacing-xl: 20px; --spacing-2xl: 24px;
+  --spacing-3xl: 40px; --spacing-4xl: 48px;
+
+  /* ── 圆角（比旧版更克制） ── */
+  --radius-sm:  4px;
+  --radius-md:  6px;
+  --radius-lg:  8px;   /* 卡片标准 */
   --radius-xl: 10px;
-  --radius-2xl: 12px;
-  --radius-full: 50%;
-  
-  /* 字体大小 */
-  --text-xs: 10px;
-  --text-sm: 11px;
-  --text-md: 12px;
-  --text-base: 13px;
-  --text-lg: 14px;
-  --text-xl: 15px;
-  --text-2xl: 16px;
-  --text-3xl: 18px;
-  --text-4xl: 20px;
-  --text-5xl: 24px;
-  --text-6xl: 28px;
-  
-  /* Pipeline */
+  --radius-2xl:12px;
+  --radius-full: 9999px;
+
+  /* ── 字体大小 ── */
+  --text-xs: 10px; --text-sm: 11px; --text-md: 12px;
+  --text-base: 13px; --text-lg: 14px; --text-xl: 15px;
+  --text-2xl: 16px; --text-3xl: 18px; --text-4xl: 20px;
+  --text-5xl: 24px; --text-6xl: 28px;
+
+  /* ── 导航高度 ── */
+  --nav-height:    52px;   /* Apple header 比例，比旧版 64px 更克制 */
+  --nav-height-md: 48px;
+  --nav-height-sm: 44px;
+
+  /* ── 多层极轻阴影（模拟物理光照深度） ── */
+  --shadow-xs:
+    0 1px 2px rgba(0,0,0,0.04),
+    0 0 0 1px rgba(0,0,0,0.03);
+  --shadow-sm:
+    0 1px 3px rgba(0,0,0,0.04),
+    0 4px 8px rgba(0,0,0,0.05),
+    0 0 0 1px rgba(0,0,0,0.03);
+  --shadow-md:
+    0 2px 6px rgba(0,0,0,0.04),
+    0 8px 20px rgba(0,0,0,0.07),
+    0 0 0 1px rgba(0,0,0,0.03);
+  --shadow-lg:
+    0 4px 12px rgba(0,0,0,0.06),
+    0 16px 40px rgba(0,0,0,0.09),
+    0 0 0 1px rgba(0,0,0,0.04);
+  --shadow-xl:
+    0 8px 24px rgba(0,0,0,0.08),
+    0 32px 64px rgba(0,0,0,0.12),
+    0 0 0 1px rgba(0,0,0,0.05);
+  /* 旧 gold ring 改为主色焦点圈 */
+  --shadow-focus: 0 0 0 3px rgba(0,102,204,0.28);
+
+  /* ── 字体系统 ── */
+  --font-sans:
+    -apple-system, 'SF Pro Text', 'PingFang SC', 'Helvetica Neue',
+    'Segoe UI', system-ui, sans-serif;
+  --font-serif:
+    'SF Pro Display', -apple-system, 'PingFang SC',
+    'Noto Serif SC', Georgia, serif;
+  --font-mono:
+    'SF Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+
+  /* ── 精密 easing（GPU 合成，感知不到但顺滑） ── */
+  --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1.0);   /* 标准 */
+  --ease-decelerate: cubic-bezier(0.0, 0.0, 0.2, 1.0);   /* 入场 */
+  --ease-accelerate: cubic-bezier(0.4, 0.0, 1.0, 1.0);   /* 退场 */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);             /* 弹性入场 */
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);            /* Material */
+
+  /* ── 字距/行高精调（typography refinement） ── */
+  --tracking-display: -0.022em;  /* 大标题负字距，苹果标准 */
+  --tracking-heading: -0.012em;  /* 小标题 */
+  --tracking-body:    -0.003em;  /* 正文微负字距，阅读更自然 */
+  --tracking-ui:       0.006em;  /* 小 UI 标签微正字距 */
+  --leading-display:   1.05;     /* 展示大字 */
+  --leading-heading:   1.25;     /* 标题 */
+  --leading-body:      1.618;    /* 黄金比例正文行高 */
+  --leading-ui:        1.4;      /* UI 元素 */
+
+  /* 旧变量兼容 */
+  --lux-gold-rgb: 0, 102, 204;   /* 兼容引用了 lux-gold-rgb 的组件 */
+  --gradient-gold: linear-gradient(135deg, #0066CC 0%, #0080FF 50%, #0066CC 100%);
   --pipeline-progress-height: 2px;
-  --pipeline-query-padding-y: 8px;
-  --pipeline-query-padding-x: 12px;
-  --pipeline-stage-gap: 6px;
-  --pipeline-stage-padding: 6px 10px;
-  
-  /* 网格布局 */
-  --services-grid-min-width: 180px;
-  --services-grid-gap: 12px;
-  --quick-prompts-columns: 3;
-  --quick-prompts-gap: 16px;
-  --provider-grid-columns: 2;
-  --provider-grid-gap: 10px;
-  
-  /* Flex 布局 */
-  --sessions-list-gap: 10px;
-  --capabilities-gap: 40px;
-  --messages-list-gap: 24px;
-  --input-area-gap: 12px;
-  --model-info-row-gap: 12px;
-
-  /* ─────────────────────────────────────────
-     低奢设计令牌 — Luxury Design Tokens
-     ───────────────────────────────────────── */
-
-  /* Nav height token (used in calc(100dvh - var(--nav-height))) */
-  --nav-height: 64px;
-  --nav-height-md: 56px;   /* ≤ 768px */
-  --nav-height-sm: 52px;   /* ≤ 480px */
-
-  /* Gold palette — decorative only, NOT for body text */
-  --lux-gold-100: #FBF4E3;
-  --lux-gold-200: #F0DFA8;
-  --lux-gold-300: #E8C97A;
-  --lux-gold-400: #C9A96E;
-  --lux-gold-500: #9A7340;
-  --lux-gold-dark: #6B5020;
-  --lux-gold-rgb: 201, 169, 110;
-
-  /* Gold gradients */
-  --gradient-gold: linear-gradient(135deg, #C9A96E 0%, #E8D49A 40%, #C9A96E 70%, #9A7340 100%);
-  --gradient-gold-shimmer: linear-gradient(105deg, #9A7340 0%, #C9A96E 30%, #F0DFA8 50%, #C9A96E 70%, #9A7340 100%);
-  --gradient-gold-h: linear-gradient(90deg, #9A7340 0%, #C9A96E 30%, #E8D49A 50%, #C9A96E 70%, #9A7340 100%);
-
-  /* Warm shadow system (replaces flat box-shadow: none) */
-  --shadow-xs: 0 1px 3px rgba(0, 0, 0, 0.04);
-  --shadow-sm: 0 2px 8px rgba(139, 94, 43, 0.09), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 16px rgba(139, 94, 43, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 8px 32px rgba(139, 94, 43, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);
-  --shadow-xl: 0 16px 48px rgba(139, 94, 43, 0.20), 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-gold-ring: 0 0 0 2px rgba(201, 169, 110, 0.38), 0 0 0 5px rgba(201, 169, 110, 0.10);
-
-  /* Typography */
-  --font-serif: 'Noto Serif SC', 'Songti SC', 'STSong', Georgia, 'Times New Roman', serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', Roboto, sans-serif;
-
-  /* Luxury easing */
-  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --pipeline-query-padding-y: 8px; --pipeline-query-padding-x: 12px;
+  --pipeline-stage-gap: 6px; --pipeline-stage-padding: 6px 10px;
+  --services-grid-min-width: 180px; --services-grid-gap: 12px;
+  --quick-prompts-columns: 3; --quick-prompts-gap: 16px;
+  --provider-grid-columns: 2; --provider-grid-gap: 10px;
+  --sessions-list-gap: 10px; --capabilities-gap: 40px;
+  --messages-list-gap: 24px; --input-area-gap: 12px; --model-info-row-gap: 12px;
 }
 
 /* ============================================
@@ -190,8 +179,20 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   transition: background-color 0.3s ease, color 0.3s ease;
+  /* subpixel 抗锯齿：Mac 看起来锐利细腻 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 光学 sizing：让浏览器在小字号时自动调整笔画粗细 */
+  font-optical-sizing: auto;
+  /* 开启 OpenType 字距调整 + 连字 */
+  font-feature-settings: 'kern' 1, 'liga' 1;
+  /* 正文微负字距，视觉更紧凑 */
+  letter-spacing: var(--tracking-body, -0.003em);
+  line-height: var(--leading-body, 1.618);
+  /* 滚动吸附边缘 */
+  overscroll-behavior: contain;
+  /* 告知渲染器合成 */
+  text-rendering: optimizeLegibility;
 }
 
 /* 确保所有表单元素继承主题颜色 */
@@ -260,7 +261,7 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 }
 
 .card:hover {
-  border-color: rgba(var(--lux-gold-rgb), 0.45);
+  border-color: rgba(0, 0, 0, 0.14);
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
 }

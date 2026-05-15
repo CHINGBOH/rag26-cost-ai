@@ -34,6 +34,8 @@ import {
 } from 'recharts';
 import './AgentChat.css';
 import { QUICK_QUESTIONS, DOC_TYPE_OPTIONS } from '../config/kb-config';
+// 图表区域中文标签从 locale 层读取
+import { CHART_LABELS } from '../locales/stores';
 
 /* ── Simple Markdown Renderer ───────────────────────── */
 const HTML_ESCAPE: Record<string, string> = {
@@ -677,7 +679,7 @@ export const PresentationCard: React.FC<{ presentation: PresentationPayload }> =
         {presentation.type === 'price_trend' && trendPoints.length > 0 && (
           <div className="presentation-chart-head">
             <div>
-              <div className="presentation-chart-kicker">TREND VIEW</div>
+              <div className="presentation-chart-kicker">{CHART_LABELS.trendView}</div>
               <div className="presentation-chart-caption">
                 {trendPoints[0].label}
                 {trendPoints.length > 1 ? ` - ${trendPoints[trendPoints.length - 1].label}` : ''}
@@ -685,7 +687,7 @@ export const PresentationCard: React.FC<{ presentation: PresentationPayload }> =
             </div>
             <div className="presentation-chart-legend">
               <span className="presentation-chart-legend-dot" />
-              <span className="presentation-chart-legend-text">Market price line</span>
+              <span className="presentation-chart-legend-text">{CHART_LABELS.marketPriceLine}</span>
             </div>
           </div>
         )}
@@ -1020,7 +1022,7 @@ export const AgentChat: React.FC = () => {
         </div>
 
         <div className="panel-section">
-          <h3 className="panel-title">Top K</h3>
+          <h3 className="panel-title">{CHART_LABELS.topK}</h3>
           <div className="slider-row">
             <input
               type="range"
@@ -1125,6 +1127,7 @@ export const AgentChat: React.FC = () => {
 const WelcomeScreen: React.FC<{ onQuickAsk: (q: string) => void }> = ({ onQuickAsk }) => (
   <div className="welcome-screen">
     <div className="welcome-content">
+      <div className="welcome-icon">📚</div>
       <h1 className="welcome-title">智能知识问答</h1>
       <p className="welcome-desc">基于企业知识库，智能检索 · 精准解答</p>
       <div className="quick-questions">

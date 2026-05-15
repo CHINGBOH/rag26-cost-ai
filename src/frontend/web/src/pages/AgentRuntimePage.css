@@ -70,14 +70,78 @@
 .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-cancel { background: #dc2626; color: white; border-color: transparent; }
 
-.runtime-grid {
+/* 3-column layout (UX #140) */
+.runtime-3col {
   display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 18px;
+  grid-template-columns: 240px 1fr 1fr;
+  gap: 14px;
+  align-items: start;
 }
-@media (max-width: 980px) {
-  .runtime-grid { grid-template-columns: 1fr; }
+@media (max-width: 1100px) {
+  .runtime-3col { grid-template-columns: 1fr 1fr; }
+  .runtime-col-plan { grid-column: 1 / -1; }
 }
+@media (max-width: 720px) {
+  .runtime-3col { grid-template-columns: 1fr; }
+}
+.runtime-col { height: fit-content; }
+
+/* History drawer (UX #140) */
+.runtime-history-drawer {
+  margin-bottom: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.runtime-history-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; user-select: none;
+  list-style: none;
+}
+.runtime-history-summary::-webkit-details-marker { display: none; }
+.runtime-hist-count { font-weight: 400; color: var(--color-text-muted); font-size: 12px; }
+.hist-clear-btn { margin-left: auto; font-size: 11px; }
+.runtime-history-body { padding: 0 14px 12px; }
+
+.history-list-inline {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.history-list-inline li {
+  flex: 0 0 auto; width: calc(50% - 3px);
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px; cursor: pointer; transition: background 0.1s;
+}
+.history-list-inline li:hover { background: var(--color-surface-2); }
+.history-list-inline li.active { border-color: var(--color-accent, #2563eb); background: var(--color-surface-2); }
+
+/* Compact channel box inside drawer */
+.channel-details { margin-top: 12px; }
+.channel-details summary { font-size: 12px; color: var(--color-text-muted); cursor: pointer; }
+.channel-box-sm {
+  margin: 6px 0 0; padding: 8px;
+  background: var(--color-surface-2); border-radius: 6px;
+  font-size: 11px; font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto; max-height: 200px;
+}
+
+/* Tool name inline summary */
+.tool-name-details { flex: 1; }
+.tool-name-summary {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  list-style: none; color: var(--color-text);
+}
+.tool-name-summary::-webkit-details-marker { display: none; }
+.tool-args-expanded { padding: 6px 0 0; }
+.trace-details { margin-top: 10px; }
+.trace-details summary { font-size: 12px; cursor: pointer; color: var(--color-text-muted); margin-bottom: 6px; }
+
+
 
 .runtime-history {
   background: var(--color-surface);
@@ -314,3 +378,59 @@
 
 .inline-chart { margin-top: 6px; padding: 6px; background: var(--bg-elevated, #fff); border-radius: 4px; border: 1px solid var(--border-default, #e2e8f0); }
 .chart-title { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-muted, #475569); }
+
+/* UX#142 — answer always visible, dev details collapsible */
+.runtime-answer-main { margin-bottom: 0.75rem; }
+.runtime-dev-details {
+  margin-top: 0.5rem;
+}
+.runtime-dev-details > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  user-select: none;
+  list-style: none;
+}
+.runtime-dev-details > summary::-webkit-details-marker { display: none; }
+.runtime-dev-details > summary::before { content: '▶ '; font-size: 10px; }
+.runtime-dev-details[open] > summary::before { content: '▼ '; }
+.runtime-dev-details[open] > summary { border-radius: 6px 6px 0 0; margin-bottom: 4px; }
+.runtime-3col--two { grid-template-columns: 1fr 1fr !important; }
+
+/* UX#142 fix — topo/guide collapsed by default */
+.runtime-topo-details {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.runtime-topo-details > summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary, #64748b);
+  background: var(--bg-secondary, #f8fafc);
+  list-style: none;
+  user-select: none;
+}
+.runtime-topo-details > summary::-webkit-details-marker { display: none; }
+.runtime-topo-details > summary::before { content: '▶ '; font-size: 10px; }
+.runtime-topo-details[open] > summary::before { content: '▼ '; }
+
+/* UX#143 — clean answer area */
+.runtime-answer-main {
+  padding: 12px 0;
+}
+.runtime-streaming-dot {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-secondary, #64748b);
+  margin-bottom: 8px;
+}
+.runtime-idle-hint {
+  padding: 24px 0;
+  text-align: center;
+}

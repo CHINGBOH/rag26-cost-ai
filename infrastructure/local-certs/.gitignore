@@ -1,0 +1,6 @@
+# Local-only TLS certs for the frontend nginx container.
+# Generate with: openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#   -keyout threefirestone.com.key -out threefirestone.com_bundle.crt \
+#   -subj "/CN=localhost"
+*.crt
+*.key

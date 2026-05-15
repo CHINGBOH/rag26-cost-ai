@@ -21,77 +21,84 @@ body {
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;        /* 固定视口高度，短内容页不再出现底部空白 */
+  overflow: hidden;
 }
 
 .app-main {
   flex: 1;
+  min-height: 0;        /* flex 子元素必须设置以允许缩小 */
   overflow-y: auto;
 }
 
-/* ── Navigation ────────────────────────── */
+/* ── Navigation（Apple frosted glass nav） ── */
 
 .app-nav {
   display: flex;
   align-items: center;
   gap: 20px;
-  padding: 0 28px;
-  height: var(--nav-height, 64px);
+  padding: 0 24px;
+  height: var(--nav-height, 52px);
   position: sticky;
   top: 0;
   z-index: 100;
   flex-shrink: 0;
-  /* Dark warm leather bar — clearly distinct from parchment content */
-  background: rgba(38, 20, 6, 0.94);
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
-  /* Gold shimmer bottom border */
-  box-shadow:
-    0 1px 0 rgba(201, 169, 110, 0.40),
-    0 4px 24px rgba(0, 0, 0, 0.22);
-  transition: box-shadow 0.3s ease;
+  /* 白色毛玻璃：看起来简单，其实是 backdrop-filter 合成层 */
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  /* 极细分割线，比 1px solid 更高级 */
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  /* GPU 合成提升：避免重绘 */
+  will-change: transform;
+  transition: box-shadow 0.2s var(--ease-standard, cubic-bezier(0.25,0.1,0.25,1));
+}
+
+/* 滚动时加深阴影（增加层次感） */
+.app-nav.scrolled {
+  box-shadow: 0 1px 12px rgba(0,0,0,0.08);
 }
 
 @supports not (backdrop-filter: blur(1px)) {
-  .app-nav { background: rgba(38, 20, 6, 0.98); }
+  .app-nav { background: rgba(255, 255, 255, 0.97); }
 }
 
 .nav-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
   text-decoration: none;
 }
 
+/* 品牌标记：极简蓝底白字，取代旋转金球 */
 .nav-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--gradient-gold, linear-gradient(135deg, #C9A96E, #E8D49A 45%, #C9A96E 70%, #9A7340));
-  color: #2C1400;
-  font-family: var(--font-serif, 'Noto Serif SC', Georgia, serif);
-  font-size: 15px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #0066CC;
+  color: #FFFFFF;
+  font-family: var(--font-sans);
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0;
-  box-shadow: 0 0 0 1px rgba(201,169,110,0.35), 0 2px 10px rgba(0,0,0,0.35);
-  transition: transform 0.22s var(--ease-expo, cubic-bezier(0.16,1,0.3,1)), box-shadow 0.22s ease;
+  letter-spacing: -0.02em;
+  box-shadow: 0 1px 4px rgba(0,102,204,0.30);
+  transition: opacity 0.12s var(--ease-standard, cubic-bezier(0.25,0.1,0.25,1));
 }
 
 .nav-brand:hover .nav-mark {
-  transform: scale(1.08) rotate(-3deg);
-  box-shadow: 0 0 0 1px rgba(201,169,110,0.55), 0 0 18px rgba(201,169,110,0.40);
+  opacity: 0.82;
 }
 
 .nav-title {
-  font-family: var(--font-serif, 'Noto Serif SC', Georgia, serif);
-  font-size: 16px;
-  font-weight: 500;
-  color: rgba(240, 215, 165, 0.90);
-  letter-spacing: 0.06em;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #1D1D1F);
+  letter-spacing: var(--tracking-heading, -0.012em);
   white-space: nowrap;
 }
 
@@ -111,26 +118,27 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 7px 14px;
-  border-radius: 20px;
+  padding: 6px 12px;
+  border-radius: 6px;
   font-size: 13px;
   font-weight: 400;
-  color: rgba(220, 195, 150, 0.75);
+  color: var(--text-secondary, #3D3D3F);
   text-decoration: none;
   white-space: nowrap;
-  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  /* 120ms 标准过渡，感知顺滑 */
+  transition: color 0.12s var(--ease-standard),
+              background 0.12s var(--ease-standard);
 }
 
 .nav-link:hover {
-  color: rgba(240, 215, 165, 0.96);
-  background: rgba(201, 169, 110, 0.16);
+  color: var(--text-primary, #1D1D1F);
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .nav-link.active {
-  color: rgba(32, 14, 2, 0.95);
-  background: linear-gradient(135deg, #C9A96E 0%, #E8D49A 50%, #C9A96E 100%);
+  color: var(--color-primary, #0066CC);
+  background: rgba(0, 102, 204, 0.08);
   font-weight: 600;
-  box-shadow: 0 1px 6px rgba(201,169,110,0.45), inset 0 1px 0 rgba(255,255,255,0.22);
 }
 
 .nav-icon {
@@ -146,7 +154,137 @@ body {
   flex-shrink: 0;
 }
 
-/* ── Scrollbar ─────────────────────────── */
+.nav-user {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+
+.nav-auth-button {
+  border: 1px solid rgba(0, 102, 204, 0.24);
+  border-radius: 999px;
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--color-primary, #0066CC);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 8px 14px;
+  text-decoration: none;
+  transition: background 0.12s var(--ease-standard), border-color 0.12s var(--ease-standard);
+}
+
+.nav-auth-button:hover {
+  background: rgba(0, 102, 204, 0.14);
+  border-color: rgba(0, 102, 204, 0.38);
+}
+
+.nav-auth-button.primary {
+  background: #0066CC;
+  border-color: #0066CC;
+  color: #fff;
+}
+
+.login-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 48px 20px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(0, 102, 204, 0.12), transparent 28%),
+    radial-gradient(circle at 80% 0%, rgba(99, 102, 241, 0.10), transparent 24%),
+    var(--bg-primary);
+}
+
+.login-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 32px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.12);
+}
+
+.login-eyebrow {
+  margin-bottom: 6px;
+  color: var(--color-primary, #0066CC);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.login-card h1 {
+  margin: 0;
+  color: var(--text-primary, #111827);
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.login-subtitle {
+  margin-top: 8px;
+  color: var(--text-secondary, #6b7280);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-secondary, #4b5563);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.login-field input {
+  width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--text-primary, #111827);
+  font: inherit;
+  font-size: 15px;
+  padding: 12px 14px;
+}
+
+.login-field input:focus {
+  border-color: #0066CC;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.14);
+}
+
+.login-error {
+  border: 1px solid rgba(220, 38, 38, 0.22);
+  border-radius: 12px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+  padding: 10px 12px;
+}
+
+.login-submit {
+  border: 0;
+  border-radius: 12px;
+  background: #0066CC;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 13px 16px;
+}
+
+.login-submit:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+/* ── Scrollbar（冷灰，低调） ──────────────── */
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -158,18 +296,18 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(139, 94, 43, 0.22);
+  background: rgba(0, 0, 0, 0.14);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 94, 43, 0.42);
+  background: rgba(0, 0, 0, 0.28);
 }
 
-/* ── Global focus ring (keyboard-accessible) ── */
+/* ── Global focus ring（蓝色焦点圈，符合 Apple 标准） ── */
 
 :focus-visible {
-  outline: 2px solid var(--lux-gold-400, #C9A96E);
+  outline: 2px solid var(--color-primary, #0066CC);
   outline-offset: 2px;
   border-radius: 4px;
 }

@@ -36,7 +36,7 @@
     },
     "retrieval": {
       "sessionContextCollection": "session_context",
-      "documentsCollection": "documents",
+      "documentsCollection": "document_chunks",
       "documentsIndexName": "documents",
       "timeoutMs": 30000,
       "defaultTopK": 10,

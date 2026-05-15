@@ -20,7 +20,8 @@ const API_BASE = getApiBaseUrl();
 
 interface AgentSummary {
   id: string;
-  name: string;
+  name: string;     // 英文技术名（来自 frontmatter name 字段）
+  label?: string;   // 中文显示名（来自 frontmatter label 字段）；优先展示
   role: string;
   model: string;
   trigger: string;
@@ -40,27 +41,28 @@ interface AgentDetail {
   modified_ts: number;
 }
 
+/** HTML 特殊字符映射表，用于 XSS 转义 */
 const HTML_ESCAPE: Record<string, string> = {
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 };
+/** 将字符串中所有 HTML 特殊字符转义，防止 XSS 注入 */
 const escapeHtml = (s: string): string => String(s).replace(/[&<>"']/g, (ch) => HTML_ESCAPE[ch] || ch);
 
 /**
- * Render trusted repo markdown to HTML. Always escape first; only whitelisted
- * tags introduced AFTER escaping remain. Source files come from .agent/agents
- * which are version-controlled and authored by maintainers, but we still treat
- * them as if untrusted to keep XSS surface minimal.
+ * 将仓库内 Markdown 渲染为 HTML。
+ * 安全策略：先全量转义，再用白名单正则补回允许的标签；
+ * 即使源文件来自受控的 .agent/agents 目录，仍视为不可信输入，最大化缩小 XSS 攻击面。
  */
 function renderMd(md: string): string {
   if (!md) return '';
   let s = escapeHtml(md);
 
-  // Fenced code blocks ```lang ... ```
+  // 代码块：```lang ... ``` → <pre><code>
   s = s.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
     return `<pre class="md-pre"><code>${code}</code></pre>`;
   });
 
-  // Headings (must be at start of line)
+  // 标题：# ~ ###### 必须在行首
   s = s.replace(/^###### (.+)$/gm, '<h6>$1</h6>')
        .replace(/^##### (.+)$/gm, '<h5>$1</h5>')
        .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
@@ -68,32 +70,34 @@ function renderMd(md: string): string {
        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
        .replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-  // List items: leading `- ` or `* ` or `1. `
+  // 列表项：- / * / 1. 开头的行
   s = s.replace(/^(?:- |\* )(.+)$/gm, '<li>$1</li>')
        .replace(/^\d+\.\s(.+)$/gm, '<li>$1</li>');
+  // 连续 <li> 包裹为 <ul>
   s = s.replace(/(<li>.+<\/li>(?:\n|$))+/g, (m) => `<ul class="md-ul">${m.replace(/\n/g, '')}</ul>`);
 
-  // Inline patterns
+  // 行内格式：**加粗** 和 `行内代码`
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
        .replace(/`([^`\n]+)`/g, '<code class="md-ic">$1</code>');
 
-  // Markdown links [text](url) — only http(s)/relative paths
+  // Markdown 链接 [文字](url) — 仅允许 http(s) 或相对路径，防止 javascript: 注入
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
     const safe = /^(https?:\/\/|\/|\.\/|\.\.\/|#)/.test(url) ? url : '#';
     return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   });
 
-  // Paragraph breaks
+  // 段落：连续两个以上换行 → 新段落
   s = s.replace(/\n{2,}/g, '</p><p class="md-p">');
   s = `<p class="md-p">${s}</p>`;
-  // Single newlines → <br/>
+  // 单个换行 → <br/>
   s = s.replace(/\n/g, '<br/>');
-  // Cleanup empty wrappers
+  // 清理空段落标签
   s = s.replace(/<p class="md-p">\s*<\/p>/g, '');
 
   return s;
 }
 
+/** Agent 角色分组定义：key=内部标识，label=中文显示名，match=角色字符串匹配规则 */
 const ROLE_GROUPS: Array<{ key: string; label: string; match: (role: string) => boolean }> = [
   { key: 'orchestrator', label: '总调度', match: (r) => /orchestrat/i.test(r) },
   { key: 'reviewer',     label: '审核者', match: (r) => /(review|qa|security|inspector)/i.test(r) },
@@ -101,23 +105,36 @@ const ROLE_GROUPS: Array<{ key: string; label: string; match: (role: string) => 
   { key: 'worker',       label: '执行者', match: (r) => /worker|engineer/i.test(r) },
 ];
 
+/** 根据角色字符串返回所属分组 key，未匹配则归入 worker（执行者）兜底 */
 function groupOf(role: string): string {
   for (const g of ROLE_GROUPS) if (g.match(role)) return g.key;
   return 'worker';
 }
 
+/** 各分组对应的展示图标 */
+const ROLE_ICONS: Record<string, string> = {
+  orchestrator: '🎭',
+  reviewer: '🔍',
+  specialist: '🛠️',
+  worker: '⚙️',
+};
+
+// MODEL_BADGE 暂时保留，供未来高级用户视图使用（当前不渲染，避免增加噪音）
 const MODEL_BADGE: Record<string, string> = {
   SONNET: 'badge-sonnet',
   HAIKU:  'badge-haiku',
   OPUS:   'badge-opus',
 };
+void MODEL_BADGE;
 
+// TRIGGER_LABEL 暂时保留，供未来详情面板显示触发方式
 const TRIGGER_LABEL: Record<string, string> = {
   always_on:      '常驻',
   model_decision: '模型决定',
   on_demand:      '按需',
   manual:         '手动',
 };
+void TRIGGER_LABEL;
 
 const AgentManagePage: React.FC = () => {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
@@ -128,7 +145,6 @@ const AgentManagePage: React.FC = () => {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailErr, setDetailErr] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -241,7 +257,7 @@ const AgentManagePage: React.FC = () => {
       </div>
 
       <div className="agm-layout">
-        {/* Left list */}
+        {/* Left: icon card grid */}
         <aside className="agm-list">
           {ROLE_GROUPS.map((g) => {
             const items = byGroup[g.key];
@@ -249,28 +265,21 @@ const AgentManagePage: React.FC = () => {
             return (
               <div key={g.key} className="agm-group">
                 <div className="agm-group-head">{g.label} <span>{items.length}</span></div>
-                <ul>
+                <div className="agm-card-grid">
                   {items.map((a) => (
-                    <li
+                    <button
                       key={a.id}
-                      className={`agm-row ${selectedId === a.id ? 'active' : ''}`}
+                      type="button"
+                      className={`agm-card ${selectedId === a.id ? 'active' : ''}`}
                       onClick={() => setSelectedId(a.id)}
+                      title={a.description}
                     >
-                      <div className="agm-row-top">
-                        <span className="agm-row-name">{a.name}</span>
-                        <span className={`agm-badge ${MODEL_BADGE[a.model] || 'badge-default'}`}>
-                          {a.model || 'SONNET'}
-                        </span>
-                      </div>
-                      <div className="agm-row-id">@{a.id}</div>
-                      {a.trigger && (
-                        <div className="agm-row-meta">
-                          {TRIGGER_LABEL[a.trigger] || a.trigger}
-                        </div>
-                      )}
-                    </li>
+                      <span className="agm-card-icon">{ROLE_ICONS[groupOf(a.role)] || '🤖'}</span>
+                      {/* label = 中文显示名；fallback 到英文 name */}
+                      <span className="agm-card-name">{a.label || a.name}</span>
+                    </button>
                   ))}
-                </ul>
+                </div>
               </div>
             );
           })}
@@ -290,56 +299,48 @@ const AgentManagePage: React.FC = () => {
             <>
               <div className="agm-detail-head">
                 <div>
-                  <h1>{detail.name}</h1>
-                  <div className="agm-detail-id">@{detail.id}</div>
-                </div>
-                <div className="agm-detail-actions">
-                  <span className="agm-detail-meta">
-                    {(detail.size_bytes / 1024).toFixed(1)} KB · 改于{' '}
-                    {new Date(detail.modified_ts * 1000).toLocaleString()}
-                  </span>
-                  <button
-                    type="button"
-                    className="agm-btn"
-                    onClick={() => setShowRaw((p) => !p)}
-                  >
-                    {showRaw ? '渲染视图' : '查看原文'}
-                  </button>
+                  {/* 优先显示中文 label，无则降级到英文 name */}
+                  <h1>{(detail.frontmatter?.label as string) || detail.name}</h1>
+                  {typeof detail.frontmatter?.description === 'string' && (
+                    <p className="agm-detail-desc muted">{detail.frontmatter.description}</p>
+                  )}
                 </div>
               </div>
 
-              {/* Frontmatter table */}
+              {/* Frontmatter table — collapsible */}
               {Object.keys(detail.frontmatter || {}).length > 0 && (
-                <div className="agm-fm">
-                  <div className="agm-fm-title">配置信息</div>
-                  <table>
-                    <tbody>
-                      {Object.entries(detail.frontmatter).map(([k, v]) => (
-                        <tr key={k}>
-                          <td>{k}</td>
-                          <td>
-                            {typeof v === 'string'
-                              ? v
-                              : Array.isArray(v)
-                                ? v.join(', ')
-                                : JSON.stringify(v)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <details className="agm-fm-details">
+                  <summary className="agm-fm-summary">⚙️ 配置信息（{Object.keys(detail.frontmatter).length} 项）</summary>
+                  <div className="agm-fm">
+                    <table>
+                      <tbody>
+                        {Object.entries(detail.frontmatter).map(([k, v]) => (
+                          <tr key={k}>
+                            <td>{k}</td>
+                            <td>
+                              {typeof v === 'string'
+                                ? v
+                                : Array.isArray(v)
+                                  ? v.join(', ')
+                                  : JSON.stringify(v)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
               )}
 
-              {showRaw ? (
-                <pre className="agm-raw">{detail.raw_markdown}</pre>
-              ) : (
+              {/* Full markdown — collapsed, for power users only */}
+              <details className="agm-doc-details">
+                <summary className="agm-doc-summary">📄 查看完整定义文档</summary>
                 <div
                   className="agm-md"
                   // eslint-disable-next-line react/no-danger
                   dangerouslySetInnerHTML={{ __html: detailHtml }}
                 />
-              )}
+              </details>
             </>
           )}
           {!detail && !detailLoading && !detailErr && (
