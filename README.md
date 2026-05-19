@@ -1,4 +1,4 @@
-# RAG26 — 深圳建设工程造价 RAG 系统
+# Commercial Agent — 私有化优先的工程商务 Agent
 
 <div align="center">
 
@@ -9,432 +9,318 @@
 ![Milvus](https://img.shields.io/badge/Milvus-2.4+-00A1EA?logo=milvus&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-**面向深圳市建设工程计价标准的企业级 RAG 系统**  
-向量后端可热切换（Milvus ↔ pgvector）· LangGraph 编排 · 混合召回 + Rerank · PaddleOCR GPU
+**从工程造价 RAG，升级为面向商务员 / 投标专员 / 商务经理的工程商务 Agent 底座。**  
+当前第一可落地模块：**投标废标风险审查**。
 
-[架构设计](#-核心架构) • [标准架构文档](docs/architecture.md) • [Mermaid 源码](docs/architecture.mmd) • [向量拓扑](#-向量存储拓扑switching) • [检索流程](#-检索流程) • [快速开始](#-快速开始) • [配置说明](#-配置说明)
+[工程商务蓝图](docs/commercial-agent-blueprint.md) · [投标风险审查模块](docs/tender-risk-agent.md) · [架构设计](docs/architecture.md) · [快速开始](#-快速开始)
 
 </div>
 
 ---
 
-## 📖 项目简介
+## 为什么做它
 
-RAG26 是一套**专为建设工程造价场景**定制的检索增强生成（RAG）系统。核心目标是从深圳市建设工程计价标准文件（PDF）中准确检索费率、公式、附录数据，并通过 LLM 生成带计算过程的结构化回答。
+工程商务工作不是单纯“查资料”，而是一条高价值、高责任、文档密集的业务链：
 
-系统的技术核心是**可插拔的向量存储拓扑**：运行时通过配置在 **Milvus**（分布式高性能）和 **pgvector**（嵌入式零依赖）之间无缝切换，切换对上层 RAG pipeline 完全透明。
+```text
+商机判断 → 读标书 → 报价接单 → 防废标 → 签合同 → 向执行移交
+```
+
+其中最适合作为第一刀切入的，是：
+
+# 投标废标风险审查
+
+因为它同时满足：
+
+- 文档极密集
+- 条款容错率极低
+- 一处小错可直接废标
+- 客户能立刻判断系统有没有价值
+- 现有 OCR / RAG / Agent 底座可直接复用
+
+典型高危问题：
+
+- 董事长 / 法定代表人要求**签字**，却误做成**盖章**
+- 授权委托书主体或格式错误
+- 附件、资质、社保、业绩、财报、承诺函遗漏
+- 投标保证金到账时间理解错误
+- 正副本份数、密封、装订、电子签章、逐页签章不合规
 
 ---
 
-## 🏗️ 核心架构
+## 产品定位
 
-标准化架构说明见 [`docs/architecture.md`](docs/architecture.md)，Mermaid 源码见 [`docs/architecture.mmd`](docs/architecture.mmd)。
+### 顶层定位
 
+> **私有化优先的工程商务 Agent**
+
+服务对象：
+
+- 商务员 / 商务经理
+- 投标专员
+- 报价与接单负责人
+- 合同签订前的业务把关人
+
+### 当前主线
+
+> **投标废标风险审查 Agent**
+
+### 后续扩展
+
+- 商机判断 Agent
+- 报价与投标协同 Agent
+- 合同关键条款审查 Agent
+- 商务向执行移交 Agent
+
+详细路线见：[docs/commercial-agent-blueprint.md](docs/commercial-agent-blueprint.md)
+
+---
+
+## 私有化优先原则
+
+投标文件和商务资料属于企业核心敏感文档。本项目默认遵循：
+
+1. 文档默认不出客户内网
+2. OCR、向量库、审查结果可本地化
+3. LLM Provider 可替换：本地开源模型、客户自有模型服务、企业级 API
+4. 每条高危风险都应给原文证据，不做无出处判断
+5. 系统提供“风险预审”，不替代最终人工签署责任
+
+---
+
+## 当前已落地：投标风险规则预扫 API
+
+### 1. 查看规则库
+
+```http
+GET /api/v1/commercial/tender/rule-catalog
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        客户端 / 前端                              │
-│              src/frontend/web  (TypeScript + React)              │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │ HTTP / WebSocket
-┌────────────────────────▼─────────────────────────────────────────┐
-│                     Go 网关层                                     │
-│   src/backend/go-services/  (gateway + websocket)                │
-│   · 路由转发  · 连接管理  · 会话保活                              │
-└────────────┬──────────────────────────┬───────────────────────────┘
-             │                          │
-┌────────────▼──────────┐  ┌────────────▼──────────────────────────┐
-│  TypeScript 编排服务   │  │       Python 检索服务                  │
-│  src/backend/server/  │  │  src/backend/retrieval-service/       │
-│  · OCR 调度管理        │  │  · LangGraph RAG pipeline             │
-│  · 任务队列            │  │  · LangGraph Agent（tools.py）        │
-│  · 会话持久化          │  │  · 混合召回 + Rerank + RRF 融合       │
-│  · LLM 代理路由        │  │  · 向量存储适配器（可切换拓扑）        │
-└───────────────────────┘  └────────────┬──────────────────────────┘
-                                        │
-             ┌──────────────────────────▼──────────────────────┐
-             │               存储层                             │
-             │  PostgreSQL + pgvector  ←→  Milvus              │
-             │  (主数据库 / fallback)      (可选高性能后端)      │
-             │                                                  │
-             │  Qdrant  ──  session_context 短期向量缓存        │
-             │  Redis   ──  查询结果缓存                        │
-             └─────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│                        OCR 流水线                                │
-│  ocr_web_service/   ·  ocr_tools/   ·  src/backend/ocr-service/ │
-│  PaddleOCR PP-OCRv4 + PPStructure  (NVIDIA RTX 4070 / GPU)      │
-└─────────────────────────────────────────────────────────────────┘
+### 2. 对已解析文本做风险预扫
+
+```http
+POST /api/v1/commercial/tender/review-preview
+```
+
+请求示例：
+
+```json
+{
+  "document_name": "某项目招标文件.txt",
+  "max_hits_per_rule": 4,
+  "text": "投标文件须由法定代表人签字并加盖公章，否则作无效投标处理。"
+}
+```
+
+输出重点字段：
+
+- `critical_count`
+- `high_count`
+- `risks[].category`
+- `risks[].title`
+- `risks[].evidence.excerpt`
+- `risks[].recommended_action`
+
+第一版规则库已覆盖：
+
+- 否决投标 / 无效投标
+- 签字与盖章
+- 资格条件
+- 必交附件
+- 时间节点
+- 保证金 / 保函
+- 份数 / 密封 / 装订 / 电子签章
+
+模块说明见：[docs/tender-risk-agent.md](docs/tender-risk-agent.md)
+
+---
+
+## 保留并复用的底层能力
+
+本仓库原本的建设工程造价 RAG 能力并未废弃，而是被保留为工程商务 Agent 的底座与后续能力模块。
+
+### 已有能力
+
+- PDF / 扫描件 OCR 流水线
+- 混合召回：向量 + 全文 + 结构化表
+- Rerank 精排
+- LangGraph RAG pipeline
+- LangGraph ReAct Agent
+- 结构化工具调用
+- PostgreSQL + pgvector / Milvus 可切换
+- Redis / Qdrant / Docker 化服务
+
+---
+
+## 核心架构
+
+```text
+前端 / 工作台
+  ↓
+Go 网关层
+  ↓
+TypeScript 编排服务  +  Python 检索服务
+  ↓
+OCR / RAG / Agent / 商务风险规则库
+  ↓
+PostgreSQL + pgvector / Milvus / Redis / Qdrant
+```
+
+### 投标风险审查目标工作流
+
+```text
+上传招标文件
+  ↓
+OCR / 文档解析
+  ↓
+章节切分与索引
+  ↓
+规则引擎先扫硬风险
+  ↓
+RAG 检索相关章节
+  ↓
+LLM 进行专项审查：签章、资格、附件、时间、格式
+  ↓
+合并去重 / 排序
+  ↓
+导出审查报告
 ```
 
 ---
 
-## 🔀 向量存储拓扑 Switching
+## 项目结构
 
-**这是本系统的核心技术设计。** 向量检索后端通过单一配置字段驱动，运行时自动路由：
-
-```yaml
-# config/config.yaml
-vector_store:
-  type: milvus          # 可选: milvus | qdrant | pgvector | chroma | memory
-  uri: http://localhost:19530
-  collection_name: document_chunks
-  vector_size: 1024
-  metric_type: COSINE
-```
-
-### 切换逻辑
-
-```
-vector_search() / hybrid_search()
-        │
-        ├─ type == "milvus"
-        │       └─ MilvusVectorStoreAdapter.search()
-        │               └─ 不可用 / 空结果 → 自动 fallback ↓
-        │
-        └─ pgvector (PostgreSQL)
-                └─ SELECT ... embedding <=> $1::vector ... FROM text_chunks
-```
-
-### 适配器接口（Ports & Adapters 模式）
-
-```python
-# domain/ports.py — 上层 pipeline 只依赖这个接口
-class VectorStorePort(Protocol):
-    async def search(query_vector, top_k, score_threshold) -> List[Tuple[Document, float]]: ...
-    async def upsert(documents, vectors) -> bool: ...
-    async def delete(doc_ids) -> bool: ...
-    def is_available(self) -> bool: ...
-```
-
-两个具体实现：
-
-| 适配器 | 后端 | 适用场景 |
-|--------|------|---------|
-| `MilvusVectorStoreAdapter` | Milvus 2.4+ | 生产环境、大规模向量集合、高并发 |
-| `QdrantVectorStoreAdapter` | Qdrant | session_context 短期缓存 |
-| pgvector（内联 SQL） | PostgreSQL | 零额外依赖、开发/轻量部署 |
-
-### Fallback 保障
-
-```python
-if not adapter.is_available():
-    logger.warning("milvus adapter unavailable, falling back to pgvector")
-    return []   # vector_search() 继续走 pgvector 路径
-```
-
-降级对调用方完全透明，`source_db` 字段会标记实际来源（`milvus` / `pgvector`）。
-
----
-
-## 🔍 检索流程
-
-RAG pipeline 由 **LangGraph** 编排，三节点线性图：
-
-```
-retrieve ──► rerank ──► generate ──► END
-```
-
-### 1. retrieve — 混合召回
-
-```
-hybrid_search(query)
-    ├── 向量召回  →  Milvus / pgvector cosine similarity (top_k=30)
-    ├── 全文召回  →  PostgreSQL ts_rank / plainto_tsquery (top_k=20)
-    ├── 结构化表查询  →  fee_rates / 附录标准表 直接 SQL
-    └── RRF 融合  →  Reciprocal Rank Fusion 合并去重
-```
-
-### 2. rerank — 精排
-
-```python
-reranker.rerank(query, [chunk.content for chunk in candidates])
-# 按 rerank_score 降序，保留 top_10
-```
-
-支持本地 cross-encoder 模型（sentence-transformers），不可用时降级为 `vector×0.6 + keyword×0.4` 线性融合。
-
-### 3. generate — 生成
-
-- LLM：DeepSeek Chat（可通过 `LLM_BASE_URL` / `LLM_MODEL` 换为任意 OpenAI 兼容接口）
-- System prompt 内嵌深圳市建设工程计价费率标准（2025版）核心公式
-- 后处理：LaTeX → 纯文本（`_strip_latex`）+ 自动注入 Python 验证代码块
-
----
-
-## 🤖 LangGraph Agent
-
-`app/agent/graph.py` 中定义了完整的 ReAct Agent，通过 `tools.py` 暴露以下工具：
-
-| 工具 | 作用 |
-|------|------|
-| `vector_search` | 向量语义检索，优先 Milvus，fallback pgvector |
-| `hybrid_search` | 向量 + 全文 + 结构化表三路混合召回 |
-| `query_fee_rates` | 直查 `fee_rates` 结构化费率表 |
-| `query_appendix_standards` | 查附录标准表 |
-| `sandbox_execute` | 沙箱执行 Python 验证代码，返回计算结果 |
-
-Agent 的 `query_analyzer.py` 会对查询进行意图分类，决定走 RAG pipeline 还是直接结构化查询。
-
----
-
-## 🔎 OCR 流水线
-
-三层结构，共同完成 PDF → 可检索文本 的转换：
-
-| 层 | 路径 | 作用 |
-|----|------|------|
-| OCR 核心引擎 | `src/backend/ocr-service/` | PaddleOCR PP-OCRv4 + PPStructure，Docker GPU 部署，端口 8001 |
-| Web UI 服务 | `ocr_web_service/` | FastAPI 封装，拖拽上传，三档处理策略（同步/异步/分块），端口 8002 |
-| 批量扫描工具 | `ocr_tools/` | 断点续扫，路由统计（native/ocr/hybrid），RTX 4070 实测性能参考 |
-
-页级路由策略：`native`（原生文字层）→ `hybrid`（图文混合）→ `ocr`（纯扫描图）
-
----
-
-## 📁 项目结构
-
-```
+```text
 RAG26/
-├── src/
-│   ├── backend/
-│   │   ├── retrieval-service/          # Python 检索服务（核心）
-│   │   │   ├── app/
-│   │   │   │   ├── agent/              # LangGraph Agent
-│   │   │   │   │   ├── graph.py        # ReAct Agent 图定义
-│   │   │   │   │   ├── tools.py        # 检索工具集（含 Milvus 路由）
-│   │   │   │   │   ├── query_analyzer.py
-│   │   │   │   │   └── state.py
-│   │   │   │   ├── rag_pipeline.py     # LangGraph RAG pipeline
-│   │   │   │   ├── api.py              # FastAPI 路由
-│   │   │   │   └── pipeline.py
-│   │   │   ├── domain/
-│   │   │   │   ├── models.py           # 领域模型
-│   │   │   │   └── ports.py            # VectorStorePort / RerankModelPort 等接口
-│   │   │   ├── infrastructure/
-│   │   │   │   ├── adapters/unified/
-│   │   │   │   │   └── unified_store.py  # PG 主库 + Qdrant session_context
-│   │   │   │   ├── vector_store.py       # Milvus / Qdrant 适配器 + 工厂函数
-│   │   │   │   ├── embedding_service.py
-│   │   │   │   ├── reranker_service.py
-│   │   │   │   └── cache.py
-│   │   │   ├── config/
-│   │   │   │   ├── settings.py         # VectorStoreConfig（type 字段驱动切换）
-│   │   │   │   └── loader.py
-│   │   │   └── tests/                  # Milvus / pgvector fallback 单元测试
-│   │   ├── go-services/                # Go 网关 + WebSocket 服务
-│   │   │   ├── cmd/
-│   │   │   ├── internal/
-│   │   │   ├── Dockerfile.gateway
-│   │   │   └── Dockerfile.websocket
-│   │   ├── server/                     # TypeScript 编排服务
-│   │   │   └── src/
-│   │   │       ├── services/           # OCRPipelineManager, RetrievalService, LLMService ...
-│   │   │       ├── modules/
-│   │   │       └── tools/
-│   │   ├── langgraph/                  # LangGraph 独立实验模块
-│   │   ├── ocr-service/                # PaddleOCR GPU 核心服务
-│   │   └── python-legacy/             # 历史遗留代码（仅参考）
-│   ├── frontend/web/                   # React 前端
-│   ├── database/                       # DB schema / migrations
-│   └── generated/                      # 代码生成产物
-├── ocr_tools/                          # PDF 批量扫描工具
-├── ocr_web_service/                    # OCR Web UI 封装
-├── config/                             # 全局配置
-│   ├── config.yaml
-│   ├── settings.py
-│   └── .env.example
-├── infrastructure/                     # Docker Compose 基础设施
-│   ├── docker-compose.yml              # 核心中间件（PG, Redis, Qdrant）
-│   ├── docker-compose.langfuse.yml     # LLM 可观测性
-│   └── docker/
-├── sql/                                # 数据库初始化脚本
-├── packages/shared/                    # TypeScript 共享类型
-├── tests/                              # 集成测试
-├── docker-compose.yml                  # 顶层一键启动
-├── pyproject.toml
-└── requirements.txt
+├── src/backend/retrieval-service/
+│   ├── app/
+│   │   ├── tender_review.py              # 新增：工程商务 / 投标风险规则预扫 API
+│   │   ├── api.py                        # 原 RAG / Agent API
+│   │   ├── agent/                        # LangGraph Agent
+│   │   └── rag_pipeline.py
+│   ├── infrastructure/
+│   └── tests/
+├── docs/
+│   ├── commercial-agent-blueprint.md    # 新增：工程商务 Agent 顶层蓝图
+│   ├── tender-risk-agent.md             # 新增：投标风险审查模块说明
+│   └── architecture.md
+├── ocr_tools/
+├── ocr_web_service/
+├── config/
+├── infrastructure/
+└── docker-compose.yml
 ```
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 前置要求
 
 - Docker 20.10+ / Docker Compose
 - Python 3.10+
-- Node.js 18+（TypeScript 服务）
-- Go 1.21+（网关服务，可选）
-- NVIDIA GPU + CUDA 12.x（OCR 加速，可选）
+- Node.js 18+
+- Go 1.21+（网关服务可选）
+- NVIDIA GPU + CUDA 12.x（OCR 加速可选）
 
 ### 1. 启动基础设施
 
 ```bash
-# 启动 PostgreSQL + pgvector、Redis、Qdrant
 cd infrastructure
 docker compose up -d
-
-# 初始化数据库
-psql -h localhost -U rag_user -d rag_db -f ../sql/init/01_init_database.sql
 ```
 
-### 2. 启动检索服务（Python）
+### 2. 启动检索服务
 
 ```bash
 cd src/backend/retrieval-service
 pip install -r requirements.txt
-
-# 默认使用 pgvector（零额外依赖）
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 ```
 
-### 3. 切换到 Milvus（可选）
+### 3. 验证投标风险预扫接口
 
 ```bash
-# 启动 Milvus
-docker run -d --name milvus-standalone \
-  -p 19530:19530 -p 9091:9091 \
-  milvusdb/milvus:v2.4.0 milvus run standalone
-
-# 修改配置
-# config/config.yaml → vector_store.type: milvus
-# 或设置环境变量
-export VECTOR_STORE_TYPE=milvus
-export VECTOR_STORE_URI=http://localhost:19530
-```
-
-### 4. 启动 OCR 服务
-
-```bash
-# 构建 GPU 镜像（首次）
-cd src/backend/ocr-service
-docker build -t ocr-service:gpu .
-
-# 启动
-docker run -d --gpus all -p 8001:8001 --name ocr-gpu ocr-service:gpu
-
-# Web UI（可选）
-cd ocr_web_service
-python3 -m uvicorn ocr_api_service:app --host 0.0.0.0 --port 8002
-```
-
-### 5. 验证
-
-```bash
-# 健康检查
-curl http://localhost:8000/health
-
-# RAG 查询
-curl -X POST http://localhost:8000/api/v1/query \
+curl -X POST http://localhost:8002/api/v1/commercial/tender/review-preview \
   -H "Content-Type: application/json" \
-  -d '{"query": "深圳建筑工程企业管理费费率是多少？", "top_k": 10}'
+  -d '{
+    "document_name": "demo.txt",
+    "max_hits_per_rule": 3,
+    "text": "投标文件须由法定代表人签字并加盖公章，否则作无效投标处理。投标保证金须在递交截止时间前到账。"
+  }'
 ```
 
 ---
 
-## ⚙️ 配置说明
+## 已有 RAG / Agent 接口
 
-### 向量存储（核心配置）
+保留原有能力：
 
-```yaml
-# config/config.yaml
-vector_store:
-  type: milvus          # milvus | pgvector | qdrant | chroma | memory
-  # Milvus
-  uri: http://localhost:19530
-  database: default
-  # pgvector fallback（始终可用）
-  # 使用 PostgreSQL 连接配置
-  collection_name: document_chunks
-  vector_size: 1024     # bge-m3 / bge-large = 1024
-  metric_type: COSINE
-```
+- `POST /api/v1/search`
+- `POST /api/v1/rag`
+- `POST /api/v1/agent`
+- `POST /api/v1/agent/stream`
+- `POST /api/v1/rerank`
+- `POST /api/v1/evaluate`
 
-### 环境变量
-
-```bash
-# LLM（OpenAI 兼容接口）
-LLM_API_KEY=sk-xxx
-LLM_BASE_URL=https://api.deepseek.com   # 可换 OpenAI / 本地 vLLM
-LLM_MODEL=deepseek-chat
-
-# PostgreSQL
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=rag_db
-POSTGRES_USER=rag_user
-POSTGRES_PASSWORD=rag_password
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Milvus（可选）
-VECTOR_STORE_TYPE=milvus
-VECTOR_STORE_URI=http://localhost:19530
-
-# Qdrant（session_context）
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-```
-
-完整示例见 [`config/.env.example`](config/.env.example)
+这些接口可继续作为后续商务 Agent 的通用检索、问答和多步执行底座。
 
 ---
 
-## 🧪 测试
+## 路线图
 
-```bash
-cd src/backend/retrieval-service
+### V1 — 当前
 
-# 全量测试（含 Milvus/pgvector 切换单元测试）
-pytest tests/ -v
+- 顶层定位升级为工程商务 Agent
+- 投标风险规则库骨架
+- 风险预扫 API
+- 文档化产品边界与私有化原则
 
-# 仅向量后端切换测试
-pytest tests/test_vector_store.py tests/test_vector_search_backend.py tests/test_hybrid_search_backend.py -v
-```
+### V2
+
+- 文档上传后自动触发审查
+- 与现有 OCR / RAG / Agent 链路打通
+- 生成完整风险 JSON 审查报告
+
+### V3
+
+- 前端商务工作台
+- 风险卡片与核对清单
+- Word / PDF 导出
+- 本地模型 Provider 配置
+
+### V4
+
+- 企业私有化部署包
+- 项目权限隔离
+- 审计日志
+- 历史项目库与废标案例库
+
+### V5
+
+- 商机判断
+- 报价协同
+- 合同审查
+- 商务向执行移交
 
 ---
 
-## 📊 技术栈一览
+## 技术栈
 
 | 层 | 技术 |
-|----|------|
-| RAG 编排 | LangGraph 0.2+ |
-| 向量检索（主） | Milvus 2.4 / pymilvus |
-| 向量检索（fallback） | PostgreSQL + pgvector |
-| 全文检索 | PostgreSQL ts_rank（中文 simple 分词） |
-| Session 向量缓存 | Qdrant |
-| Reranker | sentence-transformers cross-encoder |
-| Embedding | BGE-M3 / BGE-Large（1024维）|
-| LLM | DeepSeek Chat（可换任意 OpenAI 兼容接口）|
-| OCR | PaddleOCR PP-OCRv4 + PPStructure |
-| 网关层 | Go（Fastify 风格路由 + WebSocket）|
-| 编排服务 | TypeScript / Node.js |
-| 前端 | React + TypeScript |
+|---|---|
+| RAG 编排 | LangGraph |
+| 向量检索 | Milvus / pgvector |
+| 全文检索 | PostgreSQL |
+| Session 缓存 | Qdrant |
 | 缓存 | Redis |
-| 可观测性 | Langfuse（`infrastructure/docker-compose.langfuse.yml`）|
+| OCR | PaddleOCR |
+| 后端 | Python / TypeScript / Go |
+| 前端 | React + TypeScript |
+| 部署 | Docker Compose |
 
 ---
 
-## 🤝 贡献指南
-
-1. Fork 项目，创建特性分支：`git checkout -b feature/your-feature`
-2. 遵循代码规范：Python 用 Black + Ruff，TypeScript 用 ESLint
-3. 新增功能请附带测试，向量后端切换逻辑尤其需要覆盖 fallback 路径
-4. 提交 PR，描述清楚技术方案
-
----
-
-## 📄 许可证
+## 许可证
 
 MIT License
-
----
-
-<div align="center">
-
-Made with ❤️ for 深圳市建设工程造价
-
-</div>
