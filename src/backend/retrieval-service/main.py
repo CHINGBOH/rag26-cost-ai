@@ -30,6 +30,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router, set_services
+from app.tender_review import router as commercial_router
 from app.pipeline import UnifiedRetrievalPipeline
 from infrastructure.adapters.unified import UnifiedStore
 
@@ -65,9 +66,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Retrieval Service",
-    description="独立检索微服务 - 向量/关键词/图谱混合检索、精排、评估、查询分解",
-    version="1.0.0",
+    title="Commercial Tender Review Service",
+    description="私有化优先的工程商务 Agent 底座：检索、RAG、投标废标风险预扫与后续商务审查工作流",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -80,3 +81,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(commercial_router)
