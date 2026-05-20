@@ -150,7 +150,7 @@ const LANDING: Record<Lang, LandingCopy> = {
   zh: {
     langLabel: 'EN',
     eyebrow: 'Repository Portfolio',
-    title: 'AI 解决方案作品集',
+    title: 'Three Fire Stone AI 解决方案作品集',
     subtitle: '以真实仓库展示项目方向、系统能力与交付经验，再把智能检索、医美 Demo 与运行面板作为现网体验入口接入。',
     repoStripMain: '主仓库：Three Fire Stone Cost Intelligence',
     repoStripLive: '在线 Demo：BeautyOS 医美工作台',
@@ -298,7 +298,7 @@ const LANDING: Record<Lang, LandingCopy> = {
   en: {
     langLabel: '中',
     eyebrow: 'Repository Portfolio',
-    title: 'AI Solutions Portfolio',
+    title: 'Three Fire Stone AI Solutions Portfolio',
     subtitle: 'Real repositories proving direction, system capability and delivery experience, with live RAG search and a BeautyOS demo wired in as production entries.',
     repoStripMain: 'Flagship repo · Three Fire Stone Cost Intelligence',
     repoStripLive: 'Live demo · BeautyOS medical-beauty workspace',
@@ -503,7 +503,7 @@ function Navigation() {
   return (
     <header className={`app-nav${scrolled ? ' scrolled' : ''}`}>
       <Link className="nav-brand" to="/">
-        <span className="nav-mark">R</span>
+        <span className="nav-mark">3F</span>
         <span className="nav-title">Three Fire Stone</span>
       </Link>
 
