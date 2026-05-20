@@ -22,6 +22,8 @@ func createReverseProxy(targetURL string) *httputil.ReverseProxy {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// 强制周期 flush — 让 SSE / 长流式响应实时透传给客户端。
+	proxy.FlushInterval = -1
 	// Wrap default transport so outbound spans get created and traceparent
 	// header is injected for downstream service correlation.
 	proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
@@ -104,6 +106,7 @@ func getRouteMapping() map[string]string {
 		"/api/system":       "nodejs",
 		"/api/pipeline":     "nodejs",
 		"/api/agent":        "nodejs",
+		"/api/hermes":       "nodejs",
 		"/api/ocr":          "ocr",
 		"/api/v1/embedding": "python",
 		"/api/v1/documents": "python",

@@ -188,23 +188,37 @@ export class AuthService {
    * 生成Token - 使用jose库实现真正的JWT
    */
   private async generateToken(user: User): Promise<string> {
-    const secretKey = this.getSecretKey();
+    return this.generateTokenFor({ id: user.id, username: user.username, role: user.role });
+  }
 
+  /**
+   * 为任意身份生成 JWT（供 EmailAuthService 等外部模块使用）
+   * 调用方需自行调用 trackSession() 来保留 token 的有效性。
+   */
+  public async generateTokenFor(input: { id: string; username: string; role: 'admin' | 'user' }): Promise<string> {
+    const secretKey = this.getSecretKey();
     return await new SignJWT({
-      username: user.username,
-      role: user.role
+      username: input.username,
+      role: input.role
     })
       .setProtectedHeader({ alg: 'HS256' })
-      .setSubject(user.id)
+      .setSubject(input.id)
       .setIssuedAt()
       .setExpirationTime(`${this.config.tokenExpiry}s`)
       .sign(secretKey);
   }
 
   /**
+   * 登记外部签发的 token 到 sessions（让 verifyToken 通过）
+   */
+  public trackSession(token: string, userId: string): void {
+    this.sessions.set(token, userId);
+  }
+
+  /**
    * 密码哈希 - 使用PBKDF2增强安全性
    */
-  private hashPassword(password: string): string {
+  public hashPassword(password: string): string {
     // 生成随机盐值
     const salt = crypto.randomBytes(16).toString('hex');
     // 使用PBKDF2进行10000次迭代
@@ -216,7 +230,7 @@ export class AuthService {
   /**
    * 验证密码
    */
-  private verifyPassword(password: string, storedHash: string): boolean {
+  public verifyPassword(password: string, storedHash: string): boolean {
     const parts = storedHash.split('$');
     if (parts.length !== 2) return false;
 

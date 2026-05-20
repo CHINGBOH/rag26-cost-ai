@@ -26,6 +26,7 @@ import { PipelineService } from './services/PipelineService';
 import { CacheService } from './services/CacheService';
 import { TaskQueueService } from './services/TaskQueueService';
 import { AuthService } from './services/AuthService';
+import { EmailAuthService } from './services/EmailAuthService';
 import { MetricsService } from './services/MetricsService';
 import { logger } from './services/LoggerService';
 import { successResponse, errorResponse, ErrorCodes } from './types/response';
@@ -149,6 +150,19 @@ async function main() {
     logger.info('✅ PostgreSQL 持久化已初始化');
   } else {
     logger.warn('⚠️ PostgreSQL 持久化未启用，将使用内存存储');
+  }
+
+  // 初始化邮箱注册/登录服务（依赖 PostgreSQL）
+  const pgPool = pgPersistence.getPool();
+  const emailAuthService = pgPool ? new EmailAuthService(pgPool, authService) : null;
+  if (emailAuthService) {
+    try {
+      await emailAuthService.initialize();
+    } catch (err) {
+      logger.error(`⚠️ EmailAuthService 初始化失败: ${(err as Error).message}`);
+    }
+  } else {
+    logger.warn('⚠️ EmailAuthService 未启用（PostgreSQL 不可用）');
   }
 
   // 创建递归控制器（带持久化）
@@ -282,8 +296,18 @@ async function main() {
 
   // 认证钩子
   app.addHook('preHandler', async (request, reply) => {
+    if (request.method === 'OPTIONS') {
+      return;
+    }
+
     // 公开接口白名单
-    const publicPaths = ['/health', '/api/auth/login', '/api/v1/search', '/api/v1/rerank', '/api/v1/evaluate', '/api/v1/decompose', '/api/pipeline/health', '/api/pipeline/stats', '/api/pipeline/evaluation', '/api/agent/run'];
+    const publicPaths = [
+      '/health',
+      '/api/auth/login',
+      '/api/auth/send-email-code',
+      '/api/auth/register',
+      '/api/auth/login-email',
+    ];
     if (publicPaths.some(path => request.url.startsWith(path))) {
       return;
     }
@@ -690,6 +714,169 @@ async function main() {
         role: result.user.role
       }
     });
+  });
+
+  // 发送邮箱验证码（验证码先打到后端日志，SMTP 后接）
+  app.post('/api/auth/send-email-code', async (request, reply) => {
+    if (!emailAuthService) {
+      reply.status(503);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '邮箱认证服务未启用');
+    }
+    const body = request.body as { email?: string; purpose?: 'signup' | 'reset' } | undefined;
+    const email = body?.email;
+    const purpose = body?.purpose ?? 'signup';
+    if (typeof email !== 'string' || email.length === 0) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '请填写邮箱');
+    }
+    if (purpose !== 'signup' && purpose !== 'reset') {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, 'purpose 取值错误');
+    }
+    const result = await emailAuthService.sendCode(email, purpose);
+    if (!result.ok) {
+      reply.status(429);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, result.reason);
+    }
+    return successResponse({ message: '验证码已发送（开发期：请查看后端日志）' });
+  });
+
+  // 邮箱注册
+  app.post('/api/auth/register', async (request, reply) => {
+    if (!emailAuthService) {
+      reply.status(503);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '邮箱认证服务未启用');
+    }
+    const body = request.body as { email?: string; password?: string; code?: string } | undefined;
+    if (!body?.email || !body?.password || !body?.code) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '请填写邮箱、密码和验证码');
+    }
+    const result = await emailAuthService.register(body.email, body.password, body.code);
+    if (!result.ok) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, result.reason);
+    }
+    return successResponse({
+      token: result.token,
+      user: {
+        id: result.user.id,
+        username: result.user.email,
+        role: result.user.role,
+      },
+    });
+  });
+
+  // 邮箱 + 密码登录
+  app.post('/api/auth/login-email', async (request, reply) => {
+    if (!emailAuthService) {
+      reply.status(503);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '邮箱认证服务未启用');
+    }
+    const body = request.body as { email?: string; password?: string } | undefined;
+    if (!body?.email || !body?.password) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, '请填写邮箱和密码');
+    }
+    const result = await emailAuthService.loginWithEmail(body.email, body.password);
+    if (!result.ok) {
+      reply.status(401);
+      return errorResponse(ErrorCodes.AUTHENTICATION_ERROR, result.reason);
+    }
+    return successResponse({
+      token: result.token,
+      user: {
+        id: result.user.id,
+        username: result.user.email,
+        role: result.user.role,
+      },
+    });
+  });
+
+  // ==================== Hermes 访客代理 ====================
+  // 把已登录用户的请求转发到内网 hermes-visitor 容器（OpenAI 兼容）。
+  // 用户邮箱作为 X-Hermes-Session-Key，保证每个访客有独立会话上下文。
+  const HERMES_VISITOR_URL = process.env.HERMES_VISITOR_URL || 'http://hermes-visitor:8642';
+  const HERMES_VISITOR_API_KEY = process.env.HERMES_VISITOR_API_KEY || '';
+  const HERMES_VISITOR_MODEL = process.env.HERMES_VISITOR_MODEL || 'deepseek-chat';
+
+  app.post('/api/hermes/visitor', async (request, reply) => {
+    const user = (request as any).user as { id: string; username: string; role: string } | undefined;
+    if (!user) {
+      reply.status(401);
+      return errorResponse(ErrorCodes.AUTHENTICATION_ERROR, '未登录');
+    }
+    if (!HERMES_VISITOR_API_KEY) {
+      reply.status(503);
+      return errorResponse(ErrorCodes.INTERNAL_ERROR, 'Hermes 访客服务未配置');
+    }
+
+    const body = request.body as {
+      messages: Array<{ role: string; content: string }>;
+      stream?: boolean;
+    };
+    if (!Array.isArray(body?.messages) || body.messages.length === 0) {
+      reply.status(400);
+      return errorResponse(ErrorCodes.VALIDATION_ERROR, 'messages 不能为空');
+    }
+
+    const stream = body.stream !== false;
+    const sessionKey = user.username; // 邮箱 / username
+    const payload = JSON.stringify({
+      model: HERMES_VISITOR_MODEL,
+      messages: body.messages,
+      stream,
+    });
+
+    try {
+      const upstream = await fetch(`${HERMES_VISITOR_URL}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${HERMES_VISITOR_API_KEY}`,
+          'X-Hermes-Session-Key': sessionKey,
+        },
+        body: payload,
+      });
+
+      if (!upstream.ok || !upstream.body) {
+        const text = await upstream.text().catch(() => '');
+        reply.status(upstream.status || 502);
+        return errorResponse(ErrorCodes.INTERNAL_ERROR, `Hermes 上游错误: ${text.slice(0, 200)}`);
+      }
+
+      if (!stream) {
+        const data = await upstream.json();
+        return successResponse(data);
+      }
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const reader = (upstream.body as any).getReader();
+      const decoder = new TextDecoder();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          reply.raw.write(decoder.decode(value, { stream: true }));
+        }
+      } finally {
+        reply.raw.end();
+      }
+      return reply;
+    } catch (err: any) {
+      app.log.error({ err }, 'hermes visitor proxy failed');
+      if (!reply.sent) {
+        reply.status(502);
+        return errorResponse(ErrorCodes.INTERNAL_ERROR, `代理失败: ${err?.message || err}`);
+      }
+      return reply;
+    }
   });
 
   // ==================== LLM 代理接口 ====================

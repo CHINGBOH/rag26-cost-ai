@@ -32,6 +32,12 @@ export class PostgresPersistenceService {
   private pool: Pool | null = null;
   private isConnected = false;
 
+  /** 返回底层 Pool（供其他服务复用），未初始化时返回 null */
+  public getPool(): Pool | null {
+    return this.pool;
+  }
+
+
   constructor(config?: PostgresConfig) {
     const hasExplicitConfig = Boolean(config?.connectionString || config?.host);
     const enabled =
