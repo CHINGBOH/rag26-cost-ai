@@ -5,13 +5,16 @@
  * trackSession，保证 JWT 校验逻辑一致。
  *
  * 用户与验证码持久化到 PostgreSQL（rag-postgres）。
- * 邮件发送暂未接入 SMTP — 验证码先输出到日志（[EMAIL CODE]）。
+ * 邮件发送：
+ * - 若配置了 SMTP_* 环境变量，则通过 MailerService 真发邮件。
+ * - 否则回退到日志（[EMAIL CODE]），保留开发期可用性。
  */
 
 import * as crypto from 'crypto';
 import type { Pool } from 'pg';
 import { AuthService } from './AuthService';
 import { logger } from './LoggerService';
+import { sendVerificationCode, isMailerEnabled } from './MailerService';
 
 export interface RegisteredUser {
   id: string;
@@ -110,8 +113,16 @@ export class EmailAuthService {
         [email, code, purpose, String(CODE_TTL_SECONDS)]
       );
 
-      // TODO: SMTP 后接 — 现在打到日志
-      logger.info(`[EMAIL CODE] purpose=${purpose} email=${email} code=${code} ttl=${CODE_TTL_SECONDS}s`);
+      // 发送邮件 — 配了 SMTP 走 SMTP，否则回退日志（开发期）
+      if (isMailerEnabled()) {
+        const result = await sendVerificationCode(email, code, purpose, CODE_TTL_SECONDS);
+        if (!result.sent) {
+          logger.warn(`[EmailAuth] SMTP 发送失败，回退日志: ${result.error ?? 'unknown'}`);
+          logger.info(`[EMAIL CODE] purpose=${purpose} email=${email} code=${code} ttl=${CODE_TTL_SECONDS}s`);
+        }
+      } else {
+        logger.info(`[EMAIL CODE] purpose=${purpose} email=${email} code=${code} ttl=${CODE_TTL_SECONDS}s`);
+      }
 
       return { ok: true };
     } finally {
