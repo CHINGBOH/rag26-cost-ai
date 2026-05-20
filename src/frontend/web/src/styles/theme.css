@@ -15,6 +15,12 @@
   --text-muted:     #6E6E73;   /* Apple 标准静音灰，~5.5:1 */
   --text-inverse:   #FFFFFF;   /* 深色背景上的白字 */
 
+  /* ── 品牌特色：三石 (Three Fire Stone) ── */
+  --color-fire:         #FF6B22;   /* 活力橙红，火的颜色 */
+  --color-fire-glow:    rgba(255, 107, 34, 0.15);
+  --color-stone:        #4A4A4F;   /* 深石灰 */
+  --color-stone-light:  #A2A2A6;   /* 浅石灰 */
+
   /* ── 边框：冷灰系 ── */
   --border-default:   #D2D2D7;   /* Apple 分割线色 */
   --border-highlight: #0066CC;   /* 主色蓝高亮边框 */
