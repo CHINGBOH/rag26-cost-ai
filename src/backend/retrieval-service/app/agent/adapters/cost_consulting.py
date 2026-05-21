@@ -17,6 +17,11 @@ _CHAPTER_RE = re.compile(
 )
 # Price values with units
 _PRICE_RE = re.compile(r"[\d,]+\.?\d*\s*(元|万元|元/[^\s，。]{1,10})")
+_FORMULA_RE = re.compile(
+    r"(?P<expr>(?:\d[\d,]*(?:\.\d+)?|[+\-*/().%\s×÷]){3,})"
+    r"[=＝]\s*"
+    r"(?P<expected>-?\d[\d,]*(?:\.\d+)?)"
+)
 # Material names: optional grade prefix (C30, HRB400) + Chinese noun + material suffix
 _MATERIAL_RE = re.compile(
     r"(?:[A-Z]\d+[一-龥]{0,3}|[一-龥]{1,6})"
@@ -87,11 +92,29 @@ class CostConsultingAdapter(DomainAdapter):
 
     def validate_runtime(self, chunk: str, sandbox) -> ValidationResult:
         """Execute formula expressions in sandbox and verify against stated values."""
+        sandbox = sandbox or self._sandbox_client
         if sandbox is None:
             return ValidationResult(passed=True)
 
+        checks = self._extract_formula_checks(chunk)
+        if not checks:
+            return ValidationResult(passed=True)
+
+        for expression, expected_value in checks:
+            result = self._execute_formula_check(sandbox, expression, expected_value)
+            if not result.passed:
+                return result
+
+        return ValidationResult(passed=True)
+
+    def _execute_formula_check(
+        self,
+        sandbox,
+        expression: str,
+        expected_value: float,
+    ) -> ValidationResult:
         try:
-            result = sandbox.execute(chunk, timeout=30)
+            result = sandbox.execute(f"result = {expression}", timeout=30)
         except Exception as exc:
             return ValidationResult(
                 passed=False,
@@ -107,21 +130,72 @@ class CostConsultingAdapter(DomainAdapter):
                 error_detail=f"Formula execution exited with code {result.exit_code}",
             )
 
-        # Check numeric result deviation if sandbox returns a computed value
-        if hasattr(result, "computed_value") and hasattr(result, "expected_value"):
-            cv = result.computed_value
-            ev = result.expected_value
-            if ev and abs(cv - ev) / max(abs(ev), 1e-9) > 0.001:
-                return ValidationResult(
-                    passed=False,
-                    error_type="RUNTIME_ERROR",
-                    error_detail=(
-                        f"公式计算结果 {cv} 与文档值 {ev} 偏差 "
-                        f"{abs(cv - ev) / abs(ev):.2%}，超过 0.1% 阈值"
-                    ),
-                )
+        computed_value = self._extract_computed_value(result)
+        if computed_value is None:
+            return ValidationResult(
+                passed=False,
+                error_type="RUNTIME_ERROR",
+                error_detail="Sandbox did not return a numeric formula result",
+            )
+        return self._compare_formula_values(computed_value, expected_value)
 
-        return ValidationResult(passed=True)
+    def _compare_formula_values(
+        self,
+        computed_value: float,
+        expected_value: float,
+    ) -> ValidationResult:
+        diff = abs(computed_value - expected_value)
+        tolerance = max(abs(expected_value) * 0.001, 1e-9)
+        if diff <= tolerance:
+            return ValidationResult(passed=True)
+
+        deviation = (
+            f"{diff / abs(expected_value):.2%}"
+            if expected_value != 0
+            else f"absolute diff {diff:g}"
+        )
+        return ValidationResult(
+            passed=False,
+            error_type="RUNTIME_ERROR",
+            error_detail=(
+                f"公式计算结果 {computed_value} 与文档值 {expected_value} "
+                f"偏差 {deviation}，超过 0.1% 阈值"
+            ),
+        )
+
+    def _extract_formula_checks(self, chunk: str) -> List[tuple[str, float]]:
+        checks: List[tuple[str, float]] = []
+        for match in _FORMULA_RE.finditer(chunk):
+            expression = self._normalize_formula_expression(match.group("expr"))
+            if expression is None:
+                continue
+            expected = float(match.group("expected").replace(",", ""))
+            checks.append((expression, expected))
+        return checks
+
+    def _normalize_formula_expression(self, expression: str) -> Optional[str]:
+        expr = expression.replace(",", "").replace("×", "*").replace("÷", "/").strip()
+        expr = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", expr)
+        if not re.fullmatch(r"[\d+\-*/().\s]+", expr):
+            return None
+        return expr
+
+    def _extract_computed_value(self, result) -> Optional[float]:
+        if hasattr(result, "computed_value"):
+            return float(result.computed_value)
+
+        candidates = [
+            getattr(result, "result", None),
+            getattr(result, "stdout", None),
+            getattr(result, "output", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            match = re.search(r"-?\d+(?:\.\d+)?", str(candidate).replace(",", ""))
+            if match:
+                return float(match.group(0))
+        return None
 
     # ── validate_factual ───────────────────────────────────────────────────────
 

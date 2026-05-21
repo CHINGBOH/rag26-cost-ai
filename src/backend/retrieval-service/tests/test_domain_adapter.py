@@ -4,6 +4,7 @@ and ValidationPipeline. (Issue #164)"""
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -111,6 +112,48 @@ def test_validate_factual_passes_with_empty_kb():
     assert result.passed
 
 
+def test_validate_runtime_executes_extracted_formula():
+    sandbox = MagicMock()
+    sandbox.execute.return_value = SimpleNamespace(
+        exit_code=0,
+        stdout="result=175000",
+        stderr="",
+        result="175000",
+    )
+    adapter = CostConsultingAdapter()
+
+    result = adapter.validate_runtime("计算式 5000000 * 3.5% = 175000 元。", sandbox)
+
+    assert result.passed
+    sandbox.execute.assert_called_once_with("result = 5000000 * (3.5/100)", timeout=30)
+
+
+def test_validate_runtime_fails_zero_expected_mismatch():
+    sandbox = MagicMock()
+    sandbox.execute.return_value = SimpleNamespace(
+        exit_code=0,
+        stdout="result=1",
+        stderr="",
+        result="1",
+    )
+    adapter = CostConsultingAdapter()
+
+    result = adapter.validate_runtime("计算式 1 - 0 = 0 元。", sandbox)
+
+    assert not result.passed
+    assert result.error_type == "RUNTIME_ERROR"
+
+
+def test_validate_runtime_skips_when_no_formula():
+    sandbox = MagicMock()
+    adapter = CostConsultingAdapter()
+
+    result = adapter.validate_runtime("这里没有可执行算式，只是普通结论。", sandbox)
+
+    assert result.passed
+    sandbox.execute.assert_not_called()
+
+
 # ── 6. CostConsultingAdapter — extract_entities ───────────────────────────────
 
 def test_extract_entities_returns_quota_and_material():
@@ -159,6 +202,21 @@ def test_validation_pipeline_all_pass():
     report = pipeline.run("无定额编号，无引用文献的普通文本。")
     assert report.passed
     assert report.hallucination_type is None
+
+
+def test_validation_pipeline_passes_sandbox_to_runtime():
+    adapter = MagicMock()
+    adapter.domain_id = "test-domain"
+    adapter.validate_static.return_value = ValidationResult(passed=True)
+    adapter.validate_runtime.return_value = ValidationResult(passed=True)
+    adapter.validate_factual.return_value = ValidationResult(passed=True)
+    pipeline = ValidationPipeline(adapter)
+    sandbox = object()
+
+    report = pipeline.run("result = 1", sandbox=sandbox)
+
+    assert report.passed
+    adapter.validate_runtime.assert_called_once_with("result = 1", sandbox)
 
 
 # ── 10. ValidationPipeline — correction loop max retries ─────────────────────
