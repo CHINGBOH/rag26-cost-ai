@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { DynamicStructuredTool } from '@langchain/core/tools'
 import { IndexReference } from './types'
 import { runtimeConfig } from '../../../config/runtime'
+import { evaluateArithmetic } from './code_pipeline_client'
 
 function getPythonApiUrl(): string {
   return runtimeConfig.services.retrievalApiUrl
@@ -126,13 +127,11 @@ export function createCalculatorTool() {
       expression: z.string().describe('数学表达式，如: 2 + 3 * 4')
     }),
     func: async ({ expression }) => {
-      try {
-        const sanitized = expression.replace(/[^0-9+\-*/().%\s]/g, '')
-        const result = Function('"use strict"; return (' + sanitized + ')')()
-        return `计算结果: ${result}\n表达式: ${expression}`
-      } catch (e) {
-        return `计算失败: ${String(e)}`
+      const result = evaluateArithmetic(expression)
+      if (result.ok) {
+        return `计算结果: ${result.value}\n表达式: ${expression}`
       }
+      return `计算失败: ${result.error}`
     }
   })
 }

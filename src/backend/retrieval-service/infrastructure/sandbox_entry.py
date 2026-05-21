@@ -18,23 +18,23 @@ import sys
 import traceback
 from decimal import Decimal, ROUND_HALF_UP
 
-
 # ── 安全检查 ────────────────────────────────────────────────────────────────
-
-FORBIDDEN_NODES = (
-    ast.Import, ast.ImportFrom,   # 禁止 import
-)
-
-FORBIDDEN_NAMES = {
-    "exec", "eval", "compile", "execfile",
-    "open", "file", "input",
-    "os", "sys", "subprocess", "shutil",
-    "globals", "locals", "vars", "dir",
-    "getattr", "setattr", "delattr",
-    "breakpoint", "exit", "quit",
-    "__import__", "__builtins__", "__loader__",
-    "__spec__", "__name__", "__file__",
-}
+# Rules sourced from _ast_safety_rules.py (shared with host-side pre-validators).
+# Defence-in-depth: host validates first; container validates again independently.
+try:
+    from _ast_safety_rules import FORBIDDEN_NAMES, FORBIDDEN_NODES  # inside container
+except ImportError:
+    FORBIDDEN_NODES = (ast.Import, ast.ImportFrom)
+    FORBIDDEN_NAMES = {
+        "exec", "eval", "compile", "execfile",
+        "open", "file", "input",
+        "os", "sys", "subprocess", "shutil",
+        "globals", "locals", "vars", "dir",
+        "getattr", "setattr", "delattr",
+        "breakpoint", "exit", "quit",
+        "__import__", "__builtins__", "__loader__",
+        "__spec__", "__name__", "__file__",
+    }
 
 
 def check_ast_safety(code: str) -> str | None:

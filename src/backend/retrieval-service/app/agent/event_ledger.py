@@ -387,3 +387,89 @@ def record_projection_reconcile_event(
             _put_pg_conn(conn, error=error)
 
     return payload
+
+
+def record_tool_execution(
+    *,
+    audit_id: str,
+    adapter: str,
+    language: str,
+    validation_level: str,
+    verdict: str,
+    inferred_failure_kind: Optional[str],
+    wall_time_ms: float,
+) -> None:
+    """
+    Write a tool_execution sub-event to event_ledger.
+    Consumed by #167 Tool Guardrails (via audit_id) and #166 ERRORS.md (via inferred_failure_kind).
+    """
+    event_at = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "audit_id": audit_id,
+        "adapter": adapter,
+        "language": language,
+        "validation_level": validation_level,
+        "verdict": verdict,
+        "inferred_failure_kind": inferred_failure_kind,
+        "wall_time_ms": round(wall_time_ms, 2),
+        "occurred_at": event_at.isoformat(),
+    }
+    outcome_family = "completed" if verdict == "clean" else "failed"
+    outcome_code = f"TOOL_EXEC_{verdict.upper()}"
+
+    conn = None
+    error = False
+    try:
+        conn = _get_pg_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO event_ledger (
+                    aggregate_type, aggregate_id, event_type, run_id, session_id,
+                    request_id, trace_id, channel, actor_service, actor_kind,
+                    outcome_family, outcome_code, quality, learning_eligible,
+                    payload, occurred_at, idempotency_key, schema_version,
+                    topology_version, policy_version, prompt_version
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+                """,
+                (
+                    "tool_execution",
+                    audit_id,
+                    "tool.execution.completed",
+                    None,
+                    None,
+                    None,
+                    audit_id,
+                    "agent_api",
+                    "retrieval-service",
+                    "code_pipeline",
+                    outcome_family,
+                    outcome_code,
+                    None,
+                    False,
+                    Json(payload),
+                    event_at,
+                    f"tool-execution:{audit_id}",
+                    "phase9.v1",
+                    "phase9.v1",
+                    "phase9.v1",
+                    "phase9.v1",
+                ),
+            )
+        conn.commit()
+    except Exception:
+        error = True
+        if conn is not None:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            _put_pg_conn(conn, error=error)

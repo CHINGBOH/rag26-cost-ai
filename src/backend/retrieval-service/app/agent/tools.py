@@ -4598,7 +4598,7 @@ def python_eval(code: str, chunks_json: str = "") -> str:
         result = f"合计: {sum(items.values())}元"
     """
     try:
-        from infrastructure.sandbox import execute_python
+        from infrastructure.code_pipeline import ExecutionPolicy, ExecutionRequest, get_pipeline
 
         # Phase E: 如果提供了 chunks，注入提取的数值变量
         injected_prefix = ""
@@ -4614,17 +4614,15 @@ def python_eval(code: str, chunks_json: str = "") -> str:
                 pass
 
         full_code = injected_prefix + code if injected_prefix else code
-        output = execute_python(full_code)
-
-        if output["status"] == "success":
-            result_text = output.get("result", "")
-            printed = output.get("output", "").strip()
-            if printed:
-                return f"计算结果: {result_text}\n输出:\n{printed}"
-            return f"计算结果: {result_text}"
-        else:
-            error = output.get("error", "未知错误")
-            return f"[代码执行失败: {error}]"
+        req = ExecutionRequest(
+            code=full_code,
+            language="python",
+            adapter="python_eval",
+            context={"chunks_json_present": bool(chunks_json)},
+            policy=ExecutionPolicy(language="python", enable_lsp=False),
+        )
+        result = get_pipeline().execute(req)
+        return result.user_message
 
     except Exception as e:
         logger.error(f"[python_eval] error: {e}")

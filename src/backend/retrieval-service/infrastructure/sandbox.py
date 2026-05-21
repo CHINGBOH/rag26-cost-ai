@@ -95,7 +95,7 @@ def execute_python(code: str) -> dict:
                 "output": "",
             }
 
-        # 解析容器输出
+        # 解析容器输出（返回原始未截断内容；截断由 CodeExecutionPipeline 负责）
         try:
             output = json.loads(result.stdout)
             log_result = output.get("result", "")[:80]
@@ -103,11 +103,11 @@ def execute_python(code: str) -> dict:
             return output
         except json.JSONDecodeError:
             # 容器输出不是 JSON（可能被 OOM kill 等异常中断）
-            stdout_tail = result.stdout.strip()[-200:]
             return {
                 "status": "error",
-                "error": f"容器输出无法解析: {stdout_tail}",
-                "output": result.stdout[:500],
+                "error": "容器输出无法解析",
+                "output": result.stdout,    # raw, untruncated — Pipeline post-scan reads this
+                "traceback": result.stderr,
             }
 
     except subprocess.TimeoutExpired:
