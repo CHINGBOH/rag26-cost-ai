@@ -149,7 +149,8 @@ async def test_scheduler_gap_retest_listener_calls_gap_retest_service():
         }
         result = await scheduler._execute_gap_retest_listener("run_gap_retest_test")
 
-    mock_repository.fetch_gaps.assert_called_once_with(statuses=["open", "in_progress"], limit=20)
+    mock_repository.fetch_gaps.assert_any_call(statuses=["open", "in_progress"], limit=20)
+    mock_repository.fetch_gaps.assert_any_call(statuses=["observing"], limit=20)
     mock_repository.reconcile_latest_evidence_projection.assert_called_once_with(
         actor="listener_test",
         limit=50,
@@ -1231,7 +1232,7 @@ async def test_lifespan_initializes_and_shuts_down_layer2_components():
             assert main._feedback_analyzer is mock_analyzer
 
         mock_set_services.assert_called_with(mock_pipeline, mock_store)
-        mock_init_scheduler.assert_called_once_with(db_pool=mock_pool)
+        mock_init_scheduler.assert_called_once_with(db_pool=mock_pool, adaptive_scheduler=None)
         mock_init_monitor.assert_called_once_with(db_pool=mock_pool)
         mock_init_analyzer.assert_called_once_with(db_pool=mock_pool)
         assert mock_shutdown_scheduler.call_count == 2

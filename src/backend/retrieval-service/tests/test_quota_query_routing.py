@@ -145,7 +145,11 @@ def test_text_search_rolls_back_after_vector_error(monkeypatch) -> None:
     monkeypatch.setattr(tools, "_get_pg_conn", lambda: fake_conn)
     monkeypatch.setattr(tools, "_put_pg_conn", lambda conn: None)
     monkeypatch.setattr(tools, "_get_embedding", lambda query: [0.1, 0.2, 0.3])
-    monkeypatch.setattr(tools, "_query_text_chunks_literal", lambda conn, query, top_k=10: [literal_chunk])
+    monkeypatch.setattr(
+        tools,
+        "_query_text_chunks_literal",
+        lambda conn, query, top_k=10, path_constraint="": [literal_chunk],
+    )
 
     result = json.loads(tools.text_search.func("送配电装置系统调试", top_k=3))
 

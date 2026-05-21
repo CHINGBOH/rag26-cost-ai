@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import router
+import app.api as api_module
 import app.agent.graph as graph_module
 
 
@@ -73,6 +74,7 @@ def test_stream_endpoint_uses_presentation_policy_node_payload(monkeypatch):
             }
 
     monkeypatch.setattr(graph_module, "get_agent_graph", lambda: FakeGraph())
+    monkeypatch.setattr(api_module, "record_interaction_run_terminal", lambda **_: None)
 
     app = FastAPI()
     app.include_router(router)
@@ -93,4 +95,3 @@ def test_stream_endpoint_uses_presentation_policy_node_payload(monkeypatch):
     assert done_events
     assert done_events[-1]["presentation"]["support_kicker"] == "公式依据"
     assert done_events[-1]["presentation"]["sections"][0]["label"] == "公式依据"
-

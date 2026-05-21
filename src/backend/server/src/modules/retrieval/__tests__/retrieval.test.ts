@@ -51,7 +51,7 @@ describe('Retrieval 模块', () => {
       })
 
       expect(weights.vector).toBe(0.5)
-      expect(weights.rerank).toBe(0.4) // 默认值
+      expect(weights.rerank).toBe(runtimeConfig.retrieval.rerankWeight)
     })
   })
 

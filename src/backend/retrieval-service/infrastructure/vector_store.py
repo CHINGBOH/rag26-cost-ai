@@ -16,6 +16,11 @@ from domain.models import Document, DocumentChunk
 from domain.ports import VectorStorePort
 from config.loader import VectorStoreConfig  # Issue #122: migrated from config.settings
 
+try:
+    from pymilvus import MilvusClient
+except ImportError:
+    MilvusClient = None
+
 
 def _call_with_supported_kwargs(target: Any, **kwargs: Any) -> Any:
     clean_kwargs = {key: value for key, value in kwargs.items() if value is not None}
@@ -206,6 +211,7 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         self.config = config
         self._base: str = ""
         self._connected: bool = False
+        self._client: Any | None = None
         self._connect()
 
     def _build_base(self) -> str:
@@ -214,6 +220,14 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         return f"{scheme}://{self.config.host}:{port}"
 
     def _connect(self) -> None:
+        if MilvusClient is not None:
+            try:
+                self._connect_client()
+                return
+            except Exception as e:
+                print(f"Milvus SDK 连接失败，降级 REST: {e}")
+                self._client = None
+
         import requests as _r
 
         self._base = self._build_base()
@@ -233,6 +247,25 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         except Exception as e:
             print(f"Milvus REST 连接失败: {e}")
 
+    def _connect_client(self) -> None:
+        uri = self.config.uri or self._build_base()
+        password = self.config.password.get_secret_value() if self.config.password else None
+        self._client = _call_with_supported_kwargs(
+            MilvusClient,
+            uri=uri,
+            token=self.config.token,
+            user=self.config.username,
+            password=password,
+            db_name=self.config.database,
+        )
+        if not self._client.has_collection(self.config.collection_name):
+            self._client.create_collection(
+                collection_name=self.config.collection_name,
+                dimension=self.config.vector_size,
+                metric_type=self.config.metric_type,
+            )
+        self._connected = True
+
     def _ensure_collection(self) -> None:
         import requests as _r
 
@@ -242,8 +275,13 @@ class MilvusVectorStoreAdapter(VectorStorePort):
                 json={"collectionName": self.config.collection_name},
                 timeout=10,
             )
-            if resp.status_code == 200 and resp.json().get("data", {}).get("has", True):
-                return
+            body = resp.json() if resp.status_code == 200 else {}
+            if body.get("code") in (0, 200):
+                exists = body.get("data")
+                if isinstance(exists, dict):
+                    exists = exists.get("has", False)
+                if exists is True:
+                    return
 
             resp = _r.post(
                 f"{self._base}/v2/vectordb/collections/create",
@@ -298,7 +336,20 @@ class MilvusVectorStoreAdapter(VectorStorePort):
         }
         return record_id, payload, distance
 
+    @staticmethod
+    def _extract_hit_client(hit: dict) -> tuple[str, dict[str, Any], float]:
+        payload = dict(hit.get("entity") or hit.get("payload") or {})
+        record_id = str(hit.get("id") or payload.get("id") or "")
+        distance = float(hit.get("distance") or hit.get("score") or 0.0)
+        return record_id, payload, distance
+
     def is_available(self) -> bool:
+        if self._client is not None:
+            try:
+                self._client.describe_collection(self.config.collection_name)
+                return True
+            except Exception:
+                return False
         if not self._connected:
             return False
         import requests as _r
@@ -318,6 +369,9 @@ class MilvusVectorStoreAdapter(VectorStorePort):
     ) -> List[Tuple[Document, float]]:
         if not self.is_available():
             return []
+
+        if self._client is not None:
+            return await self._search_client(query_vector, top_k, score_threshold)
 
         import requests as _r
 
@@ -364,9 +418,45 @@ class MilvusVectorStoreAdapter(VectorStorePort):
             print(f"Milvus 向量搜索失败: {e}")
             return []
 
+    async def _search_client(
+        self,
+        query_vector: np.ndarray,
+        top_k: int,
+        score_threshold: float,
+    ) -> list[tuple[Document, float]]:
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._client.search(
+                    collection_name=self.config.collection_name,
+                    data=[query_vector.tolist()],
+                    limit=top_k,
+                    search_params={"metric_type": self.config.metric_type},
+                    output_fields=[
+                        "content", "doc_id", "title",
+                        "page", "section", "chunk_type",
+                    ],
+                ),
+            )
+            raw_hits = result[0] if result and isinstance(result[0], list) else result
+            documents = []
+            for hit in raw_hits or []:
+                record_id, payload, distance = self._extract_hit_client(hit)
+                if self.config.metric_type != "L2" and distance < score_threshold:
+                    continue
+                documents.append((_build_document_from_payload(record_id, payload), distance))
+            return documents
+        except Exception as e:
+            print(f"Milvus 向量搜索失败: {e}")
+            return []
+
     async def upsert(self, documents: List[DocumentChunk], vectors: np.ndarray) -> bool:
         if not self.is_available():
             return False
+
+        if self._client is not None:
+            return await self._upsert_client(documents, vectors)
 
         import requests as _r
 
@@ -406,17 +496,48 @@ class MilvusVectorStoreAdapter(VectorStorePort):
             print(f"Milvus 向量插入失败: {e}")
             return False
 
+    async def _upsert_client(self, documents: list[DocumentChunk], vectors: np.ndarray) -> bool:
+        try:
+            rows = []
+            for index, doc in enumerate(documents):
+                rows.append({
+                    "id": self._str_to_int64(doc.id),
+                    "vector": vectors[index].tolist(),
+                    "content": doc.content,
+                    "doc_id": doc.doc_id,
+                    "title": doc.doc_title,
+                    "page": doc.page,
+                    "section": doc.section,
+                    "chunk_type": doc.chunk_type,
+                    **doc.metadata,
+                })
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._client.upsert(
+                    collection_name=self.config.collection_name,
+                    data=rows,
+                ),
+            )
+            return True
+        except Exception as e:
+            print(f"Milvus 向量插入失败: {e}")
+            return False
+
     async def delete(self, doc_ids: List[str]) -> bool:
         if not self.is_available():
             return False
         if not doc_ids:
             return True
 
-        import requests as _r
-
         expression = (
             "doc_id in [" + ", ".join(json.dumps(doc_id) for doc_id in doc_ids) + "]"
         )
+
+        if self._client is not None:
+            return await self._delete_client(expression)
+
+        import requests as _r
 
         try:
             loop = asyncio.get_event_loop()
@@ -433,6 +554,23 @@ class MilvusVectorStoreAdapter(VectorStorePort):
             )
             body = result.json()
             return body.get("code") == 0
+        except Exception as e:
+            print(f"Milvus 向量删除失败: {e}")
+            return False
+
+    async def _delete_client(self, expression: str) -> bool:
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: _call_with_supported_kwargs(
+                    self._client.delete,
+                    collection_name=self.config.collection_name,
+                    filter=expression,
+                    expr=expression,
+                ),
+            )
+            return True
         except Exception as e:
             print(f"Milvus 向量删除失败: {e}")
             return False

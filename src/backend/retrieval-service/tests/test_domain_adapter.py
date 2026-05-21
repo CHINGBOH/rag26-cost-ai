@@ -154,6 +154,36 @@ def test_validate_runtime_skips_when_no_formula():
     sandbox.execute.assert_not_called()
 
 
+def test_validate_runtime_resolves_symbolic_formula():
+    sandbox = MagicMock()
+    sandbox.execute.return_value = SimpleNamespace(
+        exit_code=0,
+        stdout="result=15",
+        stderr="",
+        result="15",
+    )
+    adapter = CostConsultingAdapter()
+
+    result = adapter.validate_runtime(
+        "人工费为100，机械费为50，费率为10%。企业管理费 = (人工费 + 机械费) × 费率 = 15 元。",
+        sandbox,
+    )
+
+    assert result.passed
+    sandbox.execute.assert_called_once_with("result = (100.0 + 50.0) * 0.1", timeout=30)
+
+
+def test_validate_runtime_fails_unresolved_symbolic_formula():
+    sandbox = MagicMock()
+    adapter = CostConsultingAdapter()
+
+    result = adapter.validate_runtime("企业管理费 = 人工费 × 费率 = 15 元。", sandbox)
+
+    assert not result.passed
+    assert result.error_type == "RUNTIME_ERROR"
+    sandbox.execute.assert_not_called()
+
+
 # ── 6. CostConsultingAdapter — extract_entities ───────────────────────────────
 
 def test_extract_entities_returns_quota_and_material():

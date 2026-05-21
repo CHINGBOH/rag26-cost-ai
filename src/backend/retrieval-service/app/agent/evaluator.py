@@ -297,20 +297,46 @@ class StrictSemanticEvaluator:
             
         except Exception as e:
             logger.error(f"[StrictEvaluator] 语义评估失败: {e}", exc_info=True)
-            # 降级到保守评分
-            return {
-                "passed": False,
-                "completeness": 0.4,
-                "consistency": 0.4,
-                "confidence": 0.4,
-                "information_gain": 0.3,
-                "source_diversity": 0.4,
-                "fact_consistency": 0.4,
-                "coverage_estimate": 0.4,
-                "semantic_score": 0.4,
-                "llm_raw_score": 0,
-                "feedback": f"评估失败（降级评分）: {e}",
-            }
+            return self._heuristic_evaluate_answer_quality(query, answer, chunks, error=e)
+
+    def _heuristic_evaluate_answer_quality(
+        self,
+        query: str,
+        answer: str,
+        chunks: List[dict],
+        *,
+        error: Exception,
+    ) -> dict:
+        normalized_answer = (answer or "").strip()
+        if not normalized_answer:
+            llm_score = 1
+        elif re.search(r"无法回答|不能回答|很抱歉|未找到", normalized_answer):
+            llm_score = 1
+        elif len(normalized_answer) >= 80 and len(re.findall(r"【[^】]+】|\[\d+\]", normalized_answer)) >= 2:
+            llm_score = 5
+        elif re.search(r"关系|越高|影响|导致|因此|所以", normalized_answer):
+            llm_score = 3
+        else:
+            llm_score = 2
+
+        semantic_score = (llm_score - 1) / 4.0
+        fact_consistency = 0.0 if not chunks else self._check_fact_consistency(chunks, normalized_answer)
+        source_diversity = self._calc_source_diversity(chunks)
+        passed = semantic_score >= 0.6 and fact_consistency >= 0.5 and bool(chunks)
+        consistency = (semantic_score + fact_consistency) / 2
+        return {
+            "passed": passed,
+            "completeness": round(semantic_score, 4),
+            "consistency": round(consistency, 4),
+            "confidence": round(semantic_score * 0.9, 4),
+            "information_gain": round(max(0.0, semantic_score * 0.8), 4),
+            "source_diversity": round(source_diversity, 4),
+            "fact_consistency": round(fact_consistency, 4),
+            "coverage_estimate": round(min(semantic_score * 1.1, 0.95), 4),
+            "semantic_score": round(semantic_score, 4),
+            "llm_raw_score": llm_score,
+            "feedback": f"{self._generate_feedback(passed, semantic_score, fact_consistency)}（LLM评估降级: {error}）",
+        }
     
     def _check_fact_consistency(self, chunks: List[dict], answer: str) -> float:
         """

@@ -396,10 +396,10 @@ def observe_decision(
 
 def log_decision(
     decision_type: DecisionType,
-    context: Dict[str, Any],
-    params_used: Dict[str, Any],
-    outcome: Any,
-    reason: str,
+    context: Optional[Dict[str, Any]] = None,
+    params_used: Optional[Dict[str, Any]] = None,
+    outcome: Any = None,
+    reason: Optional[str] = None,
     **kwargs
 ) -> str:
     """
@@ -408,12 +408,27 @@ def log_decision(
     Returns:
         decision_id
     """
+    if context is None:
+        context = kwargs.pop("inputs", {})
+    if params_used is None:
+        params_used = kwargs.pop("params_used", {})
+    if outcome is None:
+        outcome = kwargs.pop("outputs", None)
+    if reason is None:
+        reason = kwargs.pop("rationale", "")
+
+    confidence = kwargs.pop("confidence", None)
+    if confidence is not None:
+        metadata = dict(kwargs.pop("metadata", {}) or {})
+        metadata["confidence"] = confidence
+        kwargs["metadata"] = metadata
+
     decision = Decision(
         decision_type=decision_type,
         context=context,
         params_used=params_used,
         outcome=outcome,
-        reason=reason,
+        reason=reason or "",
         **kwargs
     )
     
