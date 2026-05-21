@@ -48,10 +48,10 @@ def test_after_synthesize_skips_contract_verifier_by_default(monkeypatch: pytest
     assert graph.after_synthesize({}) == "presentation_policy_node"
 
 
-def test_after_synthesize_allows_contract_verifier_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_after_synthesize_runs_validation_before_contract_verifier_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAG_ENABLE_CONTRACT_VERIFIER_LOOP", "1")
 
-    assert graph.after_synthesize({}) == "contract_verifier_node"
+    assert graph.after_synthesize({}) == "validation_pipeline_node"
 
 
 def test_build_forced_standard_ref_tool_calls_for_tax_query() -> None:
@@ -99,7 +99,7 @@ def test_build_forced_rule_clause_tool_call_from_roadmap_for_appendix_query() ->
         "section": "10.1.7",
         "page_start": 0,
         "page_end": 0,
-        "top_k": 6,
+        "top_k": graph.RetrievalPresets.FOCUSED,
     }
 
 
@@ -139,7 +139,7 @@ def test_build_forced_glass_floor_tool_calls_for_quota_price_query() -> None:
         "section": "",
         "page_start": 0,
         "page_end": 0,
-        "top_k": 4,
+        "top_k": graph.RetrievalPresets.NARROW,
     }
 
 

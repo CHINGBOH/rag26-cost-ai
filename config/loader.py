@@ -41,6 +41,14 @@ class VectorStoreConfig(BaseSettings):
     vector_size: int = Field(default=1024, ge=1)
     timeout: int = 30
     pool_size: int = 10
+    uri: Optional[str] = None
+    token: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[SecretStr] = None
+    database: Optional[str] = None
+    metric_type: str = "COSINE"
+    consistency_level: str = "Strong"
+    secure: bool = False
 
 
 class KeywordStoreConfig(BaseSettings):

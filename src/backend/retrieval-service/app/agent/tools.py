@@ -638,6 +638,11 @@ def _should_include_structured_tables(query: str) -> bool:
     if not normalized:
         return False
 
+    if any(hint in normalized for hint in _STRUCTURED_TABLE_QUERY_HINTS):
+        return True
+    if not _FEE_ITEM_RE.search(normalized):
+        return False
+
     # --- ANN + rerank gate ---
     try:
         query_vec = _get_embedding(normalized)

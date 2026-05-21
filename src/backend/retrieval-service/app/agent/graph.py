@@ -4056,7 +4056,7 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
     from config.param_registry import param
     
     outer_iter = state.get("outer_iteration", 0)
-    max_outer = param("contract_max_outer_iterations", default=5)  # Issue #118: 提升到5
+    max_outer = state.get("max_outer_iterations") or param("contract_max_outer_iterations", default=5)
 
     all_results = [
         verify_query_analysis_contract(state),
@@ -4299,6 +4299,10 @@ def corrective_action_node(state: RAGAgentState) -> dict:
             action = f"llm_extract_material:{material}"
             corrective_actions.append(action)
             logger.info(f"[corrective_action] {action}")
+        else:
+            action = "reanalyze_missing_material"
+            corrective_actions.append(action)
+            logger.info(f"[corrective_action] {action}")
 
     if "missing_year_month" in violation_codes:
         material = entities.get("material_name", "")
@@ -4307,6 +4311,10 @@ def corrective_action_node(state: RAGAgentState) -> dict:
             entities["year_month"] = latest
             updates["query_entities"] = entities
             action = f"inject_latest_ym:{latest}"
+            corrective_actions.append(action)
+            logger.info(f"[corrective_action] {action}")
+        else:
+            action = "reanalyze_missing_year_month"
             corrective_actions.append(action)
             logger.info(f"[corrective_action] {action}")
 
@@ -4386,13 +4394,16 @@ def validation_pipeline_node(state: RAGAgentState) -> dict:
     if not final_answer:
         return {}
 
-    try:
-        adapter = AdapterRegistry.get_active()
-    except Exception as exc:
-        logger.warning("[validation_pipeline_node] adapter load failed: %s — skipping", exc)
-        return {}
-
     kb = state.get("retrieved_chunks") or []
+    try:
+        adapter = _build_validation_adapter(AdapterRegistry.get_active(), kb)
+    except Exception as exc:
+        logger.warning("[validation_pipeline_node] adapter load failed: %s", exc)
+        return {
+            "quality_converged": False,
+            "root_cause_node": "synthesize_node",
+        }
+
     pipeline = ValidationPipeline(adapter)
     report = pipeline.run(final_answer, sandbox=_FormulaValidationSandbox(), kb=kb)
 
@@ -4410,6 +4421,37 @@ def validation_pipeline_node(state: RAGAgentState) -> dict:
         "quality_converged": False,
         "root_cause_node": "synthesize_node",
     }
+
+
+def _build_validation_adapter(adapter, kb: list[dict]):
+    if getattr(adapter, "domain_id", "") != "construction-cost":
+        return adapter
+
+    from app.agent.adapters.cost_consulting import CostConsultingAdapter
+
+    return CostConsultingAdapter(entity_store=_RetrievedChunkEntityStore(kb))
+
+
+class _RetrievedChunkEntityStore:
+    def __init__(self, chunks: list[dict]):
+        self._text = "\n".join(self._chunk_text(chunk) for chunk in chunks)
+
+    def __call__(self, quota_number: str) -> bool:
+        if not quota_number:
+            return False
+        pattern = rf"(?<![A-Za-z0-9]){re.escape(quota_number)}(?![A-Za-z0-9])"
+        return re.search(pattern, self._text) is not None
+
+    def _chunk_text(self, chunk: dict) -> str:
+        values: list[str] = []
+        for key in ("content", "text", "chunk_text", "page_content", "doc_filename", "source"):
+            value = chunk.get(key)
+            if value:
+                values.append(str(value))
+        metadata = chunk.get("metadata") or {}
+        if isinstance(metadata, dict):
+            values.extend(str(value) for value in metadata.values() if value)
+        return " ".join(values)
 
 
 class _FormulaValidationSandbox:

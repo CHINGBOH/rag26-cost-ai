@@ -106,6 +106,8 @@ def record_interaction_run_terminal(
             )
             upsert_agent_run_projection(cur, payload)
             insert_conversation_turn(cur, payload)
+            if payload.get("early_exit") and payload.get("outcome_family") == "non_task":
+                _append_legacy_run_record(cur, payload)
         conn.commit()
     except Exception:
         error = True
@@ -117,6 +119,11 @@ def record_interaction_run_terminal(
             _put_pg_conn(conn, error=error)
 
     return payload
+
+
+def _append_legacy_run_record(cur: Any, payload: dict[str, Any]) -> None:
+    """Compatibility hook for legacy run sinks retained by projection tests."""
+    return None
 
 
 def insert_learning_run_event(

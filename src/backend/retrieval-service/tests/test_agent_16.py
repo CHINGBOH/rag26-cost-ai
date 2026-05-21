@@ -174,7 +174,7 @@ for index, question in enumerate(_load_questions()):
     TEST_CASES[index]["query"] = question
 
 
-def test_case(case: dict, idx: int) -> dict:
+def run_case(case: dict, idx: int) -> dict:
     """测试单题"""
     query = case["query"]
     print(f"\n[{idx:02d}/16] [{case['query_type'].upper()}] {query[:45]}...")
@@ -245,7 +245,7 @@ def main():
 
     results = []
     for idx, case in enumerate(TEST_CASES, 1):
-        result = test_case(case, idx)
+        result = run_case(case, idx)
         results.append(result)
         time.sleep(0.5)
 

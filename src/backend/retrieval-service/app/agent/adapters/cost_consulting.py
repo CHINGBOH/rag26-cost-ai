@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from app.agent.adapters.base import DomainAdapter, Entity, ValidationResult
@@ -22,6 +23,13 @@ _FORMULA_RE = re.compile(
     r"[=＝]\s*"
     r"(?P<expected>-?\d[\d,]*(?:\.\d+)?)"
 )
+_FORMULA_SPLIT_RE = re.compile(r"[=＝]")
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?%?")
+_SYMBOL_VALUE_RE = re.compile(
+    r"(?P<name>[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,20})"
+    r"\s*(?:=|＝|:|：|为)\s*"
+    r"(?P<value>-?\d[\d,]*(?:\.\d+)?%?)"
+)
 # Material names: optional grade prefix (C30, HRB400) + Chinese noun + material suffix
 _MATERIAL_RE = re.compile(
     r"(?:[A-Z]\d+[一-龥]{0,3}|[一-龥]{1,6})"
@@ -40,6 +48,13 @@ def _normalize_source_name(name: str) -> str:
         if s.endswith(ext):
             s = s[: -len(ext)]
     return s
+
+
+@dataclass
+class FormulaCheck:
+    expression: Optional[str]
+    expected_value: float
+    source: str
 
 
 class CostConsultingAdapter(DomainAdapter):
@@ -100,8 +115,20 @@ class CostConsultingAdapter(DomainAdapter):
         if not checks:
             return ValidationResult(passed=True)
 
-        for expression, expected_value in checks:
-            result = self._execute_formula_check(sandbox, expression, expected_value)
+        for check in checks:
+            if check.expression is None:
+                return ValidationResult(
+                    passed=False,
+                    error_type="RUNTIME_ERROR",
+                    error_location=check.source[:120],
+                    error_detail="公式包含未解析的变量，无法进行运行时校验",
+                )
+
+            result = self._execute_formula_check(
+                sandbox,
+                check.expression,
+                check.expected_value,
+            )
             if not result.passed:
                 return result
 
@@ -163,18 +190,67 @@ class CostConsultingAdapter(DomainAdapter):
             ),
         )
 
-    def _extract_formula_checks(self, chunk: str) -> List[tuple[str, float]]:
-        checks: List[tuple[str, float]] = []
+    def _extract_formula_checks(self, chunk: str) -> List[FormulaCheck]:
+        checks: List[FormulaCheck] = []
+        symbol_values = self._extract_symbol_values(chunk)
+
         for match in _FORMULA_RE.finditer(chunk):
-            expression = self._normalize_formula_expression(match.group("expr"))
+            expression = self._normalize_formula_expression(match.group("expr"), symbol_values)
             if expression is None:
                 continue
             expected = float(match.group("expected").replace(",", ""))
-            checks.append((expression, expected))
+            checks.append(FormulaCheck(expression, expected, match.group(0)))
+
+        seen = {check.source for check in checks}
+        for segment in re.split(r"[。；;\n]", chunk):
+            candidate = segment.strip()
+            if (
+                candidate in seen
+                or any(source in candidate or candidate in source for source in seen)
+                or not self._looks_like_formula(candidate)
+            ):
+                continue
+            parts = [part.strip() for part in _FORMULA_SPLIT_RE.split(candidate) if part.strip()]
+            if len(parts) < 2:
+                continue
+            expected_match = _NUMBER_RE.search(parts[-1].replace(",", ""))
+            if not expected_match:
+                continue
+            expected_raw = expected_match.group(0)
+            expected = self._parse_number(expected_raw)
+            expression = self._normalize_formula_expression(parts[-2], symbol_values)
+            checks.append(FormulaCheck(expression, expected, candidate))
         return checks
 
-    def _normalize_formula_expression(self, expression: str) -> Optional[str]:
+    def _looks_like_formula(self, text: str) -> bool:
+        has_operator = bool(re.search(r"[+\-*/×÷]", text))
+        has_equals = bool(_FORMULA_SPLIT_RE.search(text))
+        has_result = bool(_NUMBER_RE.search(text))
+        return has_operator and has_equals and has_result
+
+    def _extract_symbol_values(self, chunk: str) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for segment in re.split(r"[。；;\n]", chunk):
+            if self._looks_like_formula(segment):
+                continue
+            for match in _SYMBOL_VALUE_RE.finditer(segment):
+                values[match.group("name")] = str(self._parse_number(match.group("value")))
+        return values
+
+    def _parse_number(self, value: str) -> float:
+        cleaned = value.replace(",", "").strip()
+        if cleaned.endswith("%"):
+            return float(cleaned[:-1]) / 100
+        return float(cleaned)
+
+    def _normalize_formula_expression(
+        self,
+        expression: str,
+        symbol_values: Optional[dict[str, str]] = None,
+    ) -> Optional[str]:
         expr = expression.replace(",", "").replace("×", "*").replace("÷", "/").strip()
+        for symbol, value in sorted((symbol_values or {}).items(), key=lambda item: len(item[0]), reverse=True):
+            expr = re.sub(rf"(?<![A-Za-z0-9_\u4e00-\u9fff]){re.escape(symbol)}(?![A-Za-z0-9_\u4e00-\u9fff])", value, expr)
         expr = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", expr)
         if not re.fullmatch(r"[\d+\-*/().\s]+", expr):
             return None
