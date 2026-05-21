@@ -4373,9 +4373,51 @@ def after_query_analysis(state: RAGAgentState) -> str:
     return END if qt in ("irrelevant", "chitchat") else "intent_guard_node"
 
 
+def validation_pipeline_node(state: RAGAgentState) -> dict:
+    """Run DomainAdapter validation pipeline on final_answer before contract checks.
+
+    Routes to contract_verifier_node on pass, or fails fast (quality_converged=False)
+    and hands off to corrective_action_node on unrecoverable hallucination.
+    """
+    from app.agent.adapters.registry import AdapterRegistry
+    from app.agent.validation_pipeline import ValidationPipeline
+
+    final_answer = state.get("final_answer", "")
+    if not final_answer:
+        return {}
+
+    try:
+        adapter = AdapterRegistry.get_active()
+    except Exception as exc:
+        logger.warning("[validation_pipeline_node] adapter load failed: %s — skipping", exc)
+        return {}
+
+    kb = state.get("retrieved_chunks") or []
+    pipeline = ValidationPipeline(adapter)
+    report = pipeline.run(final_answer, kb=kb)
+
+    if report.passed:
+        logger.info("[validation_pipeline_node] passed (corrections=%d)", report.correction_attempts)
+        return {}
+
+    logger.warning(
+        "[validation_pipeline_node] unrecoverable hallucination: %s", report.hallucination_type
+    )
+    return {
+        "quality_converged": False,
+        "root_cause_node": "synthesize_node",
+    }
+
+
+def after_validation_pipeline(state: RAGAgentState) -> str:
+    if state.get("quality_converged") is False and state.get("root_cause_node") == "synthesize_node":
+        return "corrective_action_node"
+    return "contract_verifier_node"
+
+
 def after_synthesize(state: RAGAgentState) -> str:
     if read_runtime_config().contract_verifier_loop_enabled:
-        return "contract_verifier_node"
+        return "validation_pipeline_node"
     return "presentation_policy_node"
 
 
@@ -4455,6 +4497,7 @@ def build_agent_graph(checkpointer=None):
     g.add_node("tool_node", _tw("tool_node", tool_node))
     g.add_node("chapter_resolver", _tw("chapter_resolver", chapter_resolver_node))
     g.add_node("synthesize_node", _tw("synthesize_node", synthesize_node))
+    g.add_node("validation_pipeline_node", _tw("validation_pipeline_node", validation_pipeline_node))
     g.add_node("contract_verifier_node", _tw("contract_verifier_node", contract_verifier_node))
     g.add_node("corrective_action_node", _tw("corrective_action_node", corrective_action_node))
     g.add_node("presentation_policy_node", _tw("presentation_policy_node", presentation_policy_node))
@@ -4489,7 +4532,16 @@ def build_agent_graph(checkpointer=None):
         after_synthesize,
         {
             "presentation_policy_node": "presentation_policy_node",
+            "validation_pipeline_node": "validation_pipeline_node",
+        },
+    )
+
+    g.add_conditional_edges(
+        "validation_pipeline_node",
+        after_validation_pipeline,
+        {
             "contract_verifier_node": "contract_verifier_node",
+            "corrective_action_node": "corrective_action_node",
         },
     )
 
