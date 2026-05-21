@@ -34,10 +34,14 @@ function tokenise(expr: string): Token[] | string {
     const ch = expr[i]
     if (/\s/.test(ch)) { i++; continue }
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(expr[i + 1] ?? ''))) {
-      let num = ''
-      while (i < expr.length && /[0-9.]/.test(expr[i])) num += expr[i++]
-      const n = parseFloat(num)
-      if (isNaN(n)) return `无效数字: ${num}`
+      const match = expr.slice(i).match(/^(?:\d+(?:\.\d+)?|\.\d+)/)
+      if (!match) return `无效数字: ${expr.slice(i)}`
+      const num = match[0]
+      const next = expr[i + num.length]
+      if (next === '.') return `无效数字: ${expr.slice(i).match(/^\S+/)?.[0] ?? num}`
+      const n = Number(num)
+      if (!Number.isFinite(n)) return `无效数字: ${num}`
+      i += num.length
       tokens.push({ kind: 'num', value: n })
       continue
     }
@@ -73,6 +77,8 @@ class Parser {
     return t
   }
 
+  hasRemaining(): boolean { return this.pos < this.tokens.length }
+
   /** additive: term (('+' | '-') term)* */
   parseExpr(): number {
     let left = this.parseTerm()
@@ -86,14 +92,14 @@ class Parser {
     return left
   }
 
-  /** term: power (('*' | '/' | '%') power)* */
+  /** term: unary (('*' | '/' | '%') unary)* */
   private parseTerm(): number {
-    let left = this.parsePower()
+    let left = this.parseUnary()
     while (true) {
       const t = this.peek()
       if (!t || t.kind !== 'op' || !['*', '/', '%'].includes(t.value)) break
       this.pos++
-      const right = this.parsePower()
+      const right = this.parseUnary()
       if (t.value === '*') left *= right
       else if (t.value === '/') {
         if (right === 0) throw new Error('除数为零')
@@ -103,19 +109,19 @@ class Parser {
     return left
   }
 
-  /** power: unary ('**' unary)* (right-associative) */
+  /** power: atom ('**' unary)? (right-associative) */
   private parsePower(): number {
-    const base = this.parseUnary()
+    const base = this.parseAtom()
     const t = this.peek()
     if (t?.kind === 'op' && t.value === '**') {
       this.pos++
-      const exp = this.parsePower() // right-associative
+      const exp = this.parseUnary()
       return Math.pow(base, exp)
     }
     return base
   }
 
-  /** unary: ('-' | '+')? atom */
+  /** unary: ('-' | '+')? unary | power */
   private parseUnary(): number {
     const t = this.peek()
     if (t?.kind === 'op' && (t.value === '-' || t.value === '+')) {
@@ -123,7 +129,7 @@ class Parser {
       const val = this.parseUnary()
       return t.value === '-' ? -val : val
     }
-    return this.parseAtom()
+    return this.parsePower()
   }
 
   /** atom: number | '(' expr ')' */
@@ -161,9 +167,8 @@ export function evaluateArithmetic(expression: string): ArithmeticResult {
   try {
     const parser = new Parser(tokens)
     const value = parser.parseExpr()
-    // Ensure all tokens were consumed (no trailing garbage)
-    if (parser['pos'] < tokens.length) {
-      return { ok: false, error: `表达式解析不完整，剩余: ${expression.slice(parser['pos'])}` }
+    if (parser.hasRemaining()) {
+      return { ok: false, error: '表达式解析不完整' }
     }
     if (!isFinite(value)) {
       return { ok: false, error: `结果不是有限数: ${value}` }

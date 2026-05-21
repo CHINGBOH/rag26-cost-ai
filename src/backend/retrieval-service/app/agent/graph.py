@@ -4394,11 +4394,14 @@ def validation_pipeline_node(state: RAGAgentState) -> dict:
 
     kb = state.get("retrieved_chunks") or []
     pipeline = ValidationPipeline(adapter)
-    report = pipeline.run(final_answer, kb=kb)
+    report = pipeline.run(final_answer, sandbox=_FormulaValidationSandbox(), kb=kb)
 
     if report.passed:
         logger.info("[validation_pipeline_node] passed (corrections=%d)", report.correction_attempts)
-        return {}
+        return {
+            "quality_converged": True,
+            "root_cause_node": "",
+        }
 
     logger.warning(
         "[validation_pipeline_node] unrecoverable hallucination: %s", report.hallucination_type
@@ -4407,6 +4410,35 @@ def validation_pipeline_node(state: RAGAgentState) -> dict:
         "quality_converged": False,
         "root_cause_node": "synthesize_node",
     }
+
+
+class _FormulaValidationSandbox:
+    def execute(self, code: str, timeout: int = 30):
+        from types import SimpleNamespace
+
+        from infrastructure.code_pipeline import ExecutionPolicy, ExecutionRequest, get_pipeline
+
+        result = get_pipeline().execute(
+            ExecutionRequest(
+                code=code,
+                language="python",
+                adapter="validation_pipeline",
+                policy=ExecutionPolicy(language="python", enable_lsp=False),
+            )
+        )
+        outcome = result.outcome
+        if outcome is None:
+            return SimpleNamespace(
+                exit_code=1,
+                stdout="",
+                stderr=result.user_message,
+            )
+        return SimpleNamespace(
+            exit_code=outcome.exit_code,
+            stdout=outcome.stdout,
+            stderr=outcome.stderr,
+            result=outcome.raw.get("result", ""),
+        )
 
 
 def after_validation_pipeline(state: RAGAgentState) -> str:
