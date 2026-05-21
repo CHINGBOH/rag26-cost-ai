@@ -858,7 +858,8 @@ def finalize_presentation_payload(
             "sources": _parse_citation_items(citations_text)[:4],
         })
 
-    if query_type == "calculation":
+    # F3 (#137): 扩展沙箱触发条件到 impact_analysis
+    if query_type in {"calculation", "impact_analysis"}:
         # 1) Deterministic path: build steps directly from query inputs + chunk rates.
         #    Independent of LLM prose format, so sandbox always renders when data is present.
         deterministic_steps = _build_deterministic_calculation_steps(query, chunks)

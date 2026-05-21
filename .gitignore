@@ -122,3 +122,4 @@ src/backend/retrieval-service/app/临时文件.md
 # Local backup artifacts
 .copilot-backup/
 *.bak.*
+*.bak-*

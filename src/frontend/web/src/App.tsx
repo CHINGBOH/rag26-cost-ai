@@ -60,13 +60,13 @@ const PRIVATE_NAV_ITEMS: { path: string; label: string; icon: ModuleName }[] = [
 
 const SITE_URL = 'https://threefirestone.com';
 const GITHUB_OWNER_URL = 'https://github.com/CHINGBOH';
-const PUBLIC_RESUME_URL = 'https://chingboh.github.io/boone-ai-profile/';
+const PUBLIC_RESUME_URL = '/resume.html';
 const PUBLIC_RAG_REPO_URL = 'https://github.com/CHINGBOH/threefirestone-cost-intelligence';
 const PUBLIC_BEAUTYOS_REPO_URL = 'https://github.com/CHINGBOH/ai-beautyos';
 const PUBLIC_HERMES_FRAMEWORK_URL = 'https://github.com/CHINGBOH/hermes-agent';
 const PUBLIC_BEAUTYOS_HERMES_URL = 'https://github.com/CHINGBOH/beautyos-hermes';
 const RAG_ENTRY_URL = `${SITE_URL}/rag`;
-const BEAUTYOS_ENTRY_URL = `${SITE_URL}/beauty/`;
+const BEAUTYOS_ENTRY_URL = `${SITE_URL}/beautyos/`;
 const PIPELINE_URL = `${SITE_URL}/pipeline`;
 const HUB_URL = `${SITE_URL}/hub/runtime`;
 
@@ -592,64 +592,74 @@ function LandingPage() {
   }
 
   const copy = lang === 'zh' ? {
+    eyebrow: 'Three Fire Stone · 展示入口',
     name: 'Three Fire Stone',
-    tagline: 'AI · Agent · RAG 工程',
+    tagline: 'AI 解决方案与工程作品集',
+    intro: '把 RAG、Agent、医美 CRM、课程与简历集中到一个清晰入口；展示优先，运行系统逐步拆分。',
     placeholder: '问 Hermes 任何问题…',
-    hint: '它会替你查 RAG、美业 CRM、知识库与公开仓库。',
+    hint: '展示页无需登录；提交问题会进入 Hermes Chat。',
     enter: '↵',
-    sectionLive: '在线系统',
-    sectionWorks: '作品',
-    sectionBoundary: '边界',
-    sectionContact: '联系',
+    primaryCta: { label: '查看完整简历', href: PUBLIC_RESUME_URL, external: false },
+    secondaryCta: { label: '进入 RAG 展示', href: RAG_ENTRY_URL, external: false },
+    sectionLive: '在线展示',
+    sectionWorks: '项目与代码',
+    sectionBoundary: '展示边界',
+    sectionContact: '联系与资料',
     liveItems: [
-      { name: 'RAG 智能检索',     desc: '工程造价标准与企业知识库问答',           href: RAG_ENTRY_URL },
-      { name: 'BeautyOS 医美 Demo', desc: '医美 CRM × Hermes Agent 演示',          href: BEAUTYOS_ENTRY_URL },
-      { name: '综合面板',         desc: '运行时拓扑、检索工具箱（登录可见）',     href: HUB_URL },
+      { name: 'RAG 智能检索', desc: '工程造价标准与企业知识库问答', href: RAG_ENTRY_URL, tag: 'RAG', external: false },
+      { name: 'BeautyOS 医美 Demo', desc: '医美 CRM 与 Agent-native 工作台展示', href: BEAUTYOS_ENTRY_URL, tag: 'CRM', external: false },
+      { name: 'Agent Lecture', desc: 'AI Agent 技术讲义与交互式演示', href: '/lecture/', tag: 'Course', external: false },
+      { name: 'Boone Profile', desc: '个人主页、简历与公开项目索引', href: '/boone/', tag: 'Profile', external: false },
     ],
     worksItems: [
-      { name: 'Three Fire Stone Cost Intelligence', href: PUBLIC_RAG_REPO_URL,        sub: 'RAG · LangGraph · Milvus' },
-      { name: 'AI BeautyOS',                        href: PUBLIC_BEAUTYOS_REPO_URL,   sub: 'Agent-native 医美工作台' },
-      { name: 'BeautyOS Hermes Runtime',            href: PUBLIC_BEAUTYOS_HERMES_URL, sub: 'Hermes runtime 整合' },
-      { name: 'Hermes Agent Framework',             href: PUBLIC_HERMES_FRAMEWORK_URL,sub: '上游 Agent 框架' },
+      { name: 'Three Fire Stone Cost Intelligence', href: PUBLIC_RAG_REPO_URL, sub: '工程造价 RAG · 检索增强 · 多服务协作', external: true },
+      { name: 'AI BeautyOS', href: BEAUTYOS_ENTRY_URL, sub: '医美业务展示 · CRM · Agent 工作台', external: false },
+      { name: 'BeautyOS Hermes Runtime', href: PUBLIC_BEAUTYOS_HERMES_URL, sub: 'Hermes runtime 集成与封装', external: true },
+      { name: 'Hermes Agent Framework', href: PUBLIC_HERMES_FRAMEWORK_URL, sub: '上游 Agent 框架与运行时', external: true },
     ],
     boundaryItems: [
-      { k: '公开', v: '仓库链接、技术栈与设计原则 —— 可被搜索收录。' },
-      { k: '系统', v: 'RAG / BeautyOS / Hub / Pipeline 承载真实业务流。' },
-      { k: 'Agent', v: 'Hermes runtime + 受控工具 + 审计日志，副作用全部收口。' },
+      { k: '展示', v: '根域只承载公开展示、简历和作品入口，不直接暴露数据库或内部服务。' },
+      { k: '系统', v: 'RAG / BeautyOS / Lecture 以路径方式挂载，后续需要再升级为子域名。' },
+      { k: 'Agent', v: 'Hermes Chat 入口保留登录边界，副作用工具继续收口到受控服务。' },
     ],
     contactItems: [
-      { label: 'GitHub',   href: GITHUB_OWNER_URL },
-      { label: '公开简历', href: PUBLIC_RESUME_URL },
+      { label: '完整简历', href: PUBLIC_RESUME_URL, external: false },
+      { label: 'GitHub', href: GITHUB_OWNER_URL, external: true },
     ],
   } : {
+    eyebrow: 'Three Fire Stone · Showcase',
     name: 'Three Fire Stone',
-    tagline: 'AI · Agent · RAG engineering',
+    tagline: 'AI solutions and engineering portfolio',
+    intro: 'A clean public entry for RAG, agent systems, BeautyOS, lectures and Boone Liang’s profile.',
     placeholder: 'Ask Hermes anything…',
-    hint: 'It will reach into RAG, the medical-beauty CRM, the knowledge base and public repos.',
+    hint: 'Showcase pages are public; submitting a question opens Hermes Chat.',
     enter: '↵',
-    sectionLive: 'Live systems',
-    sectionWorks: 'Works',
-    sectionBoundary: 'Boundary',
+    primaryCta: { label: 'View resume', href: PUBLIC_RESUME_URL, external: false },
+    secondaryCta: { label: 'Open RAG showcase', href: RAG_ENTRY_URL, external: false },
+    sectionLive: 'Showcases',
+    sectionWorks: 'Projects and code',
+    sectionBoundary: 'Boundaries',
     sectionContact: 'Contact',
     liveItems: [
-      { name: 'RAG search',        desc: 'Cost standards & enterprise KB Q&A',          href: RAG_ENTRY_URL },
-      { name: 'BeautyOS demo',     desc: 'Medical-beauty CRM × Hermes agent demo',      href: BEAUTYOS_ENTRY_URL },
-      { name: 'Ops hub',           desc: 'Runtime topology & retrieval toolbox (login)', href: HUB_URL },
+      { name: 'RAG Search', desc: 'Cost standards and enterprise knowledge-base Q&A', href: RAG_ENTRY_URL, tag: 'RAG', external: false },
+      { name: 'BeautyOS Demo', desc: 'Medical-beauty CRM and agent-native workspace', href: BEAUTYOS_ENTRY_URL, tag: 'CRM', external: false },
+      { name: 'Agent Lecture', desc: 'Interactive AI Agent lecture and demos', href: '/lecture/', tag: 'Course', external: false },
+      { name: 'Boone Profile', desc: 'Personal homepage, resume and project index', href: '/boone/', tag: 'Profile', external: false },
     ],
     worksItems: [
-      { name: 'Three Fire Stone Cost Intelligence', href: PUBLIC_RAG_REPO_URL,        sub: 'RAG · LangGraph · Milvus' },
-      { name: 'AI BeautyOS',                        href: PUBLIC_BEAUTYOS_REPO_URL,   sub: 'Agent-native medical-beauty workspace' },
-      { name: 'BeautyOS Hermes Runtime',            href: PUBLIC_BEAUTYOS_HERMES_URL, sub: 'Hermes runtime integration' },
-      { name: 'Hermes Agent Framework',             href: PUBLIC_HERMES_FRAMEWORK_URL,sub: 'Upstream agent framework' },
+      { name: 'Three Fire Stone Cost Intelligence', href: PUBLIC_RAG_REPO_URL, sub: 'Cost RAG · retrieval · multi-service architecture', external: true },
+      { name: 'AI BeautyOS', href: BEAUTYOS_ENTRY_URL, sub: 'Medical-beauty showcase · CRM · agent workspace', external: false },
+      { name: 'BeautyOS Hermes Runtime', href: PUBLIC_BEAUTYOS_HERMES_URL, sub: 'Hermes runtime integration', external: true },
+      { name: 'Hermes Agent Framework', href: PUBLIC_HERMES_FRAMEWORK_URL, sub: 'Upstream agent framework and runtime', external: true },
     ],
     boundaryItems: [
-      { k: 'Public', v: 'Repo links, stack and design principles — indexable.' },
-      { k: 'System', v: 'RAG / BeautyOS / Hub / Pipeline carry real workflows.' },
-      { k: 'Agent',  v: 'Hermes runtime + scoped tools + audit logs — all side effects converge here.' },
+      { k: 'Showcase', v: 'The root domain is for public pages, resume and project entry points.' },
+      { k: 'Systems', v: 'RAG / BeautyOS / Lecture are mounted as paths and can later move to subdomains.' },
+      { k: 'Agent', v: 'Hermes Chat keeps the login boundary; side-effect tools remain scoped and audited.' },
     ],
     contactItems: [
-      { label: 'GitHub',        href: GITHUB_OWNER_URL },
-      { label: 'Public resume', href: PUBLIC_RESUME_URL },
+      { label: 'Resume', href: PUBLIC_RESUME_URL, external: false },
+      { label: 'GitHub', href: GITHUB_OWNER_URL, external: true },
     ],
   };
 
@@ -665,81 +675,113 @@ function LandingPage() {
       </button>
 
       <div className="landing-min-inner">
-        <h1 className="landing-min-name">{copy.name}</h1>
-        <p className="landing-min-tagline">{copy.tagline}</p>
+        <header className="landing-min-hero">
+          <p className="landing-min-eyebrow">{copy.eyebrow}</p>
+          <h1 className="landing-min-name">{copy.name}</h1>
+          <p className="landing-min-tagline">{copy.tagline}</p>
+          <p className="landing-min-intro">{copy.intro}</p>
 
-        <form className="landing-min-ask" onSubmit={askHermes} role="search">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={copy.placeholder}
-            aria-label={copy.placeholder}
-            autoComplete="off"
-          />
-          <button type="submit" aria-label="Submit">{copy.enter}</button>
-        </form>
-        <p className="landing-min-hint">{copy.hint}</p>
+          <div className="landing-min-actions">
+            <a className="landing-min-cta landing-min-cta-primary" href={copy.primaryCta.href}>
+              {copy.primaryCta.label}
+            </a>
+            <a className="landing-min-cta landing-min-cta-secondary" href={copy.secondaryCta.href}>
+              {copy.secondaryCta.label}
+            </a>
+          </div>
 
-        <div className="landing-min-accordion">
-          <details>
-            <summary>{copy.sectionLive}</summary>
-            <ul>
+          <form className="landing-min-ask" onSubmit={askHermes} role="search">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={copy.placeholder}
+              aria-label={copy.placeholder}
+              autoComplete="off"
+            />
+            <button type="submit" aria-label="Submit">{copy.enter}</button>
+          </form>
+          <p className="landing-min-hint">{copy.hint}</p>
+        </header>
+
+        <main className="landing-min-main">
+          <section className="landing-min-panel landing-min-panel-live" aria-labelledby="landing-live-title">
+            <div className="landing-min-section-head">
+              <span>01</span>
+              <h2 id="landing-live-title">{copy.sectionLive}</h2>
+            </div>
+            <div className="landing-min-card-grid">
               {copy.liveItems.map((it) => (
-                <li key={it.name}>
-                  <a href={it.href}>
-                    <span>{it.name}</span>
-                    <em>{it.desc}</em>
-                  </a>
-                </li>
+                <a
+                  key={it.name}
+                  className="landing-min-card"
+                  href={it.href}
+                  target={it.external ? '_blank' : undefined}
+                  rel={it.external ? 'noreferrer' : undefined}
+                >
+                  <span className="landing-min-card-tag">{it.tag}</span>
+                  <strong>{it.name}</strong>
+                  <em>{it.desc}</em>
+                </a>
               ))}
-            </ul>
-          </details>
+            </div>
+          </section>
 
-          <details>
-            <summary>{copy.sectionWorks}</summary>
-            <ul>
+          <section className="landing-min-panel" aria-labelledby="landing-works-title">
+            <div className="landing-min-section-head">
+              <span>02</span>
+              <h2 id="landing-works-title">{copy.sectionWorks}</h2>
+            </div>
+            <div className="landing-min-list-grid">
               {copy.worksItems.map((it) => (
-                <li key={it.name}>
-                  <a href={it.href} target="_blank" rel="noreferrer">
-                    <span>{it.name}</span>
-                    <em>{it.sub}</em>
-                  </a>
-                </li>
+                <a
+                  key={it.name}
+                  className="landing-min-list-item"
+                  href={it.href}
+                  target={it.external ? '_blank' : undefined}
+                  rel={it.external ? 'noreferrer' : undefined}
+                >
+                  <span>{it.name}</span>
+                  <em>{it.sub}</em>
+                </a>
               ))}
-            </ul>
-          </details>
+            </div>
+          </section>
 
-          <details>
-            <summary>{copy.sectionBoundary}</summary>
-            <ul className="landing-min-boundary">
+          <section className="landing-min-panel" aria-labelledby="landing-boundary-title">
+            <div className="landing-min-section-head">
+              <span>03</span>
+              <h2 id="landing-boundary-title">{copy.sectionBoundary}</h2>
+            </div>
+            <div className="landing-min-boundary-grid">
               {copy.boundaryItems.map((it) => (
-                <li key={it.k}>
-                  <span>{it.k}</span>
-                  <em>{it.v}</em>
-                </li>
+                <article key={it.k} className="landing-min-boundary-card">
+                  <strong>{it.k}</strong>
+                  <p>{it.v}</p>
+                </article>
               ))}
-            </ul>
-          </details>
+            </div>
+          </section>
+        </main>
 
-          <details>
-            <summary>{copy.sectionContact}</summary>
-            <ul>
-              {copy.contactItems.map((it) => (
-                <li key={it.label}>
-                  <a href={it.href} target="_blank" rel="noreferrer">
-                    <span>{it.label}</span>
-                    <em>{it.href.replace(/^https?:\/\//, '')}</em>
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </details>
-        </div>
+        <footer className="landing-min-footer">
+          <span>{copy.sectionContact}</span>
+          {copy.contactItems.map((it) => (
+            <a
+              key={it.label}
+              href={it.href}
+              target={it.external ? '_blank' : undefined}
+              rel={it.external ? 'noreferrer' : undefined}
+            >
+              {it.label}
+            </a>
+          ))}
+        </footer>
       </div>
     </section>
   );
 }
+
 
 function LoginPage() {
   const location = useLocation();

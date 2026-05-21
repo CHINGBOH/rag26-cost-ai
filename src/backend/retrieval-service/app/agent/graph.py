@@ -2611,6 +2611,12 @@ def _default_presentation_policy(query: str, query_type: str, presentation: dict
             "section_labels": {"analysis": "数据解读", "detail": "补充说明"},
             "highlight_labels": {"default": "关键信息", "metric": "关键数值", "detail": "数据细节"},
         }
+    elif query_type == "impact_analysis":
+        policy = {
+            "support_kicker": "影响分析",
+            "section_labels": {"analysis": "直接影响", "detail": "场景分类"},
+            "highlight_labels": {"default": "关键变化", "metric": "数值影响", "detail": "场景说明"},
+        }
 
     if (presentation or {}).get("type") == "calculation_steps":
         policy["support_kicker"] = "计算过程"
@@ -4151,6 +4157,9 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
                     failed_nodes = [r["node"] for r in all_results if not r["passed"]]
                     _trigger_contract_learning(state, outer_iter, max_outer, failed_nodes)
             
+            # F3 (#135): Write back to knowledge_gaps on successful answer
+            _writeback_successful_answer_to_gaps(state)
+            
             return {
                 "contract_results": all_results,
                 "quality_converged": True,
@@ -4186,6 +4195,8 @@ def contract_verifier_node(state: RAGAgentState) -> dict:
                 confidence=1.0,
                 metadata={"contracts": [r["node"] for r in all_results]}
             )
+            # F3 (#135): Write back to knowledge_gaps on successful answer
+            _writeback_successful_answer_to_gaps(state)
             return {
                 "contract_results": all_results,
                 "quality_converged": True,
@@ -4364,6 +4375,127 @@ def corrective_action_node(state: RAGAgentState) -> dict:
     updates["has_tool_calls"] = False
 
     return updates
+
+
+# ── F3 (#135): 主链路成功回答 → 回写 knowledge_gaps 表 ────────────────────
+
+def _writeback_successful_answer_to_gaps(state: RAGAgentState):
+    """F3 (#135): When the agent successfully answers a query, find matching active
+    knowledge gaps and write evidence records.  This closes the learning loop so
+    gaps auto-resolve instead of sitting in the workbench forever.
+
+    Only triggers when:
+    - quality_converged = True  (contract verifier passed)
+    - evaluation.passed = True  (answer quality is good)
+    - evaluation.confidence > 0.4 (don't write back low-confidence answers)
+
+    Writes evidence via KnowledgeGapRepository, then calls decide_from_live_retest
+    to potentially auto-resolve observing gaps whose observation window has expired.
+    """
+    query = str(state.get("query") or "").strip()
+    if not query:
+        return
+
+    final_answer = str(state.get("final_answer") or "")
+    chunks = state.get("retrieved_chunks") or []
+    evaluation = state.get("evaluation") or {}
+    session_id = state.get("session_id", "")
+
+    # Guard: only write back for genuinely good answers
+    if not evaluation.get("passed"):
+        return
+    if float(evaluation.get("confidence", 0)) <= 0.4:
+        return
+
+    try:
+        from app.agent.gaps.repository import KnowledgeGapRepository
+        from app.agent.gaps.lifecycle import decide_from_live_retest, is_passing_gap_evidence
+        from app.agent.learning_state import upsert_knowledge_gap_records
+
+        repo = KnowledgeGapRepository()
+
+        # Find active gaps matching this query — use repo's built-in fetch
+        active_gaps = repo.fetch_gaps(
+            statuses=["open", "in_progress", "observing"],
+            limit=30,
+        )
+
+        # Simple query similarity: overlap of query characters with gap query
+        query_norm = set(query)
+        matched_gaps = []
+        for gap in active_gaps:
+            gap_query = str(gap.get("query") or gap.get("query_text") or "")
+            gap_norm = set(gap_query)
+            if not gap_norm:
+                continue
+            overlap = len(query_norm & gap_norm) / max(len(query_norm | gap_norm), 1)
+            if overlap > 0.3:  # 30% character overlap threshold
+                matched_gaps.append(gap)
+
+        if not matched_gaps:
+            return
+
+        evidence = {
+            "source_type": "live_agent_answer",
+            "actor": "agent_graph.writeback",
+            "run_id": state.get("run_id", ""),
+            "session_id": session_id,
+            "endpoint": "/api/v1/agent",
+            "query": query,
+            "answer_preview": final_answer[:500] if final_answer else "",
+            "chunks_count": len(chunks),
+            "refused": False,
+            "generic_answer": False,
+            "quality": "good",
+            "outcome_code": "ANSWERED_OK",
+            "confidence": float(evaluation.get("confidence", 0)),
+        }
+
+        transitions_applied = 0
+        for gap in matched_gaps:
+            try:
+                gap_key = str(gap.get("gap_key") or "")
+                if not gap_key:
+                    continue
+
+                # Write evidence record
+                repo.insert_evidence(
+                    gap_key=gap_key,
+                    evidence_type="live_retest",
+                    evidence=evidence,
+                    actor="agent_graph.writeback",
+                    decision="observe_fixed",
+                    decision_reason="Live agent answer passed evaluation — auto write-back",
+                )
+
+                # Decide lifecycle transition
+                decision = decide_from_live_retest(gap, evidence)
+                action = decision.get("action", "keep_open")
+                new_status = decision.get("status")
+
+                if action != "keep_open":
+                    repo.update_gap_status(
+                        gap_key=gap_key,
+                        status=str(new_status),
+                        reason=decision.get("reason", ""),
+                        actor="agent_graph.writeback",
+                    )
+                    transitions_applied += 1
+
+            except Exception as inner_exc:
+                logger.debug("[gap_writeback] gap=%s failed: %s", gap.get("gap_key"), inner_exc)
+
+        if transitions_applied:
+            logger.info(
+                "[gap_writeback] closed-loop: wrote evidence to %d gaps, %d transitions applied "
+                "(query=%s, confidence=%.3f)",
+                len(matched_gaps), transitions_applied,
+                query[:60], evaluation.get("confidence", 0),
+            )
+
+    except Exception as exc:
+        # Never let gap write-back crash the main agent flow
+        logger.debug("[gap_writeback] non-critical failure: %s", exc)
 
 
 # ── 路由函数 ────────────────────────────────────────────────────────────────
