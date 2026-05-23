@@ -1,0 +1,41 @@
+rules:
+  - id: rag-dashboard-python-raw-os-getenv
+    message: Use the canonical Python config loader instead of scattered os.getenv reads.
+    severity: WARNING
+    languages:
+      - python
+    pattern: os.getenv(...)
+    metadata:
+      category: config
+      canonical_surface: config.loader.get_config
+
+  - id: rag-dashboard-python-float-money
+    message: Use Decimal for price, fee, rate, amount, or cost calculations.
+    severity: WARNING
+    languages:
+      - python
+    patterns:
+      - pattern: float($X)
+      - metavariable-regex:
+          metavariable: $X
+          regex: "(?i).*(price|fee|rate|amount|cost).*"
+    metadata:
+      category: precision
+
+  - id: rag-dashboard-ts-explicit-any
+    message: Avoid bare any; derive types from Zod schemas or shared types.
+    severity: WARNING
+    languages:
+      - typescript
+    pattern: "$X: any"
+    metadata:
+      category: type-safety
+
+  - id: rag-dashboard-ts-process-env-direct
+    message: Prefer a validated config entrypoint over direct process.env reads.
+    severity: WARNING
+    languages:
+      - typescript
+    pattern: process.env.$KEY
+    metadata:
+      category: config

@@ -21,7 +21,12 @@
     "test:python": "cd src/backend/python-legacy && python -m pytest tests/ -v",
     "test:quick": "./quick_test.sh",
     "typecheck": "tsc --noEmit --project src/backend/server/tsconfig.json",
-    "install:all": "npm install"
+    "install:all": "npm install",
+    "analysis:install": "cd tools/code-analysis && npm install && npm run install:python && npm run install:pycg310",
+    "analysis": "python3 tools/code-analysis/run_analysis.py all",
+    "analysis:deps": "python3 tools/code-analysis/run_analysis.py deps",
+    "analysis:flows": "python3 tools/code-analysis/run_analysis.py flows",
+    "analysis:security": "python3 tools/code-analysis/run_analysis.py security"
   },
   "devDependencies": {
     "typescript": "^5.3.0"
