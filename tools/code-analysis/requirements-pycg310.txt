@@ -1,2 +1,0 @@
-PyCG==0.0.8
-setuptools<81

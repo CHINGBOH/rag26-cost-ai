@@ -116,3 +116,4 @@ src/backend/retrieval-service/app/临时文件.md
 /recordings/
 /scripts/
 .code-review-graph/
+tools/code-analysis/
