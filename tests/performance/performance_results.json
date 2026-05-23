@@ -1,9 +1,0 @@
-{
-  "baseline": {},
-  "concurrent": {},
-  "db_connections": {},
-  "memory": {},
-  "query_perf": {},
-  "scalability": {},
-  "cache": {}
-}

@@ -1,5 +1,0 @@
-code2flow>=2.5.1
-pydeps>=3.0.1
-pyan3>=1.2.0
-PyCG>=0.0.8
-semgrep>=1.120.0

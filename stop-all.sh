@@ -1,57 +1,24 @@
 #!/usr/bin/env bash
-
 # =============================================================================
-# RAG Dashboard Microservices - Stop Script (Phase 5)
-# Supports both local-dev and docker modes.
+# RAG Dashboard — minimal stack stopper
+#
+# Stops the Vite dev server + 5 core containers.
+# Postgres / Qdrant / Redis volumes are preserved.
 # =============================================================================
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODE="${1:-local}"
-
-cd "$PROJECT_ROOT"
-
-if [[ "$MODE" == "docker" ]]; then
-    echo "🐳 Stopping Docker services..."
-    docker-compose down
-    echo "✅ Docker services stopped"
-    exit 0
+# Frontend (Vite on :3000)
+PIDS=$(ss -tlnp 2>/dev/null | awk '/:3000 /{print $NF}' | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+if [[ -n "${PIDS:-}" ]]; then
+  echo "🛑 Stopping Vite frontend (pids: $PIDS)"
+  for p in $PIDS; do kill "$p" 2>/dev/null || true; done
+  sleep 1
+  for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
 fi
 
-echo "🛑 Stopping all local services..."
+echo "🐳 Stopping RAG core containers..."
+docker compose stop postgres qdrant redis tei retrieval-service || true
 
-kill_port() {
-    local port="$1"
-    local name="$2"
-    local pids
-    pids=$(lsof -ti TCP:"$port" 2>/dev/null || true)
-    if [[ -n "$pids" ]]; then
-        echo "  - Stopping $name (port $port, PID $pids)"
-        echo "$pids" | xargs kill 2>/dev/null || true
-    fi
-}
-
-kill_process() {
-    local pattern="$1"
-    local name="$2"
-    local pids
-    pids=$(pgrep -f "$pattern" 2>/dev/null || true)
-    if [[ -n "$pids" ]]; then
-        echo "  - Stopping $name (PID $pids)"
-        echo "$pids" | xargs kill 2>/dev/null || true
-    fi
-}
-
-# Application services
-kill_port 8080 "Go API Gateway"
-kill_port 8081 "Go WebSocket Gateway"
-kill_port 3001 "Node Server"
-kill_port 8002 "Retrieval Service"
-kill_port 8000 "Python Legacy"
-
-# Also kill by pattern as fallback
-kill_process "cmd/gateway" "Go API Gateway"
-kill_process "cmd/websocket" "Go WebSocket Gateway"
-kill_process "tsx src/index.ts" "Node Server"
-
-sleep 1
-echo "✅ All local services stopped"
+echo "✅ Stopped. Volumes preserved. Use 'docker compose down -v' to wipe data."

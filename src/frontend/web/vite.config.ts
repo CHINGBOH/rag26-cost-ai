@@ -20,35 +20,19 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      // Agent API 代理到 Node.js 后端 (3001)
-      // TODO: 待 Gateway 补充 /api/agent 路由后可统一走 /api -> 8080
-      '/api/agent': {
-        target: 'http://localhost:3001',
-        changeOrigin: true
-      },
-      // /api/v1/* 直接代理到 retrieval-service (:8002)
-      // Go Gateway (:8080) 与 llama-server 共用端口，开发时绕过
-      '/api/v1': {
+      // 最小可跑集：仅保留 retrieval-service (:8002)
+      // 已删除：Node 编排 (:3001)、Go Gateway (:8080)、Go WebSocket (:8081)
+      // 所有 /api/*、/health、/metrics 一律打到 retrieval-service
+      '/api': {
         target: 'http://localhost:8002',
         changeOrigin: true
       },
-      // 其余 /api/* 走 Go Gateway (:8080)
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
-      },
       '/health': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:8002',
         changeOrigin: true
       },
       '/metrics': {
-        target: 'http://localhost:8080',
-        changeOrigin: true
-      },
-      // WebSocket 代理到 Go WebSocket Gateway (8081)
-      '/ws': {
-        target: 'ws://localhost:8081',
-        ws: true,
+        target: 'http://localhost:8002',
         changeOrigin: true
       }
     }

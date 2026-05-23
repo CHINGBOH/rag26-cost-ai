@@ -1,25 +1,11 @@
-version: '3.8'
-
-# RAG Dashboard Microservices Architecture
-# Phase 5: Deployment Orchestration
+# RAG Dashboard — Minimum stack
 #
-# Services:
-#   - node-server:       Node.js API + XState orchestrator (3001)
-#   - go-gateway:        Go API Gateway (8080)
-#   - go-websocket:      Go WebSocket Gateway (8081)
-#   - python-legacy:     Python FastAPI embedding/ingestion (8000)
-#   - retrieval-service: Python FastAPI retrieval service (8002)
-#   - postgres:          PostgreSQL for XState persistence
-#   - redis:             Cache & session store
-#   - qdrant:            Vector database (primary)
-#   - milvus:            Alternative vector database (production-grade, switchable)
-#   - elasticsearch:     Keyword/full-text search
-#   - neo4j:             Knowledge graph
+# 5 services only. Everything else (milvus/etcd/minio, elasticsearch, neo4j,
+# python-legacy, node-server, go-gateway, go-websocket) has been removed.
+# The full historical compose file is preserved as docker-compose.yml.full
+# for reference if you ever need to bring those services back.
 
 services:
-  # ---------------------------------------------------------------------------
-  # Infrastructure
-  # ---------------------------------------------------------------------------
   postgres:
     build:
       context: ./infrastructure/docker
@@ -41,8 +27,7 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
-    networks:
-      - rag-network
+    networks: [rag-network]
 
   redis:
     image: redis:7.2-alpine
@@ -56,8 +41,7 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
-    networks:
-      - rag-network
+    networks: [rag-network]
 
   qdrant:
     image: qdrant/qdrant:v1.8.0
@@ -67,258 +51,20 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333 && echo -e 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | head -1 | grep -q '200'"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    networks:
-      - rag-network
+    networks: [rag-network]
 
-  # ---------------------------------------------------------------------------
-  # Milvus (production-grade vector database, opt-in via APP_VECTOR_STORE__TYPE=milvus)
-  # Standalone deployment = milvus + etcd (metadata) + minio (object store).
-  # Default config keeps qdrant as the active backend; flip the env var on
-  # retrieval-service to swap. Both can run in parallel for A/B comparison.
-  # ---------------------------------------------------------------------------
-  milvus-etcd:
-    image: quay.io/coreos/etcd:v3.5.5
-    container_name: rag-milvus-etcd
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    volumes:
-      - milvus_etcd:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    profiles: ["milvus"]
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  milvus-minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    container_name: rag-milvus-minio
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - milvus_minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    profiles: ["milvus"]
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  milvus:
-    image: milvusdb/milvus:v2.4.10
-    container_name: rag-milvus
-    command: ["milvus", "run", "standalone"]
-    environment:
-      ETCD_ENDPOINTS: milvus-etcd:2379
-      MINIO_ADDRESS: milvus-minio:9000
-    ports:
-      - "19530:19530"   # gRPC
-      - "9091:9091"     # metrics / health
-    volumes:
-      - milvus_data:/var/lib/milvus
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      timeout: 20s
-      start_period: 90s
-      retries: 3
-    depends_on:
-      - milvus-etcd
-      - milvus-minio
-    profiles: ["milvus"]
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  elasticsearch:
-    build:
-      context: ./infrastructure/docker
-      dockerfile: Dockerfile.elasticsearch
-    image: rag-elasticsearch:8.12-ik
-    container_name: rag-elasticsearch
-    ports:
-      - "9200:9200"
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - cluster.name=rag-cluster
-      - node.name=rag-node
-      - ES_JAVA_OPTS=-Xms1g -Xmx2g
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health | grep -E 'green|yellow' || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 60s
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  # ---------------------------------------------------------------------------
-  # Application Services
-  # ---------------------------------------------------------------------------
-  python-legacy:
-    build:
-      context: ./src/backend/python-legacy
-      dockerfile: Dockerfile
-    container_name: rag-python-legacy
-    ports:
-      - "8000:8000"
-    environment:
-      - PORT=8000
-      - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
-      - REDIS_URL=redis://redis:6379/0
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=rag_dashboard
-      - POSTGRES_USER=rag_user
-      - POSTGRES_PASSWORD=rag_password
-      - TEI_URL=http://tei:8000
-      - EMBEDDING_BACKEND=tei
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  retrieval-service:
-    build:
-      context: ./src/backend/retrieval-service
-      dockerfile: Dockerfile
-    container_name: rag-retrieval-service
-    ports:
-      - "8002:8002"
-    environment:
-      - PORT=8002
-      - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
-      - REDIS_URL=redis://redis:6379/0
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=rag_dashboard
-      - POSTGRES_USER=rag_user
-      - POSTGRES_PASSWORD=rag_password
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  node-server:
-    build:
-      context: ./src/backend/server
-      dockerfile: Dockerfile
-    container_name: rag-node-server
-    ports:
-      - "3001:3001"
-    environment:
-      - PORT=3001
-      - DATABASE_URL=postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
-      - REDIS_URL=redis://redis:6379/0
-      - PYTHON_API_URL=http://python-legacy:8000
-      - RETRIEVAL_API_URL=http://retrieval-service:8002
-      - WS_GATEWAY_URL=http://go-websocket:8081/broadcast
-      - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
-      - NODE_ENV=production
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      python-legacy:
-        condition: service_started
-      retrieval-service:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  go-gateway:
-    build:
-      context: ./src/backend/go-services
-      dockerfile: Dockerfile.gateway
-    container_name: rag-go-gateway
-    ports:
-      - "8080:8080"
-    environment:
-      - PORT=8080
-      - NODEJS_URL=http://node-server:3001
-      - PYTHON_URL=http://python-legacy:8000
-      - OCR_URL=http://python-legacy:8000
-      - RETRIEVAL_URL=http://retrieval-service:8002
-      - LLM_URL=http://python-legacy:8000
-      - WS_GATEWAY_URL=http://go-websocket:8081
-    depends_on:
-      node-server:
-        condition: service_started
-      python-legacy:
-        condition: service_started
-      retrieval-service:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  go-websocket:
-    build:
-      context: ./src/backend/go-services
-      dockerfile: Dockerfile.websocket
-    container_name: rag-go-websocket
-    ports:
-      - "8081:8081"
-    environment:
-      - PORT=8081
-    restart: unless-stopped
-    networks:
-      - rag-network
-
-  # ---------------------------------------------------------------------------
-  # Embedding Services
-  # ---------------------------------------------------------------------------
   tei:
     image: ghcr.io/huggingface/text-embeddings-inference:1.5
     container_name: rag-tei
     ports:
       - "8003:80"
     volumes:
-      - ./models:/data
-    environment:
-      - MODEL_ID=BAAI/bge-m3
-      - PORT=80
-      - MAX_BATCH_TOKENS=16384
-      - MAX_CLIENT_BATCH_SIZE=64
+      - tei_models:/data
     command: >
       --model-id BAAI/bge-m3
       --revision main
@@ -339,8 +85,36 @@ services:
       retries: 5
       start_period: 60s
     restart: unless-stopped
-    networks:
-      - rag-network
+    networks: [rag-network]
+
+  retrieval-service:
+    build:
+      context: ./src/backend/retrieval-service
+      dockerfile: Dockerfile
+    container_name: rag-retrieval-service
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: 8002
+      DATABASE_URL: postgresql://rag_user:rag_password@postgres:5432/rag_dashboard
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: rag_dashboard
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_password
+      TEI_URL: http://tei:80
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [rag-network]
 
 networks:
   rag-network:
@@ -349,7 +123,4 @@ networks:
 volumes:
   postgres_data:
   qdrant_storage:
-  es_data:
-  milvus_etcd:
-  milvus_minio:
-  milvus_data:
+  tei_models:
