@@ -128,8 +128,8 @@ export const ImprovementHistoryPanel: React.FC<ImprovementHistoryPanelProps> = (
               <YAxis />
               <Tooltip formatter={(value: any) => `${(Number(value) * 100).toFixed(1)}%`} />
               <Legend />
-              <Line type="monotone" dataKey="before" stroke="#3498db" name="修改前" />
-              <Line type="monotone" dataKey="after" stroke="#2ecc71" name="修改后" />
+              <Line type="monotone" dataKey="before" stroke="var(--color-info)" name="修改前" />
+              <Line type="monotone" dataKey="after" stroke="var(--color-success)" name="修改后" />
             </LineChart>
           </ResponsiveContainer>
         </div>

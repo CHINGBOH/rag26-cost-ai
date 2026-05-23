@@ -94,6 +94,23 @@ class LearningScheduler:
                     coalesce=True,
                     max_instances=1,
                 )
+
+            # #174: Curator 每周层 — 每周日上午 04:00 UTC
+            curator_config = get_learning_config().curator
+            if curator_config.enabled:
+                self.scheduler.add_job(
+                    self.run_weekly_curator,
+                    CronTrigger(
+                        day_of_week=curator_config.cron_day_of_week,
+                        hour=curator_config.cron_hour,
+                        minute=curator_config.cron_minute,
+                    ),
+                    id='curator_weekly',
+                    name='Weekly Curator',
+                    misfire_grace_time=3600,  # 允许1小时迟到
+                    coalesce=True,
+                    max_instances=1,
+                )
             
             self.scheduler.start()
             self._running = True
@@ -717,6 +734,61 @@ class LearningScheduler:
             logger.error(f"Error getting next run time: {e}")
         
         return {'error': 'no scheduled job'}
+
+    # ── #174: Curator 每周层 ────────────────────────────────────────────
+
+    async def run_weekly_curator(self):
+        """执行每周 Curator 维护：Skill整合 + Knowledge衰减 + ERRORS晋升。
+
+        调度：每周日上午 04:00 UTC。
+        """
+        run_id = f"curator_{self._utc_timestamp()}"
+
+        try:
+            logger.info("curator_scheduled.started run_id=%s", run_id)
+
+            await self._record_run(
+                run_id,
+                {"status": "running", "started_by": "cron", "trigger": "weekly_curator"},
+                "running",
+                "scheduled",
+                event_type="curator.weekly.started",
+            )
+
+            from app.agent.curator import run_weekly_curator as _run_curator
+
+            curator_config = get_learning_config().curator
+            stats = await _run_curator(
+                domains=None,  # 自动发现所有 domain
+                dry_run=curator_config.dry_run,
+            )
+
+            await self._record_run(
+                run_id,
+                {"status": "completed", **stats.to_dict()},
+                "completed",
+                "scheduled",
+                event_type="curator.weekly.completed",
+            )
+
+            logger.info(
+                "curator_scheduled.completed run_id=%s skills=%d/%d/%d memories=%d errors=%d/%d duration=%.0fms",
+                run_id,
+                stats.skills_scanned, stats.skills_archived, stats.skills_active,
+                stats.memories_scanned,
+                stats.errors_patterns_scanned, stats.errors_promoted_to_stable,
+                stats.duration_ms,
+            )
+
+        except Exception as exc:
+            logger.error("curator_scheduled.failed run_id=%s error=%s", run_id, exc, exc_info=True)
+            await self._record_run(
+                run_id,
+                {"status": "failed", "error": str(exc), "trigger": "weekly_curator"},
+                "failed",
+                "scheduled",
+                event_type="curator.weekly.failed",
+            )
 
 
 # Global scheduler instance

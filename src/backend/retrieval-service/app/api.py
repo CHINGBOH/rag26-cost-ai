@@ -6791,3 +6791,170 @@ async def get_learning_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get learning status: {e}")
         return {'error': str(e), 'timestamp': datetime.now(timezone.utc).isoformat()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool API — 直接暴露 39 个 @tool 函数为 REST 端点
+# /api/v1/tools/<name>         → 调用指定 tool
+# /api/v1/tools/list           → 列出所有可用 tool
+# ═══════════════════════════════════════════════════════════════════════════
+
+import inspect as _inspect
+from typing import get_type_hints as _get_type_hints
+from pydantic import BaseModel as _BaseModel
+
+class ToolCallRequest(_BaseModel):
+    """通用 tool 调用请求"""
+    kwargs: Dict[str, Any] = {}
+
+
+# ── Tool 注册表（启动时自动收集）──────────────────────────────────────────
+_tool_registry: Dict[str, Any] = {}
+_tool_schemas: Dict[str, Dict[str, Any]] = {}
+
+
+def _discover_tools() -> None:
+    """从 app.agent.tools 模块中收集所有 @tool 装饰的函数"""
+    global _tool_registry, _tool_schemas
+    if _tool_registry:
+        return
+
+    from app.agent.tools import (
+        concept_search, vector_search, keyword_search, graph_search,
+        hybrid_search, pdf_page_search, price_query, text_search,
+        calculator, python_eval, category_search, price_trend,
+        rule_clause_search, get_catalog_map, topology_search,
+        list_tables, describe_table, sql_query, aggregate_query,
+        list_documents, fetch_chunk, similar_chunks, stats_overview,
+        concept_neighbors, concept_path, entity_cooccur, upstream_downstream,
+        expand_question, suggest_followup, find_knowledge_gaps,
+        forecast_series, outlier_detect, correlate, cluster_records,
+        regex_extract, unit_convert, date_math, compare_values,
+        number_stats, chart_spec, proactive_explore,
+    )
+
+    _all = [
+        concept_search, vector_search, keyword_search, graph_search,
+        hybrid_search, pdf_page_search, price_query, text_search,
+        calculator, python_eval, category_search, price_trend,
+        rule_clause_search, get_catalog_map, topology_search,
+        list_tables, describe_table, sql_query, aggregate_query,
+        list_documents, fetch_chunk, similar_chunks, stats_overview,
+        concept_neighbors, concept_path, entity_cooccur, upstream_downstream,
+        expand_question, suggest_followup, find_knowledge_gaps,
+        forecast_series, outlier_detect, correlate, cluster_records,
+        regex_extract, unit_convert, date_math, compare_values,
+        number_stats, chart_spec, proactive_explore,
+    ]
+
+    for func in _all:
+        if not callable(func):
+            continue
+        name = getattr(func, 'name', func.__name__)
+        _tool_registry[name] = func
+
+        # Build JSON schema from signature
+        sig = _inspect.signature(func)
+        hints = {}
+        try:
+            hints = _get_type_hints(func)
+        except Exception:
+            pass
+
+        params = {}
+        required = []
+        for param_name, param in sig.parameters.items():
+            param_type = "string"
+            if param_name in hints:
+                py_type = hints[param_name]
+                if py_type is int:
+                    param_type = "integer"
+                elif py_type is float:
+                    param_type = "number"
+                elif py_type is bool:
+                    param_type = "boolean"
+            default = ... if param.default is _inspect.Parameter.empty else param.default
+            params[param_name] = {
+                "type": param_type,
+                "default": None if default is ... else default,
+            }
+            if default is ...:
+                required.append(param_name)
+
+        _tool_schemas[name] = {
+            "name": name,
+            "description": (func.__doc__ or "").strip().split("\n")[0],
+            "parameters": params,
+            "required": required,
+        }
+
+    logger.info(f"[tool_api] discovered {len(_tool_registry)} tools")
+
+
+@router.get("/api/v1/tools/list")
+async def list_tools_endpoint() -> Dict[str, Any]:
+    """列出所有可用的 tool 及其签名"""
+    _discover_tools()
+    return {
+        "count": len(_tool_schemas),
+        "tools": list(_tool_schemas.values()),
+    }
+
+
+@router.get("/api/v1/tools/{tool_name}/schema")
+async def get_tool_schema_endpoint(tool_name: str) -> Dict[str, Any]:
+    """获取指定 tool 的 JSON Schema"""
+    _discover_tools()
+    if tool_name not in _tool_schemas:
+        raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found. Available: {list(_tool_schemas.keys())}")
+    return _tool_schemas[tool_name]
+
+
+@router.post("/api/v1/tools/{tool_name}")
+async def call_tool_endpoint(tool_name: str, req: ToolCallRequest) -> Dict[str, Any]:
+    """
+    直接调用指定 tool 函数。
+
+    POST /api/v1/tools/price_query
+    {
+        "kwargs": {"material_name": "C30商品混凝土", "year_month": "202512"}
+    }
+    """
+    _discover_tools()
+
+    if tool_name not in _tool_registry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tool '{tool_name}' not found. Available: {sorted(_tool_registry.keys())}"
+        )
+
+    func = _tool_registry[tool_name]
+    kwargs = req.kwargs or {}
+
+    # Validate required params
+    schema = _tool_schemas.get(tool_name, {})
+    required = schema.get("required", [])
+    for param in required:
+        if param not in kwargs:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing required parameter: '{param}'. Required: {required}"
+            )
+
+    try:
+        result = func(**kwargs)
+    except TypeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid arguments: {e}")
+    except Exception as e:
+        logger.error(f"[tool_api] {tool_name} failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Tools return JSON strings; parse if possible
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+            return {"tool": tool_name, "result": parsed}
+        except (json.JSONDecodeError, ValueError):
+            return {"tool": tool_name, "result": result}
+
+    return {"tool": tool_name, "result": result}

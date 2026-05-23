@@ -54,7 +54,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ dashboard }) => 
                 label={{ value: '修好的问题', angle: 90, position: 'insideRight' }}
               />
               <Tooltip
-                contentStyle={{ backgroundColor: '#fff', border: '1px solid #ddd' }}
+                contentStyle={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}
                 formatter={(value, name) => {
                   if (name === '答对比例') return [Number(value).toFixed(2), '答对比例'];
                   if (name === '修好的问题') return [value, '修好的问题'];
@@ -66,7 +66,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ dashboard }) => 
                 yAxisId="left"
                 type="monotone"
                 dataKey="rate"
-                stroke="#2ecc71"
+                stroke="var(--color-success)"
                 name="答对比例"
                 strokeWidth={2}
                 dot={{ r: 4 }}
@@ -75,7 +75,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ dashboard }) => 
                 yAxisId="right"
                 type="monotone"
                 dataKey="fixed"
-                stroke="#3498db"
+                stroke="var(--color-info)"
                 name="修好的问题"
                 strokeWidth={2}
                 dot={{ r: 4 }}

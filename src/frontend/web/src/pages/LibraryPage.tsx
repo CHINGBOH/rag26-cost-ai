@@ -15,6 +15,7 @@ import './LibraryPage.css';
 import { QUICK_QUESTIONS } from '../config/kb-config';
 
 import { FeedbackModal, FeedbackDetail } from '../components/FeedbackModal';
+import { SystemAssistant } from '../components/SystemAssistant';
 import { PresentationCard } from './AgentChat';
 
 /* ── Fixed config — never exposed to user ────────────── */
@@ -141,6 +142,8 @@ export const LibraryPage: React.FC = () => {
         </button>
       </div>
 
+      {/* ── System assistant (bottom-right floating) ── */}
+      <SystemAssistant />
     </div>
   );
 };

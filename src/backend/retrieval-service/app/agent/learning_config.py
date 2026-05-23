@@ -69,6 +69,22 @@ class GapRetestListenerConfig(BaseModel):
     active_only: bool = True
 
 
+class CuratorConfig(BaseModel):
+    """#174: Curator 每周层配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    cron_day_of_week: int = Field(default=6, ge=0, le=6)   # 0=Mon ... 6=Sun
+    cron_hour: int = Field(default=4, ge=0, le=23)          # UTC
+    cron_minute: int = Field(default=0, ge=0, le=59)
+    skill_archive_days: int = Field(default=30, ge=7, le=365)
+    peripheral_purge_days: int = Field(default=7, ge=1, le=60)
+    errors_promotion_threshold: int = Field(default=3, ge=2, le=20)
+    max_candidates_per_domain: int = Field(default=1000, ge=100, le=5000)
+    dry_run: bool = False
+
+
 class LearningModuleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -77,6 +93,7 @@ class LearningModuleConfig(BaseModel):
     failure_monitor: FailureMonitorConfig
     problem_detector: ProblemDetectorConfig
     gap_retest_listener: GapRetestListenerConfig = Field(default_factory=GapRetestListenerConfig)
+    curator: CuratorConfig = Field(default_factory=CuratorConfig)
 
 
 _cached_learning_config: LearningModuleConfig | None = None

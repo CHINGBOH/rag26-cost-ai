@@ -39,6 +39,13 @@
   --color-error:   #C0392B;
   --color-info:    #0066CC;
 
+  /* ── RGB 分量（供 rgba(var(...), opacity) 使用） ── */
+  --color-success-rgb: 26, 122, 60;
+  --color-warning-rgb: 125, 78, 0;
+  --color-error-rgb:   192, 57, 43;
+  --color-info-rgb:    0, 102, 204;
+  --text-muted-rgb:    110, 110, 115;
+
   /* ── 布局变量 ── */
   --sidebar-width: 220px;
   --sidebar-collapsed-width: 60px;

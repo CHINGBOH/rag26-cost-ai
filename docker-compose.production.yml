@@ -1,172 +1,226 @@
 version: '3.8'
 
+# RAG26 Production Compose — 单真理源
+# 与 docker-compose.yml 服务对齐，但面向生产：
+# — 公开端口（非 127.0.0.1 绑定）
+# — 所有 profiles 去重，核心服务始终启动
+# — 生产级健康检查
+# — .env 隔离密钥和域名
+#
+# Usage: docker compose -f docker-compose.production.yml up -d
+
 services:
-  # PostgreSQL数据库
+  # =========================================================================
+  # Infrastructure
+  # =========================================================================
   postgres:
-    image: postgres:15
+    build:
+      context: ./infrastructure/docker
+      dockerfile: Dockerfile.postgres
+    image: rag-postgres:16-zhparser
     container_name: rag-postgres
-    environment:
-      POSTGRES_DB: rag_db
-      POSTGRES_USER: rag_user
-      POSTGRES_PASSWORD: rag_password
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_DB: rag_dashboard
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rag_user"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d rag_dashboard"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - rag-network
 
-  # Qdrant向量数据库
-  qdrant:
-    image: qdrant/qdrant:v1.7.0
-    container_name: rag-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - rag-network
-
-  # Redis缓存
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     container_name: rag-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - rag-network
 
-  # Embedding服务
-  embedding-service:
+  qdrant:
+    image: qdrant/qdrant:v1.8.0
+    container_name: rag-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # =========================================================================
+  # Application Services
+  # =========================================================================
+  python-legacy:
     build:
       context: ./src/backend/python-legacy
-      dockerfile: Dockerfile.embedding
-    container_name: rag-embedding
+      dockerfile: Dockerfile
+    container_name: rag-python-legacy
     ports:
-      - "8001:8000"
+      - "8000:8000"
     environment:
-      - MODEL_PATH=/models/bge-m3
-      - QDRANT_URL=http://qdrant:6333
-      - POSTGRES_URL=postgresql://rag_user:rag_password@postgres:5432/rag_db
-    volumes:
-      - ./models:/models
-      - ./data:/data
+      - PORT=8000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rag_user}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/rag_dashboard
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
     depends_on:
-      qdrant:
-        condition: service_healthy
       postgres:
         condition: service_healthy
-    networks:
-      - rag-network
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
-  # Rerank服务
-  rerank-service:
-    build:
-      context: ./src/backend/python-legacy
-      dockerfile: Dockerfile.rerank
-    container_name: rag-rerank
-    ports:
-      - "8002:8000"
-    environment:
-      - MODEL_PATH=/models/bge-reranker-v2-m3
-    volumes:
-      - ./models:/models
-    networks:
-      - rag-network
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-
-  # LLM推理服务
-  llm-service:
-    build:
-      context: ./src/backend/python-legacy
-      dockerfile: Dockerfile.llm
-    container_name: rag-llm
-    ports:
-      - "8003:8000"
-    environment:
-      - MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
-      - DEVICE=cuda
-    volumes:
-      - ./models:/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-        limits:
-          memory: 8G
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - rag-network
 
-  # Node.js任务编排器
-  node-orchestrator:
+  retrieval-service:
     build:
-      context: ./src/backend/nodejs-orchestrator
+      context: ./src/backend/retrieval-service
       dockerfile: Dockerfile
-    container_name: rag-orchestrator
+    container_name: rag-retrieval-service
     ports:
-      - "3000:3000"
+      - "8002:8002"
     environment:
-      - PORT=3000
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - EMBEDDING_SERVICE=http://embedding-service:8000
-      - RERANK_SERVICE=http://rerank-service:8000
-      - LLM_SERVICE=http://llm-service:8000
-      - DATABASE_SERVICE=postgres:5432
+      - PORT=8002
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rag_user}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/rag_dashboard
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - RETRIEVAL_DOCUMENTS_COLLECTION=document_chunks
+      - PYTHON_API_URL=http://python-legacy:8000
+      - RETRIEVAL_API_URL=http://retrieval-service:8002
     depends_on:
-      - redis
-      - embedding-service
-      - rerank-service
-      - llm-service
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      python-legacy:
+        condition: service_started
+    restart: unless-stopped
     networks:
       - rag-network
-    deploy:
-      replicas: 2
-      resources:
-        limits:
-          memory: 1G
 
-  # 前端Web服务
-  web-frontend:
+  node-server:
     build:
-      context: ./src/frontend/web
+      context: ./src/backend/server
       dockerfile: Dockerfile
+    container_name: rag-node-server
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rag_user}:${POSTGRES_PASSWORD:-rag_password}@postgres:5432/rag_dashboard
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - RETRIEVAL_DOCUMENTS_COLLECTION=document_chunks
+      - PYTHON_API_URL=http://python-legacy:8000
+      - RETRIEVAL_API_URL=http://retrieval-service:8002
+      - WS_GATEWAY_URL=http://go-websocket:8081/broadcast
+      - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
+      - DEFAULT_ADMIN_USERNAME=${DEFAULT_ADMIN_USERNAME:-admin}
+      - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-}
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      python-legacy:
+        condition: service_started
+      retrieval-service:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  go-gateway:
+    build:
+      context: ./src/backend/go-services
+      dockerfile: Dockerfile.gateway
+    container_name: rag-go-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - NODEJS_URL=http://node-server:3001
+      - PYTHON_URL=http://python-legacy:8000
+      - OCR_URL=http://python-legacy:8000
+      - RETRIEVAL_URL=http://retrieval-service:8002
+      - LLM_URL=http://python-legacy:8000
+      - WS_GATEWAY_URL=http://go-websocket:8081
+    depends_on:
+      node-server:
+        condition: service_started
+      python-legacy:
+        condition: service_started
+      retrieval-service:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  go-websocket:
+    build:
+      context: ./src/backend/go-services
+      dockerfile: Dockerfile.websocket
+    container_name: rag-go-websocket
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # =========================================================================
+  # Frontend (React + nginx)
+  # =========================================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: src/frontend/web/Dockerfile
     container_name: rag-frontend
     ports:
       - "80:80"
-    environment:
-      - API_BASE_URL=http://node-orchestrator:3000
-      - WS_BASE_URL=ws://node-orchestrator:3000
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_PATH:-./certs}:/etc/nginx/certs:ro
     depends_on:
-      - node-orchestrator
+      - go-gateway
+      - go-websocket
+      - node-server
+      - retrieval-service
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
     networks:
       - rag-network
 
@@ -176,5 +230,4 @@ networks:
 
 volumes:
   postgres_data:
-  qdrant_data:
-  redis_data:
+  qdrant_storage:

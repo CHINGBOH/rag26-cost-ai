@@ -29,9 +29,9 @@ export const ProblemsPanel: React.FC<ProblemsPanelProps> = ({ problems }) => {
 
   const severityColor = (severity: string) => {
     switch (severity) {
-      case 'high': return '#e74c3c';
-      case 'medium': return '#f39c12';
-      default: return '#3498db';
+      case 'high': return 'var(--color-error)';
+      case 'medium': return 'var(--color-warning)';
+      default: return 'var(--color-info)';
     }
   };
 

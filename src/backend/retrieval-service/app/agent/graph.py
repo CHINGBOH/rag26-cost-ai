@@ -36,6 +36,7 @@ from app.agent.prompts import (
     invoke_llm,
     invoke_llm_with_tools,
 )
+from app.agent.prompt_layers import get_prompt_builder
 from app.agent.retrieval_filter import filter_chunks
 from app.agent.query_analyzer import (
     QueryAnalyzer,
@@ -2090,8 +2091,27 @@ def _build_executor_fallback_tool_call(state: RAGAgentState) -> dict | None:
     }
 
 
-def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semantic") -> str:
-    """把检索结果拼成 prompt，让 LLM 生成答案"""
+def _build_synthesis_prompt(
+    query: str,
+    chunks: list,
+    query_type: str = "semantic",
+    detail_level: str = "full",
+) -> str:
+    """把检索结果拼成 prompt，让 LLM 生成答案。
+
+    detail_level 控制 chunk 内容注入粒度（#175 三层渐进 Context 注入）：
+    - "index":   仅注入 chunk 元数据（来源、页码、相关度），不含正文内容
+    - "context": 注入元数据 + 内容摘要（前 200 字符）
+    - "full":    注入元数据 + 完整内容（前 600 字符，默认行为）
+    """
+    # 解析 detail_level → 内容截断长度
+    _detail_max_chars: dict[str, int] = {
+        "index": 0,
+        "context": 200,
+        "full": 600,
+    }
+    max_content_chars = _detail_max_chars.get(detail_level, 600)
+
     if not chunks:
         return (
             f"用户问题：{query}\n\n"
@@ -2107,7 +2127,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         doc_name = c.get("doc_filename") or c.get("source") or ""
         page = c.get("page_number") or c.get("page") or "?"
         score = c.get("score", 0)
-        content = c.get("content", "")[:600]
+        content = c.get("content", "")[:max_content_chars] if max_content_chars > 0 else ""
         retrieval_path = str((c.get("metadata") or {}).get("retrieval_path") or c.get("retrieval_path") or "")
         path_label = {
             "database": "数据库",
@@ -2128,7 +2148,7 @@ def _build_synthesis_prompt(query: str, chunks: list, query_type: str = "semanti
         chunks_text += (
             f"\n证据{i}：来源 {ref_label}，路径 {path_label}，相关度 {score:.4f}"
             f"{parent_block}"
-            f"\n内容：{content}\n"
+            + (f"\n内容：{content}\n" if content else "\n[仅索引模式，正文省略]\n")
         )
 
     first_ref = ""
@@ -3716,6 +3736,11 @@ def chapter_resolver_node(state: RAGAgentState) -> dict:
 def synthesize_node(state: RAGAgentState) -> dict:
     """
     合成节点：用 messages channel 中积累的全部 chunks 生成最终答案。
+
+    #175: 集成 ThreeLayerPromptBuilder 实现 3 层渐进 Context 注入
+    - STABLE 层：系统身份 + 格式规则（缓存友好）
+    - CONTEXT 层：query_type 指令
+    - VOLATILE 层：用户问题 + 检索结果（detail_level 控制粒度）
     """
     llm_config = state.get("llm_config") or {}
     query = state["query"]
@@ -3723,15 +3748,32 @@ def synthesize_node(state: RAGAgentState) -> dict:
     all_chunks = state.get("retrieved_chunks", [])
     query_entities = state.get("query_entities") or {}
 
+    # #175: 从 llm_config 读取 detail_level（由 API 请求传入）
+    detail_level = str(llm_config.get("detail_level") or "full")
+    if detail_level not in ("index", "context", "full"):
+        logger.warning(f"[synthesize] unknown detail_level={detail_level!r}, fallback to full")
+        detail_level = "full"
+
     all_chunks = [chunk for chunk in all_chunks if chunk.get("source_db") != "concept_search"]
     all_chunks = _enrich_chunks_with_filename(all_chunks)
     all_chunks = _prune_chunks_for_query(query, query_type, all_chunks, query_entities)
-    logger.info(f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}")
-    synthesis_prompt = _build_synthesis_prompt(query, all_chunks, query_type)
+    logger.info(
+        f"[synthesize] {len(all_chunks)} chunks, query_type={query_type}, "
+        f"detail_level={detail_level}"
+    )
+    synthesis_prompt = _build_synthesis_prompt(
+        query, all_chunks, query_type, detail_level=detail_level,
+    )
     citations_text = _format_citations(all_chunks)
     presentation = _build_presentation_payload(query, query_type, all_chunks)
 
     evaluation = _build_answer_evaluation(query_type, "", all_chunks, original_query=query)
+
+    # #175: 用 ThreeLayerPromptBuilder 构建分层消息
+    prompt_builder = get_prompt_builder()
+    # VOLATILE 层内容是 synthesis_prompt（含 query + chunks + 回答要求）
+    # CONTEXT 层可携带 query_type 提示（如为空则跳过）
+    _layer_messages = prompt_builder.build(query=synthesis_prompt, chunks=None)
 
     if state.get("stream_response"):
         runtime = state.get("llm_runtime") or {}
@@ -3776,9 +3818,19 @@ def synthesize_node(state: RAGAgentState) -> dict:
             "data_gaps": _gather_blindspots_for_chunks(all_chunks),
         }
 
+    # #175: 将 ThreeLayerPromptBuilder 输出的 dict 消息转为 LangChain 消息
+    _lc_messages = []
+    for _m in _layer_messages:
+        role = _m.get("role", "user")
+        content = _m.get("content", "")
+        if role == "system":
+            _lc_messages.append(SystemMessage(content=content))
+        else:
+            _lc_messages.append(HumanMessage(content=content))
+
     try:
         response, runtime = invoke_llm(
-            [HumanMessage(content=synthesis_prompt)],
+            _lc_messages,
             thinking=False,
             prefer_strong=False,
             llm_config=llm_config,

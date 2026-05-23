@@ -1,5 +1,6 @@
 """
 #170: Dreaming Cron — 每日记忆晋升（6维评分 + 三重门控）
+#173: Weibull 衰减 + Tier 分层系统集成
 
 参考 OpenClaw 三阶段后台记忆整合系统：
 - Light Sleep: 短期候选 → 过滤噪声
@@ -7,6 +8,12 @@
 - Deep Sleep: 长期巩固 + 索引重建
 
 评分维度：recency / frequency / uniqueness / utility / confidence / stability
+
+Weibull 衰减 (#173)：替代简单指数衰减，提供 shape/scale 双参数控制：
+  decay(t) = exp(-(t/scale)^shape)
+- peripheral: shape=0.8, scale=7  → 快速衰减
+- working:    shape=1.5, scale=14 → 中等衰减
+- core:       shape=2.5, scale=60 → 慢速衰减
 """
 
 from __future__ import annotations
@@ -20,18 +27,28 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.agent.weibull_decay import (
+    MemoryTier,
+    TierManager,
+    get_tier_params,
+    PERIPHERAL_WEIBULL,
+    WORKING_WEIBULL,
+    CORE_WEIBULL,
+)
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MemoryScore:
-    """六维记忆评分。"""
+    """六维记忆评分 + Weibull 衰减感知 (#173)。"""
     recency: float = 0.0       # 最近召回时间（越近越高）
     frequency: float = 0.0     # 召回次数
     uniqueness: float = 0.0    # 查询多样性（unique queries）
     utility: float = 0.0       # 正面反馈/成功使用
     confidence: float = 0.0    # LLM 自评质量
     stability: float = 0.0     # 时间衰减后的稳定性
+    days_since_recall: float = 0.0  # 距上次召回天数
 
     def composite(self) -> float:
         """加权综合评分，范围 0.0~1.0。"""
@@ -49,14 +66,47 @@ class MemoryScore:
         )
 
     def tier(self) -> str:
-        """根据综合评分分配 tier。"""
-        score = self.composite()
-        if score >= 0.7:
-            return "core"
-        elif score >= 0.4:
-            return "working"
-        else:
-            return "peripheral"
+        """根据综合评分分配 tier（向后兼容）。"""
+        return MemoryTier.PERIPHERAL.value if self.composite() < 0.4 else (
+            MemoryTier.CORE.value if self.composite() >= 0.7 else MemoryTier.WORKING.value
+        )
+
+    def weibull_decay_factor(self) -> float:
+        """计算 Weibull 衰减因子（#173）。
+
+        使用当前 tier 的 Weibull 参数计算衰减：
+          decay = exp(-(days/scale)^shape)
+        """
+        tier = self.tier()
+        params_map = {
+            MemoryTier.PERIPHERAL.value: PERIPHERAL_WEIBULL,
+            MemoryTier.WORKING.value: WORKING_WEIBULL,
+            MemoryTier.CORE.value: CORE_WEIBULL,
+        }
+        params = params_map.get(tier, PERIPHERAL_WEIBULL)
+        return params.decay(self.days_since_recall)
+
+    def weibull_adjusted_score(self) -> float:
+        """Weibull 衰减调整后的评分（#173）。
+
+        adjusted = composite × decay_factor × tier_weight
+        """
+        from app.agent.weibull_decay import TIER_WEIGHTS, MemoryTier
+
+        tier_enum = MemoryTier(self.tier())
+        tier_weight = TIER_WEIGHTS[tier_enum]
+        return self.composite() * self.weibull_decay_factor() * tier_weight
+
+    def next_review_days(self) -> float:
+        """基于 Weibull 半衰期的建议下次审查间隔（#173）。"""
+        tier = self.tier()
+        params_map = {
+            MemoryTier.PERIPHERAL.value: PERIPHERAL_WEIBULL,
+            MemoryTier.WORKING.value: WORKING_WEIBULL,
+            MemoryTier.CORE.value: CORE_WEIBULL,
+        }
+        params = params_map.get(tier, PERIPHERAL_WEIBULL)
+        return max(1.0, params.half_life_days() / 3.0)
 
 
 @dataclass
@@ -71,10 +121,10 @@ class DreamingStats:
 
 
 class DreamingCron:
-    """每日记忆晋升调度器。
+    """每日记忆晋升调度器 + Weibull 衰减管理 (#173)。
 
     三阶段：
-    1. Light Sleep (01:00): 扫描短期候选池，六维评分
+    1. Light Sleep (01:00): 扫描短期候选池，六维 Weibull 评分
     2. REM Sleep (02:00): 发现关联，合并相似记忆
     3. Deep Sleep (03:00): 持久化晋升结果，清理过期
     """
@@ -86,13 +136,15 @@ class DreamingCron:
 
     def __init__(self):
         self._last_run: datetime | None = None
-
+        self._tier_manager = TierManager()  # #173: Tier 滞回管理
     # ── Light Sleep ─────────────────────────────────────────────────────
 
     async def light_sleep(self, domain_id: str) -> DreamingStats:
-        """扫描候选池，六维评分，标记可晋升/可降级。
+        """扫描候选池，六维 Weibull 评分，标记可晋升/可降级 (#173)。
 
         评分方式（不需要 LLM，全部确定性地从已有数据计算）：
+        - 使用 Weibull 衰减替代简单指数衰减
+        - Tier 滞回管理防止频繁抖动
         """
         stats = DreamingStats()
         import time as _time
@@ -109,15 +161,36 @@ class DreamingCron:
                 score = self._compute_six_dim_score(c, now)
                 scored.append((c, score))
 
-                tier = score.tier()
-                if tier == "core":
-                    stats.promoted_to_core += 1
-                elif tier == "working":
-                    stats.promoted_to_working += 1
-                else:
-                    stats.demoted_to_peripheral += 1
+                # 使用 Weibull 调整后的评分做 tier 分配
+                new_tier_raw = score.tier()
+                try:
+                    new_tier = MemoryTier(new_tier_raw)
+                except ValueError:
+                    new_tier = MemoryTier.PERIPHERAL
 
-            # 持久化评分结果
+                current_tier_raw = c.get("tier", MemoryTier.PERIPHERAL.value)
+                try:
+                    current_tier = MemoryTier(current_tier_raw)
+                except ValueError:
+                    current_tier = MemoryTier.PERIPHERAL
+
+                mem_id = str(c.get("id", ""))
+
+                # Tier 滞回：降级需要连续确认
+                if self._tier_manager.should_promote(mem_id, new_tier, current_tier):
+                    c["tier"] = new_tier.value
+                    if new_tier == MemoryTier.CORE:
+                        stats.promoted_to_core += 1
+                    elif new_tier == MemoryTier.WORKING:
+                        stats.promoted_to_working += 1
+                    elif new_tier == MemoryTier.PERIPHERAL:
+                        stats.demoted_to_peripheral += 1
+                else:
+                    # 保持当前 tier 不变
+                    c["tier"] = current_tier.value
+                    self._tier_manager.update_stability(mem_id, new_tier)
+
+            # 持久化评分结果（含 Weibull 衰减信息）
             await self._persist_scores(scored, domain_id)
 
         except Exception as exc:
@@ -125,24 +198,46 @@ class DreamingCron:
 
         stats.duration_ms = (_time.monotonic() - t0) * 1000
         logger.info(
-            "dreaming.light_sleep domain=%s scanned=%d promoted=%d/%d purged=%d time=%.0fms",
+            "dreaming.light_sleep domain=%s scanned=%d promoted=%d/%d demoted=%d purged=%d time=%.0fms",
             domain_id, stats.candidates_scanned,
             stats.promoted_to_core, stats.promoted_to_working,
-            stats.purged, stats.duration_ms,
+            stats.demoted_to_peripheral, stats.purged, stats.duration_ms,
         )
         return stats
 
     def _compute_six_dim_score(self, candidate: dict, now: datetime) -> MemoryScore:
-        """从候选记录计算六维评分。"""
+        """从候选记录计算六维评分，recency 使用 Weibull 衰减 (#173)。
+
+        recency 根据当前 tier 选用对应 Weibull 参数：
+          decay = exp(-(days/scale)^shape)
+        - peripheral: shape=0.8, scale=7  → 快速衰减
+        - working:    shape=1.5, scale=14 → 中等衰减
+        - core:       shape=2.5, scale=60 → 慢速衰减
+        """
         score = MemoryScore()
 
-        # Recency: 指数衰减，半衰期 14 天
+        # 确定当前 tier 并获取 Weibull 参数
+        current_tier_raw = candidate.get("tier", MemoryTier.PERIPHERAL.value)
+        try:
+            current_tier = MemoryTier(current_tier_raw)
+        except ValueError:
+            current_tier = MemoryTier.PERIPHERAL
+        tier_params = get_tier_params(current_tier)
+
+        # Recency: Weibull 衰减 (替代简单指数)
         last_recalled = candidate.get("last_recalled")
+        days_ago = 0.0
         if last_recalled:
             if isinstance(last_recalled, str):
-                last_recalled = datetime.fromisoformat(last_recalled)
-            days_ago = max(0, (now - last_recalled).total_seconds() / 86400)
-            score.recency = 2.0 ** (-days_ago / 14)
+                try:
+                    last_recalled = datetime.fromisoformat(last_recalled)
+                except (ValueError, TypeError):
+                    last_recalled = None
+            if last_recalled is not None:
+                days_ago = max(0, (now - last_recalled).total_seconds() / 86400)
+
+        score.days_since_recall = days_ago
+        score.recency = tier_params.decay(days_ago)
 
         # Frequency: 归一化到 0~1（假设 10 次为满分）
         recall_count = int(candidate.get("recall_count", 0))
@@ -286,7 +381,13 @@ class DreamingCron:
             return 0
 
     async def _update_tier_payloads(self, domain_id: str):
-        """为晋升记忆更新 Qdrant payload（tier + access metadata）。"""
+        """为晋升记忆更新 Qdrant payload（tier + Weibull 元数据）。
+
+        写入关键字段:
+        - tier: peripheral/working/core
+        - next_review_days: 基于 Weibull 半衰期的建议审查间隔
+        - decay_factor: 当前 Weibull 衰减因子
+        """
         # 简化实现：将 tier 信息写入 candidates 表的 promoted 字段
         # 完整的 Qdrant payload 更新需要向量客户端，这里留作扩展点
         pass
@@ -326,7 +427,7 @@ class DreamingCron:
     async def _persist_scores(
         self, scored: list[tuple[dict, MemoryScore]], domain_id: str
     ):
-        """持久化六维评分到数据库。"""
+        """持久化六维评分 + Weibull 衰减数据到数据库。"""
         try:
             from app.agent.tools import _get_pg_conn, _put_pg_conn
             conn = _get_pg_conn()
@@ -334,16 +435,22 @@ class DreamingCron:
                 with conn.cursor() as cur:
                     for candidate, score in scored:
                         tier = score.tier()
+                        wa = score.weibull_adjusted_score()
+                        nrd = score.next_review_days()
                         cur.execute(
                             """UPDATE short_term_candidates
                                SET recall_count = %s, tier = %s,
-                                   light_gain = %s, promoted = %s
+                                   light_gain = %s, promoted = %s,
+                                   weibull_adjusted_score = %s,
+                                   next_review_days = %s
                                WHERE id = %s""",
                             (
                                 candidate.get("recall_count", 1),
                                 tier,
-                                score.composite(),
+                                wa,
                                 tier in ("core", "working"),
+                                wa,
+                                int(nrd),
                                 candidate.get("id"),
                             )
                         )

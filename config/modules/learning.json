@@ -33,5 +33,16 @@
     "actor": "learning_gap_listener",
     "dry_run": false,
     "active_only": true
+  },
+  "curator": {
+    "enabled": true,
+    "cron_day_of_week": 6,
+    "cron_hour": 4,
+    "cron_minute": 0,
+    "skill_archive_days": 30,
+    "peripheral_purge_days": 7,
+    "errors_promotion_threshold": 3,
+    "max_candidates_per_domain": 1000,
+    "dry_run": false
   }
 }

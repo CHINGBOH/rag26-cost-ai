@@ -124,7 +124,7 @@
 
 .review-card .delta {
   padding: 8px 12px;
-  background: rgba(21, 128, 61, 0.1);
+  background: rgba(var(--color-success-rgb), 0.1);
   border-radius: 4px;
   display: flex;
   flex-direction: column;
