@@ -30,7 +30,7 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-lerna-debug.log*
+lerna-debug.log
 logs/
 *.log
 
@@ -81,19 +81,6 @@ src/backend/go-services/gateway
 src/backend/go-services/websocket
 src/backend/go-services/main
 
-# Accidental terminal output files
-":\", cols)"
-":', cols)"
-":', cur.fetchone())"
-columns:')
-e
-e()
-ycopg2
-"ycopg2.connect(*"
-ys
-"sword_here*"
-"t='localhost'*"
-
 # Backup files
 *.bak
 
@@ -105,12 +92,6 @@ reports/
 
 # Temp / scratch files at repo root
 AGENTS\ copy.md
-:", cols)
-:', cols)
-:', cur.fetchone())
-sword_here psql -h localhost -U rag_user -d rag_db -c SELECT column_name, data_type FROM information_schema.columns WHERE table_name='fee_rates' ORDER BY ordinal_position;
-ycopg2.connect(host='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
-t='localhost', user='rag_user', password='your_password_here', dbname='rag_db')
 src/backend/retrieval-service/app/临时文件.md
 
 # Project assets (non-source)
