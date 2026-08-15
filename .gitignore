@@ -158,3 +158,27 @@ third-party/
 benchmarks/
 generated/
 migrations/
+
+# Rag26 Deep Lean Ignores
+*.sh
+docker-compose*.yml
+package-lock.json
+qodana.yaml
+.agent/
+.aiassistant/
+.copilot-tracking/
+.kilo/
+.opencode/
+.semgrep/
+.windsurf/
+infrastructure/
+config/
+data/
+experiments/
+mcp/
+prompts/
+reports/
+scripts/
+tools/
+requirements_*.txt
+requirements-*.txt

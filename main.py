@@ -1,9 +1,10 @@
 """
-rag26-cost-ai — Core Application Entrypoint & CLI Orchestrator
+RAG26 Cost AI — Multi-Service Construction Cost RAG & Agent Pipeline
 """
+import sys
 
 def main():
-    print("🚀 Initializing rag26-cost-ai core logic...")
+    print("🚀 Launching RAG26 Cost AI Core Engine...")
 
 if __name__ == "__main__":
     main()
