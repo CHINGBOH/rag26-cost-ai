@@ -123,3 +123,9 @@ src/backend/retrieval-service/app/临时文件.md
 .copilot-backup/
 *.bak.*
 *.bak-*
+
+# Lean Architecture Anti-Bloat Filters
+*.py[cod]
+*$py.class
+*.tmp
+*.orig
